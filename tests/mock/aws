@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""Stub `aws` for testing rds_backup_compliance_report.sh. No network code at all; never talks to AWS.
+
+Output shapes follow `aws <svc> <op> --generate-cli-skeleton output` (AWS CLI v2.38). All dates are relative to now.
+Profiles: prod -> 111111111111 (us-east-1 fleet + us-west-2 global secondaries), nonprod -> 222222222222 (ap-south-1),
+          dev -> 333333333333 (eu-west-1), (none) -> prod, broken -> invalid credentials.
+MOCK_SCENARIO: fleet (default) | backupdeny (backup list-backup-vaults AccessDenied) | globaldeny (describe-global-clusters
+               AccessDenied) | snapdeny (describe-db-snapshots AccessDenied) | empty (no databases anywhere)
+MOCK_LOG: append argv as JSONL.  MOCK_DEFAULT_REGION: answer for `aws configure get region`.
+"""
+import json, os, sys
+from datetime import datetime, timedelta, timezone
+
+NOW = datetime.now(timezone.utc)
+SCEN = os.environ.get("MOCK_SCENARIO", "fleet")
+argv = sys.argv[1:]
+if os.environ.get("MOCK_LOG"):
+    with open(os.environ["MOCK_LOG"], "a") as fh:
+        fh.write(json.dumps(argv) + "\n")
+
+
+def fail(code, op, msg, rc=254):
+    sys.stderr.write("\naws: [ERROR]: An error occurred (%s) when calling the %s operation: %s\n\n" % (code, op, msg))
+    sys.exit(rc)
+
+
+def opt(name, default=None):
+    return argv[argv.index(name) + 1] if name in argv else default
+
+
+def iso(dt, ist=False):
+    if ist:
+        return dt.astimezone(timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m-%dT%H:%M:%S.123000+05:30")
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.000000+00:00")
+
+
+if argv[:1] == ["--version"]:
+    print("aws-cli/2.38.6.mock Python/3 Linux"); sys.exit(0)
+pos = [a for i, a in enumerate(argv) if not a.startswith("--") and (i == 0 or not argv[i - 1].startswith("--"))]
+svc, op = (pos + ["", ""])[:2]
+profile = opt("--profile", os.environ.get("AWS_PROFILE", "prod"))
+region = opt("--region", os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "")))
+ACCT = {"prod": "111111111111", "nonprod": "222222222222", "dev": "333333333333"}
+if svc == "configure" and op == "get":
+    print(os.environ.get("MOCK_DEFAULT_REGION", "")); sys.exit(0 if os.environ.get("MOCK_DEFAULT_REGION") else 1)
+if profile == "broken" or profile not in ACCT:
+    fail("InvalidClientTokenId", "GetCallerIdentity", "The security token included in the request is invalid.")
+acct = ACCT[profile]
+if svc == "sts":
+    print(json.dumps({"UserId": "AIDAMOCK", "Account": acct, "Arn": "arn:aws:iam::%s:user/dba" % acct})); sys.exit(0)
+if svc == "ec2" and op == "describe-regions":
+    print(json.dumps({"Regions": [{"RegionName": r, "Endpoint": "ec2.%s.amazonaws.com" % r, "OptInStatus": "opt-in-not-required"}
+                                  for r in ["us-east-1", "us-west-2", "ap-south-1", "eu-west-1", "ca-central-1"]]})); sys.exit(0)
+
+# ---------------------------------------------------------------- fleet definition
+# (region, id, kind, engine, version, age_days, retention, daily_n, last_h, weekly, monthly, yearly, global, writer, manual_ages)
+FLEET = {
+    "111111111111": [
+        ("us-east-1", "orders-aurora-pg15", "cluster", "aurora-postgresql", "15.8", 1000, 7, 7, 5, 5, 12, 2, "orders-global", True, [20, 100, 250, 400]),
+        ("us-east-1", "billing-aurora-mysql", "cluster", "aurora-mysql", "8.0.mysql_aurora.3.08.0", 800, 7, 7, 5, 2, 11, 0, None, None, [45]),
+        ("us-east-1", "new-aurora-pg16", "cluster", "aurora-postgresql", "16.4", 60, 7, 7, 3, 4, 1, 0, None, None, []),
+        ("us-east-1", "reports-pg", "instance", "postgres", "16.3", 900, 3, 3, 4, 4, 11, 1, None, None, [10]),
+        ("us-east-1", "legacy-mysql", "instance", "mysql", "8.0.39", 700, 7, 7, 74, 4, 11, 1, None, None, []),
+        ("us-west-2", "orders-dr-pg15", "cluster", "aurora-postgresql", "15.8", 600, 7, 7, 6, 0, 0, 0, "orders-global", False, []),
+        ("us-west-2", "shop-dr-mysql", "cluster", "aurora-mysql", "8.0.mysql_aurora.3.08.0", 500, 1, 1, 6, 0, 0, 0, "shop-global", False, []),
+    ],
+    "222222222222": [
+        ("ap-south-1", "hr-aurora-pg", "cluster", "aurora-postgresql", "15.8", 1200, 14, 14, 2, 4, 11, 1, None, None, [5, 150]),
+        ("ap-south-1", "payroll-sqlserver", "instance", "sqlserver-se", "15.00.4415.2.v1", 1500, 7, 7, 8, 4, 9, 1, None, None, []),
+    ],
+    "333333333333": [
+        ("eu-west-1", "dev-aurora-mysql", "cluster", "aurora-mysql", "8.0.mysql_aurora.3.08.0", 400, 7, 7, 4, 4, 11, 1, None, None, []),
+    ],
+}
+rows = [] if SCEN == "empty" else [r for r in FLEET[acct] if r[0] == region]
+
+
+def arn(r):
+    return "arn:aws:rds:%s:%s:%s:%s" % (r[0], acct, "cluster" if r[2] == "cluster" else "db", r[1])
+
+
+def created(r):
+    return NOW - timedelta(days=r[5])
+
+
+if svc == "rds" and op == "describe-db-clusters":
+    out = []
+    for r in rows:
+        if r[2] != "cluster":
+            continue
+        out.append({"DBClusterIdentifier": r[1], "DBClusterArn": arn(r), "Engine": r[3], "EngineVersion": r[4], "Status": "available",
+                    "BackupRetentionPeriod": r[6], "ClusterCreateTime": iso(created(r)), "LatestRestorableTime": iso(NOW - timedelta(minutes=5)),
+                    "GlobalClusterIdentifier": r[12] or None, "MultiAZ": True,
+                    "DBClusterMembers": [{"DBInstanceIdentifier": r[1] + "-1", "IsClusterWriter": True}]})
+    if region == "us-east-1" and SCEN != "empty" and acct == "111111111111":
+        out.append({"DBClusterIdentifier": "docs-cluster", "DBClusterArn": "arn:aws:rds:us-east-1:%s:cluster:docs-cluster" % acct,
+                    "Engine": "docdb", "EngineVersion": "5.0.0", "BackupRetentionPeriod": 1, "ClusterCreateTime": iso(NOW)})
+    print(json.dumps({"DBClusters": [{k: v for k, v in c.items() if v is not None} for c in out]})); sys.exit(0)
+if svc == "rds" and op == "describe-db-instances":
+    out = []
+    for r in rows:
+        if r[2] == "cluster":
+            out.append({"DBInstanceIdentifier": r[1] + "-1", "DBInstanceArn": "arn:aws:rds:%s:%s:db:%s-1" % (r[0], acct, r[1]), "Engine": r[3],
+                        "EngineVersion": r[4], "DBClusterIdentifier": r[1], "BackupRetentionPeriod": 1, "InstanceCreateTime": iso(created(r))})
+        else:
+            out.append({"DBInstanceIdentifier": r[1], "DBInstanceArn": arn(r), "Engine": r[3], "EngineVersion": r[4],
+                        "BackupRetentionPeriod": r[6], "InstanceCreateTime": iso(created(r)), "DBInstanceStatus": "available"})
+    print(json.dumps({"DBInstances": out})); sys.exit(0)
+if svc == "rds" and op == "describe-global-clusters":
+    if SCEN == "globaldeny":
+        fail("AccessDenied", "DescribeGlobalClusters", "User is not authorized to perform: rds:DescribeGlobalClusters")
+    g = {}
+    for r in ([] if SCEN == "empty" else FLEET[acct]):
+        if r[12]:
+            g.setdefault(r[12], []).append({"DBClusterArn": arn(r), "IsWriter": r[13], "Readers": []})
+    if "shop-global" in g:   # primary in a region that is not scanned
+        g["shop-global"].append({"DBClusterArn": "arn:aws:rds:eu-central-1:%s:cluster:shop-aurora-mysql" % acct, "IsWriter": True})
+    print(json.dumps({"GlobalClusters": [{"GlobalClusterIdentifier": k, "Engine": "aurora", "GlobalClusterMembers": v} for k, v in g.items()]})); sys.exit(0)
+
+
+def snaps(r, kind_key):
+    out = []
+    for k in range(r[7]):
+        t = NOW - timedelta(hours=r[8] + 24 * k)
+        if t < created(r):
+            break
+        out.append(("automated", "rds:%s-%s" % (r[1], t.strftime("%Y-%m-%d-%H-%M")), t))
+    for a in r[14]:
+        t = NOW - timedelta(days=a)
+        out.append(("manual", "%s-manual-%dd" % (r[1], a), t))
+    out.append(("awsbackup", "awsbackup:job-%s" % r[1], NOW - timedelta(days=1)))   # AWS Backup copy: must be ignored here
+    res = []
+    for kind, sid, t in out:
+        d = {"SnapshotType": kind, "SnapshotCreateTime": iso(t), "Status": "available", "AllocatedStorage": 100, "Engine": r[3]}
+        if kind_key == "cluster":
+            d.update({"DBClusterIdentifier": r[1], "DBClusterSnapshotIdentifier": sid})
+        else:
+            d.update({"DBInstanceIdentifier": r[1], "DBSnapshotIdentifier": sid})
+        res.append(d)
+    return res
+
+
+if svc == "rds" and op == "describe-db-cluster-snapshots":
+    print(json.dumps({"DBClusterSnapshots": [s for r in rows if r[2] == "cluster" for s in snaps(r, "cluster")]})); sys.exit(0)
+if svc == "rds" and op == "describe-db-snapshots":
+    if SCEN == "snapdeny":
+        fail("AccessDenied", "DescribeDBSnapshots", "User is not authorized to perform: rds:DescribeDBSnapshots")
+    print(json.dumps({"DBSnapshots": [s for r in rows if r[2] == "instance" for s in snaps(r, "instance")]})); sys.exit(0)
+if svc == "backup" and op == "list-backup-vaults":
+    if SCEN == "backupdeny":
+        fail("AccessDeniedException", "ListBackupVaults", "User is not authorized to perform: backup:ListBackupVaults")
+    print(json.dumps({"BackupVaultList": [{"BackupVaultName": n, "BackupVaultArn": "arn:aws:backup:%s:%s:backup-vault:%s" % (region, acct, n)}
+                                          for n in ["Default", "prod vault"]]})); sys.exit(0)
+if svc == "backup" and op == "list-recovery-points-by-backup-vault":
+    vault = opt("--backup-vault-name")
+    pts = []
+    def rp(r, t, days, v):
+        d = {"RecoveryPointArn": "arn:aws:rds:%s:%s:%ssnapshot:awsbackup:job-%s-%d" % (r[0], acct, "cluster-" if r[2] == "cluster" else "", r[1], int(t.timestamp())),
+             "BackupVaultName": v, "ResourceArn": arn(r), "ResourceType": "Aurora" if r[2] == "cluster" else "RDS",
+             "CreationDate": iso(t, ist=True), "Status": "COMPLETED", "BackupSizeInBytes": 53687091200, "IsParent": False}
+        if days is not None:
+            d["CalculatedLifecycle"] = {"DeleteAt": iso(t + timedelta(days=days))}
+            d["Lifecycle"] = {"DeleteAfterDays": days}
+        return d
+    for r in rows:
+        if vault == "prod vault":
+            for k in range(r[9]):
+                t = NOW - timedelta(days=2 + 7 * k)
+                if t > created(r): pts.append(rp(r, t, 35, vault))
+            for k in range(r[10]):
+                t = NOW - timedelta(days=3 + 30.44 * k)
+                if t > created(r): pts.append(rp(r, t, 365, vault))
+            for k in range(3):   # 7-day AWS Backup dailies: class "short", never counted
+                pts.append(rp(r, NOW - timedelta(days=k + 1), 7, vault))
+        else:
+            for k in range(r[11]):
+                t = NOW - timedelta(days=10 + 365 * k)
+                if t > created(r): pts.append(rp(r, t, 2555 if k == 0 else None, vault))
+    if vault == "Default" and rows:
+        pts.append({"RecoveryPointArn": "arn:aws:ec2:%s::image/ami-0abc" % region, "BackupVaultName": vault,
+                    "ResourceArn": "arn:aws:ec2:%s:%s:instance/i-0abc" % (region, acct), "ResourceType": "EC2",
+                    "CreationDate": iso(NOW), "Status": "COMPLETED"})
+    print(json.dumps({"RecoveryPoints": pts})); sys.exit(0)
+fail("InvalidAction", op or "?", "mock does not implement %s %s" % (svc, op), rc=252)

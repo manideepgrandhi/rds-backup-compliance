@@ -1,0 +1,19 @@
+# rds_backup_compliance_report.sh --config FILE
+# key=value, long option names without "--". Never sourced. Command-line options override these.
+# profile=prod
+# region=us-east-1,us-west-2
+# all-regions=true
+# engine=aurora-*
+daily=7
+daily-max-age=26
+weekly=4
+monthly=11
+yearly=1
+weekly-days=11-60
+monthly-max-days=400
+# format=html,csv
+# output-dir=./reports
+# prefix=rds_backup_compliance
+# tz=Asia/Kolkata
+# aws-timeout=30
+# max-attempts=5

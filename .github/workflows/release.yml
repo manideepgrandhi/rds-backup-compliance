@@ -1,0 +1,42 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)build the release for, e.g. v1.0.0'
+        required: true
+permissions:
+  contents: write
+jobs:
+  zip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - name: Build rds-backup-compliance.zip (runtime files only)
+        run: |
+          set -euo pipefail
+          D=dist/rds-backup-compliance; mkdir -p "$D"
+          # runtime only: no docs/, samples/, tests/, .github/
+          for f in rds_backup_compliance_report.sh lib README.md \
+                   rds_backup_compliance_report.conf.example EXAMPLES.md LICENSE; do
+            [ -e "$f" ] && cp -a "$f" "$D/"
+          done
+          chmod +x "$D"/*.sh
+          cd dist && zip -rqX rds-backup-compliance.zip rds-backup-compliance
+          unzip -Z rds-backup-compliance.zip
+          ! unzip -Z1 rds-backup-compliance.zip | grep -E '/(docs|samples|tests|\.github)/'
+          unzip -q rds-backup-compliance.zip -d check && ./check/rds-backup-compliance/rds_backup_compliance_report.sh --version
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/rds-backup-compliance.zip --clobber
+          else
+            gh release create "$TAG" dist/rds-backup-compliance.zip --title "$TAG" --notes "rds-backup-compliance $TAG. CloudShell: curl -fsSLO https://github.com/${{ github.repository }}/releases/latest/download/rds-backup-compliance.zip && unzip -oq rds-backup-compliance.zip && cd rds-backup-compliance"
+          fi
