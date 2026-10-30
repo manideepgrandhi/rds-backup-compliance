@@ -51,6 +51,7 @@ const sleep = ms => new Promise(x => setTimeout(x, ms));
       sec: Object.fromEntries([...document.querySelectorAll('#b-out h2')].map(h => [h.dataset.sec, +h.textContent.match(/\((\d+)\)/)[1]])),
       cols: [...document.querySelectorAll('#b-out table[data-sec="backup"] th')].map(t => t.textContent)}));
     let b12 = await bt(); ok(b12.vis, 'backups tab visible after click');
+    ok(await g.evaluate(() => document.getElementById('b-res').value !== '*all*'), 'single resource selected after link click');
     ok(b12.sec.manual === 3, 'manual 12m = 3 (' + b12.sec.manual + ')'); ok(b12.sec.automated === 7, 'automated = 7 (' + b12.sec.automated + ')');
     ok(b12.cols.includes('Created (IST)') && b12.cols.includes('Created (UTC)') && b12.cols.includes('Class'), 'backup cols UTC+IST+class');
     if (shots) await g.screenshot({path: path.join(shots, 'backups_tab_12m.png'), fullPage: true});
@@ -61,6 +62,34 @@ const sleep = ms => new Promise(x => setTimeout(x, ms));
     await g.click('#b-csv'); await sleep(200);
     const bc = await g.evaluate(() => window.__csv[window.__csv.length - 1]).then(t => t.replace(/^\ufeff/, '').trim().split('\r\n'));
     ok(bc.length === 1 + b3.sec.manual + b3.sec.automated + b3.sec.backup, 'backups csv rows = 3m view');
+    // "All clusters and instances" mode: manual snapshots only, with account/region/resource/type columns
+    const firstOpt = await g.evaluate(() => document.querySelector('#b-res option').value);
+    ok(firstOpt === '*all*', 'All option is first in resource dropdown');
+    const av = () => g.evaluate(() => ({sec: [...document.querySelectorAll('#b-out h2')].map(h => h.dataset.sec),
+      cols: [...document.querySelectorAll('#b-out table[data-sec="manual-all"] th')].map(t => t.textContent),
+      rows: [...document.querySelectorAll('#b-out table[data-sec="manual-all"] tbody tr')].map(t => [...t.children].map(c => c.textContent)),
+      filt: [...document.querySelectorAll('.ballf')].map(l => l.style.display !== 'none')}));
+    await sel('b-period', '12'); await sel('b-res', '*all*'); let a12 = await av();
+    ok(a12.sec.length === 1 && a12.sec[0] === 'manual-all', 'all mode shows only the manual section (' + a12.sec + ')');
+    ok(['Account', 'Region', 'Resource', 'Type', 'Snapshot', 'Created (UTC)', 'Created (IST)'].every(c => a12.cols.includes(c)), 'all mode columns');
+    ok(a12.rows.length >= 3 && a12.rows.some(r => r[2] === 'orders-aurora-pg15'), 'all mode lists manual snapshots of several resources (' + a12.rows.length + ')');
+    ok(new Set(a12.rows.map(r => r[2])).size > 1, 'all mode spans more than one resource');
+    ok(a12.filt.length === 3 && a12.filt.every(Boolean), 'account/region/engine filters visible in all mode');
+    await sel('b-period', '3'); let a3 = await av(); ok(a3.rows.length < a12.rows.length, 'all mode period 3m < 12m (' + a3.rows.length + ' < ' + a12.rows.length + ')');
+    await sel('b-period', '12');
+    const reg = a12.rows[0][1]; await sel('b-region', reg); let ar = await av();
+    ok(ar.rows.length > 0 && ar.rows.every(r => r[1] === reg) && ar.rows.length <= a12.rows.length, 'all mode region filter');
+    await g.click('#b-csv'); await sleep(200);
+    const ac = await g.evaluate(() => window.__csv[window.__csv.length - 1]).then(t => t.replace(/^\ufeff/, '').trim().split('\r\n'));
+    ok(/^account_id,region,identifier,type,kind,/.test(ac[0]) && ac.length === ar.rows.length + 1 && ac.slice(1).every(l => l.includes(',manual,')), 'all mode csv = filtered table (' + ac.length + ')');
+    await sel('b-region', ''); const accts = [...new Set(a12.rows.map(r => r[0]))];
+    await sel('b-acct', accts[0]); let aa = await av(); ok(aa.rows.every(r => r[0] === accts[0]), 'all mode account filter');
+    await sel('b-acct', '');
+    if (shots) await g.screenshot({path: path.join(shots, 'backups_all_manual.png'), fullPage: true});
+    await g.click('#b-out a.go'); await sleep(100); let back = await bt();
+    ok(['manual', 'automated', 'backup'].every(k => k in back.sec), 'resource link in all mode opens single view');
+    const hid = await g.evaluate(() => [...document.querySelectorAll('.ballf')].every(l => l.style.display === 'none'));
+    ok(hid, 'all-mode filters hidden in single view');
   }
   ok(errs.length === 0, 'no JS errors: ' + errs.join(' | ')); ok(net.length === 0, 'no network: ' + net.join(' '));
   await b.close();

@@ -5,7 +5,7 @@
 ## Install (CloudShell)
 
 ```bash
-curl -fsSLO https://github.com/<owner>/rds-backup-compliance/releases/latest/download/rds-backup-compliance.zip
+curl -fsSLO https://github.com/manideepgrandhi/rds-backup-compliance/releases/latest/download/rds-backup-compliance.zip
 unzip -oq rds-backup-compliance.zip && cd rds-backup-compliance
 ./rds_backup_compliance_report.sh -A -F html,csv --save-data -o ./out
 ```
@@ -67,6 +67,7 @@ The HTML report has two tabs:
 - **Backups tab:**
   - Pick a cluster or instance, and a period: last 3, 6 or 12 months.
   - Three sections: manual snapshots, RDS automated backups, and AWS Backup recovery points (with class, retention, expiry and vault).
+  - **All clusters and instances (manual snapshots)**, the first option in the resource list: one table of every resource's manual snapshots with account, region, resource and type columns. The period, plus Account, Region and Engine filters, narrow it, and Export CSV exports what is shown. Automated and AWS Backup sections are per resource and are hidden in this mode.
   - A CSV of what is shown.
 
 ### Several accounts
