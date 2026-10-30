@@ -7,14 +7,19 @@ on:
       tag:
         description: 'Existing tag to (re)build the release for, e.g. v1.0.0'
         required: true
+# least privilege: read-only by default, write only for the job that publishes
 permissions:
-  contents: write
+  contents: read
 jobs:
   zip:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      # pinned to a full commit SHA (tags are mutable); bump SHA and comment together
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
+          persist-credentials: false
           ref: ${{ github.event.inputs.tag || github.ref }}
       - name: Build rds-backup-compliance.zip (runtime files only)
         run: |
@@ -29,6 +34,9 @@ jobs:
           cd dist && zip -rqX rds-backup-compliance.zip rds-backup-compliance
           unzip -Z rds-backup-compliance.zip
           ! unzip -Z1 rds-backup-compliance.zip | grep -E '/(docs|samples|tests|\.github)/'
+          # checksum published next to the zip; README install verifies it with sha256sum -c
+          sha256sum rds-backup-compliance.zip > rds-backup-compliance.zip.sha256
+          sha256sum -c rds-backup-compliance.zip.sha256
           unzip -q rds-backup-compliance.zip -d check && ./check/rds-backup-compliance/rds_backup_compliance_report.sh --version
       - name: Publish release
         env:
@@ -36,7 +44,7 @@ jobs:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/rds-backup-compliance.zip --clobber
+            gh release upload "$TAG" dist/rds-backup-compliance.zip dist/rds-backup-compliance.zip.sha256 --clobber
           else
-            gh release create "$TAG" dist/rds-backup-compliance.zip --title "$TAG" --notes "rds-backup-compliance $TAG. CloudShell: curl -fsSLO https://github.com/${{ github.repository }}/releases/latest/download/rds-backup-compliance.zip && unzip -oq rds-backup-compliance.zip && cd rds-backup-compliance"
+            gh release create "$TAG" dist/rds-backup-compliance.zip dist/rds-backup-compliance.zip.sha256 --title "$TAG" --notes "rds-backup-compliance $TAG. CloudShell: curl -fsSLO https://github.com/${{ github.repository }}/releases/latest/download/rds-backup-compliance.zip && curl -fsSLO https://github.com/${{ github.repository }}/releases/latest/download/rds-backup-compliance.zip.sha256 && sha256sum -c rds-backup-compliance.zip.sha256 && unzip -oq rds-backup-compliance.zip && cd rds-backup-compliance"
           fi

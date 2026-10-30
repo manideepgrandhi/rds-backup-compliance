@@ -1,14 +1,16 @@
 # rds-backup-compliance
 
-`rds_backup_compliance_report.sh` v1.2.0 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
+`rds_backup_compliance_report.sh` v1.2.1 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
 
 ## Install (CloudShell)
 
 ```bash
-curl -fsSLO https://github.com/manideepgrandhi/rds-backup-compliance/releases/latest/download/rds-backup-compliance.zip
-unzip -oq rds-backup-compliance.zip && cd rds-backup-compliance
+curl -fsSLO https://github.com/manideepgrandhi/rds-backup-compliance/releases/latest/download/rds-backup-compliance.zip && curl -fsSLO https://github.com/manideepgrandhi/rds-backup-compliance/releases/latest/download/rds-backup-compliance.zip.sha256
+sha256sum -c rds-backup-compliance.zip.sha256 && unzip -oq rds-backup-compliance.zip && cd rds-backup-compliance
 ./rds_backup_compliance_report.sh -A -F html,csv --save-data -o ./out
 ```
+
+`sha256sum -c` must print `rds-backup-compliance.zip: OK`. If it reports `FAILED`, the `&&` chain stops before `unzip`; delete the zip and do not run it. Releases from v1.2.1 on publish `rds-backup-compliance.zip.sha256` next to the zip.
 
 ## Policy
 
@@ -149,6 +151,10 @@ tests/validate_cli.py            # checks that every field read exists in the bu
 ```
 
 ## Changelog
+
+- **1.2.1**
+  - Security fix: the Backups tab now HTML-escapes snapshot `kind`, `rd`, status and label values that come from the data file, so a tampered `--merge` file can no longer inject markup or script (stored XSS). The regression test renders a poisoned merge file in headless Chrome.
+  - Releases publish `rds-backup-compliance.zip.sha256`, and the install verifies it with `sha256sum -c` before unzipping. The release workflow pins `actions/checkout` to a commit SHA and is read-only except for the publish job.
 
 - **1.2.0**
   - Orphaned manual snapshots: snapshots whose source cluster/instance is gone from the account + region, with Shared and Unverified handling, summary and cost estimate (`--snapshot-price-per-gb`).

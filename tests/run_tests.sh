@@ -29,7 +29,7 @@ rowt() { jq -e --arg i "$2" ".rows[] | select(.identifier == \$i) | $3" "$OUT/$1
 ncalls() { wc -l <"$MOCK_LOG" 2>/dev/null | tr -d ' ' || echo 0; }
 
 echo "== CLI"
-t version 0 fleet --version; has version out '1\.2\.0'
+t version 0 fleet --version; has version out '1\.2\.1'
 t help 0 fleet --help; has help out 'list-recovery-points-by-backup-vault'; has help out 'weekly-days'
 t badopt 1 fleet --nope
 t multifmt 1 fleet -P prod -r us-east-1 -F csv,html
@@ -229,6 +229,19 @@ if command -v node >/dev/null && [[ -x "${CHROME:-/usr/bin/google-chrome}" ]] &&
         SHOTS="${SHOTS:+$SHOTS/merged}"
     done
 else echo "  skip browser check (node + puppeteer-core + Chrome not found)"; fi
+
+echo "== v1.2.1: tampered --merge file cannot inject HTML/JS (M2)"
+XP='"><img src=x data-xss=1 onerror="window.__xss=1">'
+XD="$OUT/xss in"; mkdir -p "$XD"
+jq --arg x "$XP" '.resources |= map(.snapshots |= map(.kind += $x))' "$M/prod.json" >"$XD/prod.json"
+chk "xss: tampered file really carries the payload" grep -q 'data-xss' "$XD/prod.json"
+t xss 0 fleet --merge "$XD/prod.json" -F html -o "$OUT/xss out"
+XH="$(ls "$OUT/xss out"/*.html 2>/dev/null | head -1)"
+chk "xss: report written" test -s "$XH"
+if command -v node >/dev/null 2>&1 && [[ -x "${CHROME:-/usr/bin/google-chrome}" ]] && NODE_PATH="${NODE_PATH:-}" node -e 'require("puppeteer-core")' 2>/dev/null; then
+    res="$(node "$HERE/xss_check.js" "$XH" 2>&1)"; rc=$?
+    chk "xss: headless Chrome, no payload executed or injected ${res:0:300}" test "$rc" -eq 0
+else echo "  skip xss browser check (node + puppeteer-core on NODE_PATH + Chrome not found)"; fi
 
 AFTER="$(cd "$HERE/.." && find . -path ./.git -prune -o -print | sort)"
 chk "nothing written into the repo" test "$BEFORE" == "$AFTER"
