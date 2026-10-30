@@ -1,6 +1,7 @@
 RDS backup compliance - account 111111111111
-Generated 2026-10-30 00:24 UTC / 2026-10-30 05:54 IST
+Generated 2026-10-30 00:54 UTC / 2026-10-30 06:24 IST
 Rule: daily >= 7 (RDS automated, last <= 26h), weekly >= 4, monthly >= 11, yearly >= 1 (AWS Backup); global secondaries daily only
+Orphaned manual snapshots: 4 orphaned snapshots, 1.8 TB, ~$38/month (estimate) at $0.021/GB-month - rough upper estimate, snapshot billing is incremental
 Resources 7: compliant 2, non-compliant 4, not yet due 1, unknown 0
 
 ACCOUNT	REGION	IDENTIFIER	TYPE	ROLE	DAILY	WEEKLY	MONTHLY	YEARLY	STATUS	GAPS

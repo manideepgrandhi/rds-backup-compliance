@@ -18,7 +18,7 @@ set -Eeuo pipefail
 umask 077
 
 readonly SCRIPT_NAME="${0##*/}"
-readonly SCRIPT_VERSION="1.1.0"
+readonly SCRIPT_VERSION="1.2.0"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_DIR
 LIBDIR="${RDS_BCR_LIB:-$SCRIPT_DIR/lib}"
@@ -29,7 +29,7 @@ if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) ))
 fi
 
 PROFILES=(); REGIONS=(); ALL_REGIONS=0; ENGINES=(); IDENTIFIERS=(); FORMATS=(); MERGE_ARGS=()
-OUTPUT_DIR=""; OUT_FILE=""; MANUAL_OLDER=""; PREFIX="rds_backup_compliance"; DISPLAY_TZ="Asia/Kolkata"
+OUTPUT_DIR=""; OUT_FILE=""; MANUAL_OLDER=""; SNAP_PRICE="0.021"; PREFIX="rds_backup_compliance"; DISPLAY_TZ="Asia/Kolkata"
 DAILY=7; DAILY_MAX_AGE_H=26; WEEKLY=4; MONTHLY=11; YEARLY=1
 WEEKLY_MIN_DAYS=11; WEEKLY_MAX_DAYS=60; MONTHLY_MAX_DAYS=400
 NC_ONLY=0; FAIL_ON_NC=0; LOG_FILE=""; CONFIG_FILE=""; AWS_TIMEOUT=30; MAX_ATTEMPTS=5
@@ -69,8 +69,9 @@ Compliance (defaults in brackets):
 
 Report:
   -F, --format LIST         text,csv,json,html (default: text; html with --merge). Several formats need -o.
-                            csv writes the compliance CSV and, with -o, also <name>_backups.csv
+                            csv writes the compliance CSV and, with -o, also <name>_backups.csv and <name>_orphaned_snapshots.csv
   -o, --output-dir DIR      Write <prefix>_<account>_YYYYmmdd_HHMMSS.<ext> into DIR. With --merge, -o FILE.html names the file
+      --snapshot-price-per-gb USD  Price per GB-month for the orphaned-snapshot cost estimate (default 0.021)
       --manual-older-than N Also write <name>_manual_older_than_<N>d.csv: manual snapshots older than N days, oldest first
       --save-data [FILE]    Also write the raw data for --merge: rds_backup_<ACCOUNT>_<YYYYMMDD>.json per account
       --prefix NAME         File name prefix (default: rds_backup_compliance)
@@ -90,8 +91,8 @@ Behaviour:
   -v, --verbose / -h, --help / -V, --version
 
 AWS calls (all read-only): sts get-caller-identity; ec2 describe-regions (-A); rds describe-db-clusters,
-describe-db-instances, describe-global-clusters (once per account), describe-db-cluster-snapshots,
-describe-db-snapshots; backup list-backup-vaults, list-recovery-points-by-backup-vault (gives the retention
+describe-db-instances, describe-global-clusters (once per account), describe-db-cluster-snapshots and
+describe-db-snapshots (--include-shared, every region, for orphaned snapshots); backup list-backup-vaults, list-recovery-points-by-backup-vault (gives the retention
 used to classify weekly / monthly / yearly; list-recovery-points-by-resource does not return it).
 USAGE
 }
@@ -119,6 +120,7 @@ set_opt() {   # set_opt key value  (shared by CLI and --config)
         max-attempts|max_attempts) int_ok --max-attempts "$v"; MAX_ATTEMPTS="$v" ;;
         non-compliant-only|non_compliant_only) is_true "$v" && NC_ONLY=1 ;; fail-on-noncompliant|fail_on_noncompliant) is_true "$v" && FAIL_ON_NC=1 ;;
         save-data|save_data) is_true "$v" && SAVE_DATA=1 ;;
+        snapshot-price-per-gb|snapshot_price_per_gb) [[ "$v" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die 1 "--snapshot-price-per-gb must be a number like 0.021 (got '$v')"; SNAP_PRICE="$v" ;;
         manual-older-than|manual_older_than) int_ok --manual-older-than "$v"; MANUAL_OLDER="$v" ;;
         *) return 1 ;;
     esac
@@ -157,7 +159,7 @@ parse_args() {
             --keep-workdir) KEEP_WORKDIR=1 ;; --dry-run) DRY_RUN=1 ;; -v|--verbose) VERBOSE=1 ;;
             --save-data) SAVE_DATA=1; if [[ $# -ge 2 && "$2" != -* ]]; then SAVE_DATA_FILE="$2"; shift; fi ;;
             --merge) MERGE=1; while [[ $# -ge 2 && "$2" != -* ]]; do MERGE_ARGS+=("$2"); shift; done ;;
-            --daily|--daily-max-age|--weekly|--monthly|--yearly|--weekly-days|--monthly-max-days|--prefix|--tz|--aws-timeout|--max-attempts|--manual-older-than)
+            --daily|--daily-max-age|--weekly|--monthly|--yearly|--weekly-days|--monthly-max-days|--prefix|--tz|--aws-timeout|--max-attempts|--manual-older-than|--snapshot-price-per-gb)
                 need_arg "$1" $#; set_opt "${1#--}" "$2"; shift ;;
             --*=*) set_opt "${1%%=*}" "${1#*=}" 2>/dev/null || die 1 "Unknown option: $1"; ;;
             *) die 1 "Unknown option: $1 (see --help)" ;;
@@ -191,8 +193,8 @@ tz_setup() {   # offset seconds + label of the second time zone (Git Bash date m
 cfg_json() {
     jq -cn --argjson d "$DAILY" --argjson h "$DAILY_MAX_AGE_H" --argjson w "$WEEKLY" --argjson m "$MONTHLY" --argjson y "$YEARLY" \
         --argjson wmin "$WEEKLY_MIN_DAYS" --argjson wmax "$WEEKLY_MAX_DAYS" --argjson mmax "$MONTHLY_MAX_DAYS" \
-        --argjson off "$TZ_OFFSET" --arg lab "$TZ_LABEL" --argjson mo "${MANUAL_OLDER:-null}" \
-        '{manual_older_than: $mo, daily: $d, daily_max_age_h: $h, weekly: $w, monthly: $m, yearly: $y, weekly_min_days: $wmin, weekly_max_days: $wmax,
+        --argjson off "$TZ_OFFSET" --arg lab "$TZ_LABEL" --argjson mo "${MANUAL_OLDER:-null}" --argjson sp "$SNAP_PRICE" \
+        '{manual_older_than: $mo, snapshot_price_per_gb: $sp, daily: $d, daily_max_age_h: $h, weekly: $w, monthly: $m, yearly: $y, weekly_min_days: $wmin, weekly_max_days: $wmax,
           monthly_max_days: $mmax, tz_offset: $off, tz_label: $lab}' | tr -d '\r'
 }
 
@@ -221,16 +223,13 @@ scan_region() {   # scan_region <profile> <account> <region> <dir>  -> <dir>/res
     nc="$(jqv '[.DBClusters[]? | select(.Engine | test("^(docdb|neptune)") | not)] | length' "$d/c.json")"
     ni="$(jqv '[.DBInstances[]? | select((.DBClusterIdentifier // "") == "" and (.Engine | test("^(docdb|neptune)") | not))] | length' "$d/i.json")"
     if (( DRY_RUN )); then nc=1; ni=1; fi
+    # snapshots: region-wide in every region (manual snapshots outlive their source; --include-shared adds shared ones)
+    awsc "$d/cs.json" "$prof" "$reg" rds describe-db-cluster-snapshots --include-shared || { csnap_ok=false; errs+=("describe-db-cluster-snapshots: $(err_of "$d/cs.json")"); echo '{}' >"$d/cs.json"; }
+    awsc "$d/is.json" "$prof" "$reg" rds describe-db-snapshots --include-shared || { isnap_ok=false; errs+=("describe-db-snapshots: $(err_of "$d/is.json")"); echo '{}' >"$d/is.json"; }
     if (( nc + ni > 0 )); then
-        if (( nc > 0 )); then
-            awsc "$d/cs.json" "$prof" "$reg" rds describe-db-cluster-snapshots || { csnap_ok=false; errs+=("describe-db-cluster-snapshots: $(err_of "$d/cs.json")"); echo '{}' >"$d/cs.json"; }
-            if (( ! GLOBAL_DONE )); then GLOBAL_DONE=1
-                if awsc "$WORK/$acct.globals.json" "$prof" "$reg" rds describe-global-clusters; then GLOBAL_OK=true
-                else GLOBAL_OK=false; errs+=("describe-global-clusters: $(err_of "$WORK/$acct.globals.json")"); echo '{}' >"$WORK/$acct.globals.json"; fi
-            fi
-        fi
-        if (( ni > 0 )); then
-            awsc "$d/is.json" "$prof" "$reg" rds describe-db-snapshots || { isnap_ok=false; errs+=("describe-db-snapshots: $(err_of "$d/is.json")"); echo '{}' >"$d/is.json"; }
+        if (( nc > 0 && ! GLOBAL_DONE )); then GLOBAL_DONE=1
+            if awsc "$WORK/$acct.globals.json" "$prof" "$reg" rds describe-global-clusters; then GLOBAL_OK=true
+            else GLOBAL_OK=false; errs+=("describe-global-clusters: $(err_of "$WORK/$acct.globals.json")"); echo '{}' >"$WORK/$acct.globals.json"; fi
         fi
         if awsc "$d/v.json" "$prof" "$reg" backup list-backup-vaults; then
             local v k=0
@@ -245,7 +244,8 @@ scan_region() {   # scan_region <profile> <account> <region> <dir>  -> <dir>/res
     [[ -s "$WORK/$acct.globals.json" ]] || echo '{}' >"$WORK/$acct.globals.json"   # (re)fetched only once: GLOBAL_DONE
     jqv -n --arg acct "$acct" --arg region "$reg" --slurpfile clusters "$d/c.json" --slurpfile instances "$d/i.json" \
         --slurpfile csnaps "$d/cs.json" --slurpfile isnaps "$d/is.json" --slurpfile rps "$d/rp.json" --slurpfile globals "$WORK/$acct.globals.json" \
-        --argjson csnap_ok "$csnap_ok" --argjson isnap_ok "$isnap_ok" --argjson backup_ok "$backup_ok" --argjson global_ok "${GLOBAL_OK:-true}" -f "$LIBDIR/collect.jq" >"$d/all.json"
+        --argjson csnap_ok "$csnap_ok" --argjson isnap_ok "$isnap_ok" --argjson backup_ok "$backup_ok" --argjson global_ok "${GLOBAL_OK:-true}" -f "$LIBDIR/collect.jq" >"$d/coll.json"
+    jqv '.resources' "$d/coll.json" >"$d/all.json"
     # engine / identifier filters
     local keep='[]' id en
     local -a ks=()
@@ -255,11 +255,17 @@ scan_region() {   # scan_region <profile> <account> <region> <dir>  -> <dir>/res
     done < <(jqv -r '.[] | [.id, .engine] | @tsv' "$d/all.json")
     keep="$(json_array "${ks[@]}")"
     jqv --argjson k "$keep" '[ .[] | select(.id as $i | $k | index([$i])) ]' "$d/all.json" >"$d/resources.json"
-    local n status; n="$(jqv length "$d/resources.json")"
-    if (( ${#errs[@]} )); then status=error; elif (( n > 0 )); then status="with databases"; else status=empty; fi
+    local -a ko=(); local k=0   # same filters on orphan candidates (source identifier + engine)
+    while IFS=$'\t' read -r id en; do
+        glob_match "$id" "${IDENTIFIERS[@]}" && glob_match "$en" "${ENGINES[@]}" && ko+=("$k"); k=$((k + 1))
+    done < <(jqv -r '.orphans[] | [(.source_id // ""), (.engine // "")] | @tsv' "$d/coll.json")
+    jqv --argjson k "$(json_array "${ko[@]}")" '[ .orphans | to_entries[] | select(.key | tostring as $x | $k | index([$x])) | .value ]' "$d/coll.json" >"$d/orphans.json"
+    local n no status; n="$(jqv length "$d/resources.json")"; no="$(jqv length "$d/orphans.json")"
+    if (( ${#errs[@]} )); then status=error; elif (( n > 0 )); then status="with databases"; elif (( no > 0 )); then status="snapshots only"; else status=empty; fi
     for e in "${errs[@]}"; do log_warn "$acct $reg: $e"; done
     jqv -n --arg a "$acct" --arg r "$reg" --arg s "$status" --argjson n "$n" --argjson e "$(json_array "${errs[@]}")" \
-        '{account: $a, region: $r, status: $s, resources: $n, errors: $e}' >"$d/region.json"
+        --argjson snapok "$( [[ $csnap_ok == true && $isnap_ok == true ]] && echo true || echo false)" --slurpfile c "$d/coll.json" \
+        '{account: $a, region: $r, status: $s, resources: $n, errors: $e, snapshot_scan: $snapok, existing: $c[0].existing}' >"$d/region.json"
 }
 
 scan_profile() {   # scan_profile <profile>  -> $WORK/data_<account>.json
@@ -294,8 +300,9 @@ scan_profile() {   # scan_profile <profile>  -> $WORK/data_<account>.json
     jqv -n --arg s "$DATA_SCHEMA" --argjson v "$DATA_SCHEMA_VERSION" --arg tool "$SCRIPT_VERSION" --arg a "$acct" --arg p "${prof:-default}" --argjson now "$NOW" \
         '{schema: $s, schema_version: $v, tool_version: $tool, collected_epoch: $now, collected_at: ($now | todate),
           accounts: [{account: $a, profile: $p, collected_epoch: $now}],
-          regions: [ inputs | select(type == "object") ], resources: []}' "$WORK/$acct"/*/region.json >"$WORK/hdr_$acct.json"
-    jqv -s '.[0] + {resources: [ .[1:][][] | del(.arn) ]}' "$WORK/hdr_$acct.json" "$WORK/$acct"/*/resources.json >"$WORK/data_$acct.json"
+          regions: [ inputs | select(type == "object") ], resources: [], orphans: []}' "$WORK/$acct"/*/region.json >"$WORK/hdr_$acct.json"
+    jqv -s '.[0] + {resources: [ .[1:][][] | del(.arn) ]}' "$WORK/hdr_$acct.json" "$WORK/$acct"/*/resources.json >"$WORK/res_$acct.json"
+    jqv -s '.[0] + {orphans: [ .[1:][][] ]}' "$WORK/res_$acct.json" "$WORK/$acct"/*/orphans.json >"$WORK/data_$acct.json"
     DATA_FILES+=("$WORK/data_$acct.json")
 }
 
@@ -345,7 +352,7 @@ main() {
         (( DRY_RUN )) && exit 0
         (( ok )) || die 2 "No profile could be scanned"
         jqv -s --arg s "$DATA_SCHEMA" --argjson v "$DATA_SCHEMA_VERSION" --argjson now "$NOW" \
-            '{schema: $s, schema_version: $v, collected_epoch: $now, accounts: [.[].accounts[]], regions: [.[].regions[]], resources: [.[].resources[]]}' \
+            '{schema: $s, schema_version: $v, collected_epoch: $now, accounts: [.[].accounts[]], regions: [.[].regions[]], resources: [.[].resources[]], orphans: [.[].orphans[]]}' \
             "${DATA_FILES[@]}" >"$WORK/data.json"
         log_info "AWS calls: $AWS_CALLS ($AWS_FAILS failed)"
         if (( SAVE_DATA )); then
@@ -373,7 +380,8 @@ main() {
             base="$OUTPUT_DIR/${PREFIX}_${tag}_${STAMP}"
             if [[ -n "$OUT_FILE" ]]; then write_out "$OUT_FILE" render html "$data"; continue; fi
             write_out "$base.$ext" render "$f" "$data"
-            [[ "$f" == csv ]] && write_out "${base}_backups.csv" render bcsv "$data"
+            if [[ "$f" == csv ]]; then write_out "${base}_backups.csv" render bcsv "$data"
+                write_out "${base}_orphaned_snapshots.csv" render ocsv "$WORK/data.json"; fi
         else render "$f" "$data" || die 4 "render failed"; fi
     done
     if [[ -n "$MANUAL_OLDER" ]]; then   # manual-snapshot audit (all resources, ignores --non-compliant-only)
@@ -383,6 +391,7 @@ main() {
     for f in "${WRITTEN[@]}"; do log_info "wrote $f"; done
     local nc; nc="$(render rows "$WORK/data.json" | jqv '[.[] | select(.status == "NON-COMPLIANT")] | length')"
     log_info "resources: $(jqv '.resources | length' "$WORK/data.json"), non-compliant: $nc"
+    log_info "$(render osum "$WORK/data.json")"
     if (( FAIL_ON_NC && nc > 0 )); then exit 5; fi
     exit 0
 }

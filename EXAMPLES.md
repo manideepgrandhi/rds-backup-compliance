@@ -27,6 +27,10 @@
 ./rds_backup_compliance_report.sh --merge ./saved -F html -o ./out --manual-older-than 180
 # In the HTML: Backups tab -> "Old manual snapshots (> 90 days)", or pick Backup type and Age yourself
 
+# Orphaned manual snapshots (source cluster/instance deleted), with a custom $/GB-month
+./rds_backup_compliance_report.sh -A -F html,csv -o ./out --snapshot-price-per-gb 0.019
+# -> *_orphaned_snapshots.csv; in the HTML: Backups tab -> "Orphaned snapshots"
+
 # Offline merge (Git Bash on Windows works too)
 ./rds_backup_compliance_report.sh --merge rds_backup_111111111111_20261030.json rds_backup_222222222222_20261030.json -o all.html
 ./rds_backup_compliance_report.sh --merge "./saved data/" -F csv -o ./merged

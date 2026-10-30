@@ -15,13 +15,16 @@ CHECKS = [
  ("rds","DescribeDBInstances",["DBInstances"],"DBInstanceIdentifier DBInstanceArn Engine EngineVersion InstanceCreateTime BackupRetentionPeriod DBClusterIdentifier ReadReplicaSourceDBInstanceIdentifier"),
  ("rds","DescribeGlobalClusters",["GlobalClusters"],"GlobalClusterIdentifier GlobalClusterMembers"),
  ("rds","DescribeGlobalClusters",["GlobalClusters","GlobalClusterMembers"],"DBClusterArn IsWriter"),
- ("rds","DescribeDBClusterSnapshots",["DBClusterSnapshots"],"DBClusterIdentifier DBClusterSnapshotIdentifier SnapshotType SnapshotCreateTime Status AllocatedStorage"),
- ("rds","DescribeDBSnapshots",["DBSnapshots"],"DBInstanceIdentifier DBSnapshotIdentifier SnapshotType SnapshotCreateTime Status AllocatedStorage"),
+ ("rds","DescribeDBClusterSnapshots",["DBClusterSnapshots"],"DBClusterIdentifier DBClusterSnapshotIdentifier SnapshotType SnapshotCreateTime Status AllocatedStorage DBClusterSnapshotArn SourceDBClusterSnapshotArn Engine EngineVersion StorageEncrypted KmsKeyId"),
+ ("rds","DescribeDBSnapshots",["DBSnapshots"],"DBInstanceIdentifier DBSnapshotIdentifier SnapshotType SnapshotCreateTime Status AllocatedStorage DBSnapshotArn SourceDBSnapshotIdentifier SourceRegion Engine EngineVersion Encrypted KmsKeyId"),
  ("backup","ListBackupVaults",["BackupVaultList"],"BackupVaultName"),
  ("backup","ListRecoveryPointsByBackupVault",["RecoveryPoints"],"RecoveryPointArn ResourceArn ResourceType CreationDate Status BackupSizeInBytes CalculatedLifecycle BackupVaultName"),
  ("backup","ListRecoveryPointsByBackupVault",["RecoveryPoints","CalculatedLifecycle"],"DeleteAt"),
 ]
 fail = 0
+for op in ("DescribeDBClusterSnapshots", "DescribeDBSnapshots"):   # --include-shared
+    m = model("rds"); inp = m["shapes"][m["operations"][op]["input"]["shape"]]["members"]
+    if "IncludeShared" not in inp: print(f"MISSING rds {op} input IncludeShared"); fail += 1
 for svc, op, path, fields in CHECKS:
     m = model(svc); sh = m["shapes"]; s = sh[m["operations"][op]["output"]["shape"]]
     for p in path:

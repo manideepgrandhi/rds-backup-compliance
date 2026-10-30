@@ -1,6 +1,6 @@
 # rds-backup-compliance
 
-`rds_backup_compliance_report.sh` v1.1.0 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
+`rds_backup_compliance_report.sh` v1.2.0 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
 
 ## Install (CloudShell)
 
@@ -78,6 +78,24 @@ The HTML report has two tabs:
 
 `--manual-older-than N` also writes `<prefix>_<account>_<stamp>_manual_older_than_<N>d.csv`. It lists every manual snapshot older than N days, oldest first, with account, region, identifier, type, engine, snapshot, created (UTC and IST), age_days, status and size_gb. It works for live scans and with `--merge`, and is written to `-o DIR` (or the current directory).
 
+### Orphaned manual snapshots
+
+A manual snapshot is **orphaned** when its source cluster or instance no longer exists in the same account and region. Each region's manual snapshots are read in full (with `--include-shared`), including regions that have no databases left; such regions show as `snapshots only`. With `--merge`, matching is still per account and region.
+
+| Source status | Meaning |
+|---|---|
+| Existing | The source cluster/instance exists (a cross-region copy whose source exists in its scanned source region also counts) |
+| Orphaned | The source is gone: counted in the summary and cost estimate |
+| Shared | Shared with this account, or copied from another account: listed, never counted |
+| Unverified | A cross-region copy whose source region was not scanned (use `-A` or add that region) |
+
+AWS Backup recovery points, automated snapshots, `awsbackup:` snapshots and DocumentDB/Neptune snapshots are not part of the orphan logic.
+
+- **Summary**, in the Compliance header and the Backups tab: e.g. `4 orphaned snapshots, 1.8 TB, ~$38/month (estimate)`. The estimate is size GB × `--snapshot-price-per-gb` (default 0.021, or `snapshot_price_per_gb` in the config file). It is a **rough upper estimate**: snapshot storage is billed incrementally, so the real cost is usually lower.
+- **Backups tab, All clusters and instances:** a Source status filter (All, Existing, Orphaned, Shared, Unverified when present), Source and Est. $/month columns, an **Orphaned snapshots** button, and `(deleted) <id>` entries in the Resource dropdown.
+- **CSV:** with `csv` in `-F`, `<prefix>_<account>_<stamp>_orphaned_snapshots.csv` (oldest first: account_id, region, snapshot_id, type, source_id, engine, engine_version, created_utc, created_ist, age_days, size_gb, est_monthly_usd, encrypted, kms_key), for live scans and `--merge`. `_backups.csv` and the in-page export gain a `source_status` column.
+- Data saved by v1.0.0 and v1.1.0 still merges; those accounts simply have no orphan data.
+
 ### Several accounts
 
 ```bash
@@ -119,7 +137,9 @@ Compliance is re-evaluated at merge time, so threshold options also work with `-
 - **Daily backups are counted from automated snapshots.** RDS keeps one automated snapshot per day, and continuous backup/PITR between snapshots is not inspected.
 - **Unknown global roles get the full checks.** If `describe-global-clusters` is denied, roles show as `unknown` and the full checks are applied.
 - **Weekly grouping does not match ISO weeks at year boundaries.** Weeks start on Monday and are counted from the Unix epoch, so they are not ISO week numbers. This keeps the tool portable to jq.exe.
-- **`-A` calls every enabled region.**
+- **`-A` calls every enabled region.** Both snapshot calls now run in every scanned region, even ones without databases (2 extra calls per empty region).
+- **The orphan cost is an upper estimate.** It uses the snapshot's allocated size, not the incremental billed bytes.
+- **Orphans are matched by identifier within one account and region.** If a new resource reuses the old name, its old snapshots count as Existing. A cross-region copy is Unverified unless its source region was scanned.
 
 ## Tests
 
@@ -129,6 +149,11 @@ tests/validate_cli.py            # checks that every field read exists in the bu
 ```
 
 ## Changelog
+
+- **1.2.0**
+  - Orphaned manual snapshots: snapshots whose source cluster/instance is gone from the account + region, with Shared and Unverified handling, summary and cost estimate (`--snapshot-price-per-gb`).
+  - Backups tab: Source status filter, Orphaned snapshots button, `(deleted) <id>` resources, Source and Est. $/month columns.
+  - `_orphaned_snapshots.csv`; `source_status` column in `_backups.csv` and the in-page export.
 
 - **1.1.0**
   - Backups tab: Backup type filter (All, Manual, Automated, AWS Backup) and an Age filter (last 3/6/12 months, older than 30/90/180/365 days, any age).

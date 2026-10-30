@@ -7,4 +7,5 @@
     accounts: [ $KEEP[] | del(.i) ],
     replaced: [ $ALL[] | . as $x | select(kept($x.account; $x.i) | not) | {account, collected_epoch} ],
     regions: [ .[] | .i as $i | .d.regions[] | select(kept(.account; $i)) ],
-    resources: [ .[] | .i as $i | .d.resources[] | select(kept(.account_id; $i)) ] }
+    resources: [ .[] | .i as $i | .d.resources[] | select(kept(.account_id; $i)) ],
+    orphans: [ .[] | .i as $i | (.d.orphans // [])[] | select(kept(.account_id; $i)) ] }   # absent in v1.0 / v1.1 files

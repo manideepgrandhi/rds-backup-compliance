@@ -29,7 +29,7 @@ rowt() { jq -e --arg i "$2" ".rows[] | select(.identifier == \$i) | $3" "$OUT/$1
 ncalls() { wc -l <"$MOCK_LOG" 2>/dev/null | tr -d ' ' || echo 0; }
 
 echo "== CLI"
-t version 0 fleet --version; has version out '1\.1\.0'
+t version 0 fleet --version; has version out '1\.2\.0'
 t help 0 fleet --help; has help out 'list-recovery-points-by-backup-vault'; has help out 'weekly-days'
 t badopt 1 fleet --nope
 t multifmt 1 fleet -P prod -r us-east-1 -F csv,html
@@ -73,7 +73,10 @@ chk "backups csv" compgen -G "$OUT/o/rds_backup_compliance_111111111111_*_backup
 SD="$(ls "$OUT"/o/rds_backup_111111111111_*.json 2>/dev/null | head -1)"
 chk "save-data rds_backup_<acct>_<date>.json" test -s "$SD"
 jqt savedata '.schema == "rds_backup_compliance_data" and .schema_version == 1 and .accounts[0].account == "111111111111"' "$SD"
-jqt savedata '[.regions[] | select(.status == "empty")] | length == 3' "$SD"
+jqt savedata '[.regions[] | select(.status == "empty")] | length == 2' "$SD"
+jqt savedata '[.regions[] | select(.status == "snapshots only") | .region] == ["ca-central-1"]' "$SD"
+jqt savedata '[.orphans[] | .id] | sort == ["analytics-aurora-final", "crm-mysql-before-delete", "eu-app-copy", "orders-aurora-pg15-dr-copy", "reports-pg-west", "retired-oracle-final", "vendor-copy", "vendor-share-1"]' "$SD"
+jqt savedata '[.orphans[] | select(.id == "analytics-aurora-final")][0] | .source_id == "analytics-aurora" and .engine == "aurora-postgresql" and .engine_version == "14.9" and .size_gb == 500 and .encrypted and (.kms_key | test("^arn:aws:kms:"))' "$SD"
 jqt savedata '[.resources[] | has("arn")] | any | not' "$SD"
 CSV="$(ls "$OUT"/o/rds_backup_compliance_111111111111_*[0-9].csv | head -1)"; BCSV="$(ls "$OUT"/o/*_backups.csv | head -1)"
 HTML="$(ls "$OUT"/o/*.html | head -1)"; JSON="$(ls "$OUT"/o/rds_backup_compliance_*.json | head -1)"
@@ -82,14 +85,34 @@ chk "csv has 7 rows + header" test "$(wc -l <"$CSV")" -eq 8
 chk "csv has every status" bash -c "grep -q '\"COMPLIANT\"' '$CSV' && grep -q '\"NON-COMPLIANT\"' '$CSV' && grep -q '\"NOT YET DUE\"' '$CSV'"
 chk "backups csv has manual, automated, backup kinds" bash -c "grep -q ',\"manual\",' '$BCSV' && grep -q ',\"automated\",' '$BCSV' && grep -q ',\"backup\",' '$BCSV'"
 chk "backups csv has IST column and classes" bash -c "head -1 '$BCSV' | grep -q created_ist && grep -q '\"weekly\"' '$BCSV' && grep -q '\"yearly\"' '$BCSV' && grep -q '\"short\"' '$BCSV'"
-chk "backups csv header = in-page export order" bash -c "head -1 '$BCSV' | tr -d '\"\r' | grep -qx 'account_id,region,identifier,type,kind,snapshot_or_recovery_point,created_utc,created_ist,age_days,status,size_gb,rule,retention_days,expires_utc,vault'"
+chk "backups csv header = in-page export order" bash -c "head -1 '$BCSV' | tr -d '\"\r' | grep -qx 'account_id,region,identifier,type,kind,snapshot_or_recovery_point,created_utc,created_ist,age_days,status,size_gb,rule,retention_days,expires_utc,vault,source_status'"
 chk "backups csv: automated rule daily, manual rule empty, age_days numeric" bash -c "grep ',\"automated\",' '$BCSV' | head -1 | grep -q ',\"daily\",' && grep ',\"manual\",' '$BCSV' | head -1 | grep -qE ',\"[0-9]+\",\"available\",\"100\",\"\",\"\",'"
 chk "backups csv: no EC2 recovery point" bash -c "! grep -q ami-0abc '$BCSV'"
-chk "html: no empty region (ca-central-1, ap-south-1)" bash -c "! grep -qE 'ca-central-1|ap-south-1' '$HTML'"
+chk "html: no empty region (ap-south-1)" bash -c "! grep -qE 'ap-south-1' '$HTML'"
 chk "html: no region names above the tabs" bash -c "! sed -n '1,/class=\"tabs\"/p' '$HTML' | grep -qE '(us|eu|ap|ca)-[a-z]+-[0-9]'"
 chk "html: account in title" grep -q '<title>RDS backup compliance - 111111111111</title>' "$HTML"
 chk "html: no </script> breakout in data" bash -c "test \"\$(grep -c '</script>' '$HTML')\" -eq 2"
-jqt filesjson '.regions | map(.region) == ["us-east-1", "us-west-2"]' "$JSON"
+jqt filesjson '.regions | map(.region) == ["ca-central-1", "us-east-1", "us-west-2"]' "$JSON"
+# orphaned manual snapshots
+OCSV="$(ls "$OUT"/o/*_orphaned_snapshots.csv 2>/dev/null | head -1)"
+chk "orphaned csv written with csv format" test -s "$OCSV"
+chk "orphaned csv header" bash -c "head -1 '$OCSV' | tr -d '\"\r' | grep -qx 'account_id,region,snapshot_id,type,source_id,engine,engine_version,created_utc,created_ist,age_days,size_gb,est_monthly_usd,encrypted,kms_key'"
+chk "orphaned csv: 4 orphans, oldest first" bash -c "tail -n +2 '$OCSV' | cut -d, -f3 | tr -d '\"' | paste -sd' ' | grep -qx 'retired-oracle-final analytics-aurora-final crm-mysql-before-delete reports-pg-west'"
+chk "orphaned csv: same-name source in another region is orphaned" bash -c "grep -q '\"us-west-2\",\"reports-pg-west\",\"instance\",\"reports-pg\"' '$OCSV'"
+chk "orphaned csv: deleted source row has size, estimate, kms" bash -c "grep -q '\"analytics-aurora-final\",\"cluster\",\"analytics-aurora\",\"aurora-postgresql\",\"14.9\",.*\"500\",\"10.5\",\"true\",\"arn:aws:kms:' '$OCSV'"
+chk "orphaned csv: no shared / copy / awsbackup / automated / docdb" bash -c "! grep -qE 'vendor|eu-app|dr-copy|gone-db|docs-final' '$OCSV'"
+jqt filesjson '.orphan_totals.summary == "4 orphaned snapshots, 1.8 TB, ~$38/month (estimate)" and .orphan_totals.shared == 2 and .orphan_totals.unverified == 1' "$JSON"
+jqt filesjson '[.orphaned_snapshots[] | {key: .id, value: .source_status}] | from_entries | .["vendor-share-1"] == "SHARED" and .["vendor-copy"] == "SHARED" and .["orders-aurora-pg15-dr-copy"] == "EXISTING" and .["eu-app-copy"] == "UNVERIFIED" and .["analytics-aurora-final"] == "ORPHANED"' "$JSON"
+chk "backups csv: orphaned flag rows" bash -c "grep -q '\"crm-mysql\",\"instance\",\"manual\",\"crm-mysql-before-delete\",.*\"ORPHANED\"$' '$BCSV' && grep -q '\"vendor-share-1\",.*\"SHARED\"$' '$BCSV'"
+chk "describe-db-*-snapshots called with --include-shared" bash -c "grep 'describe-db-snapshots' '$MOCK_LOG' | tail -1 | grep -q include-shared"
+chk "snapshots read in a region without databases (ca-central-1)" bash -c "grep 'describe-db-cluster-snapshots' '$MOCK_LOG' | grep -q ca-central-1"
+has files err '4 orphaned snapshots, 1.8 TB, ~\$38/month \(estimate\)'
+t price 0 fleet -P prod -r us-east-1 -F json --snapshot-price-per-gb 0.05
+jqt price '[.orphaned_snapshots[] | select(.id == "analytics-aurora-final")][0].est_monthly_usd == 25 and .orphan_totals.price_per_gb_month == 0.05' "$OUT/price.out"
+t pricebad 1 fleet -P prod -r us-east-1 --snapshot-price-per-gb cheap
+printf 'snapshot_price_per_gb = 0.1\r\nregion=us-east-1\r\nformat=json\r\n' >"$OUT/price conf.conf"
+t priceconf 0 fleet -P prod --config "$OUT/price conf.conf"
+jqt priceconf '.orphan_totals.est_monthly_usd == 70' "$OUT/priceconf.out"
 
 echo "== scenarios"
 t bdeny 0 backupdeny -P prod -r us-east-1,us-west-2 -F json
@@ -113,6 +136,7 @@ t failok 0 fleet -P nonprod -r ap-south-1 -i hr-* --fail-on-noncompliant
 t nconly 0 fleet -P prod -r us-east-1 -F json --non-compliant-only
 jqt nconly '[.rows[].status] | unique == ["NON-COMPLIANT"]' "$OUT/nconly.out"
 t eng 0 fleet -P prod -r us-east-1 -e 'aurora-*' -F json
+jqt eng '[.orphaned_snapshots[] | .source_id] == ["analytics-aurora"]' "$OUT/eng.out"
 jqt eng '[.rows[].engine] | all(startswith("aurora-"))' "$OUT/eng.out"
 t ident 0 fleet -P prod -r us-east-1 -i 'REPORTS-*' -F json
 jqt ident '[.rows[].identifier] == ["reports-pg"]' "$OUT/ident.out"
@@ -143,6 +167,9 @@ t merge 0 fleet --merge "$M/prod.json" "$M/nonprod.json" "$M/dev.json" "$OUT/pro
 chk "merge made zero AWS calls" test "$(ncalls)" == "$n0"
 jqt merge '[.accounts[].account] | sort == ["111111111111", "222222222222", "333333333333"]' "$OUT/merge.out"
 jqt merge '.rows | length == 10' "$OUT/merge.out"
+jqt merge '.orphan_totals.orphaned == 5 and .orphan_totals.summary == "5 orphaned snapshots, 1.6 TB, ~$34/month (estimate)"' "$OUT/merge.out"
+jqt merge '[.orphaned_snapshots[] | select(.source_status == "ORPHANED") | .account_id] | unique == ["111111111111", "222222222222", "333333333333"]' "$OUT/merge.out"
+jqt merge '[.orphaned_snapshots[] | select(.id == "orders-aurora-pg15-dr-copy")][0].source_status == "EXISTING"' "$OUT/merge.out"
 has merge err 'account 111111111111: an older collection was ignored'
 rowt merge payroll-sqlserver '.status == "NON-COMPLIANT" and .gaps == "monthly 9/11"'
 t mergeold 0 fleet --merge "$OUT/prod_old.json" "$M/nonprod.json" -F json
@@ -153,11 +180,12 @@ t mold 0 fleet -P prod -r us-east-1 -F json -o "$OUT/mo" --manual-older-than 90
 MO="$(ls "$OUT"/mo/*_manual_older_than_90d.csv 2>/dev/null | head -1)"
 chk "manual-older-than: csv written" test -s "$MO"
 chk "manual-older-than: header" bash -c "head -1 '$MO' | grep -q '^\"\?account_id\"\?,\"\?region\"\?,\"\?identifier\"\?,.*age_days'"
-chk "manual-older-than: only >90d manual (5 in prod us-east-1)" test "$(tail -n +2 "$MO" | grep -c .)" == 5
+chk "manual-older-than: >90d manual incl. orphaned (5 + 2 in prod us-east-1)" test "$(tail -n +2 "$MO" | grep -c .)" == 7
+chk "manual-older-than: orphaned rows flagged" bash -c "grep -q 'analytics-aurora-final.*\"ORPHANED\"' '$MO'"
 chk "manual-older-than: oldest first, >12 months kept" bash -c "sed -n 2p '$MO' | grep -q 'legacy-mysql-manual-600d'"
 t moldbad 1 fleet -P prod -r us-east-1 --manual-older-than abc
 t moldmerge 0 fleet --merge "$M" -F json -o "$OUT/mo2" --manual-older-than 365
-chk "manual-older-than on merge: >365d across accounts" bash -c "tail -n +2 \"$OUT\"/mo2/*_manual_older_than_365d.csv | cut -d, -f3 | sort -u | tr -d '\"' | paste -sd' ' | grep -qx 'legacy-mysql orders-aurora-pg15 payroll-sqlserver'"
+chk "manual-older-than on merge: >365d across accounts" bash -c "tail -n +2 \"$OUT\"/mo2/*_manual_older_than_365d.csv | cut -d, -f3 | sort -u | tr -d '\"' | paste -sd' ' | grep -qx 'analytics-aurora legacy-mysql orders-aurora-pg15 payroll-sqlserver'"
 if git -C "$HERE/.." cat-file -e 602abe2 2>/dev/null; then
     V1="$OUT/v100"; mkdir -p "$V1/lib"
     for f in rds_backup_compliance_report.sh lib/collect.jq lib/backup.jq lib/merge.jq lib/backup_page.js; do git -C "$HERE/.." show "602abe2:$f" >"$V1/$f"; done
@@ -165,11 +193,22 @@ if git -C "$HERE/.." cat-file -e 602abe2 2>/dev/null; then
     MOCK_SCENARIO=fleet "$V1/rds_backup_compliance_report.sh" -P dev -r eu-west-1 --save-data "$OUT/v100_dev.json" -F json >/dev/null 2>&1
     t mergev100 0 fleet --merge "$OUT/v100_dev.json" "$M/prod.json" -F json
     jqt mergev100 '[.accounts[].account] | sort == ["111111111111", "333333333333"]' "$OUT/mergev100.out"
+    jqt mergev100 '.orphan_totals.orphaned == 3' "$OUT/mergev100.out"
+fi
+if git -C "$HERE/.." cat-file -e 61a6cd9 2>/dev/null; then   # v1.1.0 save-data (no orphans) still merges
+    V11="$OUT/v110"; mkdir -p "$V11/lib"
+    for f in rds_backup_compliance_report.sh lib/collect.jq lib/backup.jq lib/merge.jq lib/backup_page.js; do git -C "$HERE/.." show "61a6cd9:$f" >"$V11/$f"; done
+    chmod +x "$V11/rds_backup_compliance_report.sh"
+    MOCK_SCENARIO=fleet "$V11/rds_backup_compliance_report.sh" -P nonprod -r ap-south-1 --save-data "$OUT/v110_nonprod.json" -F json >/dev/null 2>&1
+    jqt v110file 'has("orphans") | not' "$OUT/v110_nonprod.json"
+    t mergev110 0 fleet --merge "$OUT/v110_nonprod.json" "$M/dev.json" -F csv,html -o "$OUT/m110"
+    chk "v1.1.0 merge: html + orphaned csv (dev only)" bash -c "compgen -G '$OUT/m110/*.html' >/dev/null && test \"\$(tail -n +2 $OUT/m110/*_orphaned_snapshots.csv | cut -d, -f3 | tr -d '\"')\" == dev-scratch-final"
 fi
 t mergedir 0 fleet --merge "$M" -o "$OUT/all accounts.html"
 chk "merge -o FILE.html written" test -s "$OUT/all accounts.html"
 chk "merged html lists 3 accounts in title" grep -q '<title>RDS backup compliance - 111111111111, 222222222222, 333333333333</title>' "$OUT/all accounts.html"
 t mergecsv 0 fleet --merge "$M" -F csv,html -o "$OUT/mc"
+chk "merged orphaned csv: 5 rows" test "$(tail -n +2 "$OUT"/mc/*_orphaned_snapshots.csv | grep -c .)" == 5
 chk "merged csv name has all accounts" compgen -G "$OUT/mc/rds_backup_compliance_111111111111_222222222222_333333333333_*.csv" >/dev/null
 echo '{"x":1}' >"$OUT/notdata.json"; t mergebad 3 fleet --merge "$OUT/notdata.json"
 t mergemissing 3 fleet --merge "$OUT/nope.json"

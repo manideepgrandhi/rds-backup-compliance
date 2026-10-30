@@ -74,6 +74,62 @@ FLEET = {
 }
 rows = [] if SCEN == "empty" else [r for r in FLEET[acct] if r[0] == region]
 
+# snapshots whose source is not a current cluster / instance of this account + region (region-wide describe-db-*-snapshots)
+# (type, snapshot id, source id, engine, version, age_days, size_gb, kms, extra fields)
+KMS = "arn:aws:kms:%s:%s:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+ORPHANS = {
+    ("111111111111", "us-east-1"): [
+        ("cluster", "analytics-aurora-final", "analytics-aurora", "aurora-postgresql", "14.9", 400, 500, True, {}),       # source deleted
+        ("instance", "crm-mysql-before-delete", "crm-mysql", "mysql", "8.0.35", 120, 200, False, {}),                   # source deleted
+        ("instance", "arn:aws:rds:us-east-1:999999999999:snapshot:vendor-share-1", "vendor-db", "postgres", "16.3", 30, 50, True,
+         {"SnapshotType": "shared", "DBSnapshotArn": "arn:aws:rds:us-east-1:999999999999:snapshot:vendor-share-1"}),   # shared to us
+        ("instance", "vendor-copy", "vendor-src-db", "postgres", "16.3", 60, 20, True,
+         {"SourceDBSnapshotIdentifier": "arn:aws:rds:us-east-1:888888888888:snapshot:vendor-orig"}),                   # copied from another account
+        ("instance", "awsbackup:job-gone", "gone-db", "postgres", "16.3", 5, 30, False, {"SnapshotType": "awsbackup"}),   # AWS Backup: ignored
+        ("instance", "rds:gone-db-2026-01-01-00-00", "gone-db", "postgres", "16.3", 2, 30, False, {"SnapshotType": "automated"}),   # ignored
+        ("cluster", "docs-final", "docs-old", "docdb", "5.0.0", 50, 10, False, {}),                                       # DocumentDB: ignored
+    ],
+    ("111111111111", "us-west-2"): [
+        ("instance", "reports-pg-west", "reports-pg", "postgres", "16.3", 45, 100, False, {}),   # same name exists only in us-east-1: orphaned
+        ("cluster", "orders-aurora-pg15-dr-copy", "orders-aurora-pg15", "aurora-postgresql", "15.8", 15, 300, True,
+         {"SourceDBClusterSnapshotArn": "arn:aws:rds:us-east-1:111111111111:cluster-snapshot:orders-aurora-pg15-manual-20d"}),   # cross-region copy, source exists
+        ("instance", "eu-app-copy", "eu-app", "mysql", "8.0.39", 70, 40, True, {"SourceRegion": "eu-central-1"}),   # source region not scanned
+    ],
+    ("111111111111", "ca-central-1"): [   # region with no databases at all
+        ("instance", "retired-oracle-final", "retired-oracle", "oracle-ee", "19.0.0.0.ru-2024-01.rur-2024-01.r1", 900, 1000, True, {}),
+    ],
+    ("222222222222", "ap-south-1"): [
+        ("cluster", "hr-legacy-final", "hr-legacy-aurora", "aurora-mysql", "5.7.mysql_aurora.2.11.2", 300, 800, True, {}),
+    ],
+    ("333333333333", "eu-west-1"): [
+        ("instance", "dev-scratch-final", "dev-scratch", "postgres", "15.7", 10, 20, False, {}),
+    ],
+}
+
+
+def orphan_snaps(kind_key):
+    if SCEN == "empty":
+        return []
+    out = []
+    for t, sid, src, eng, ver, age, gb, enc, extra in ORPHANS.get((acct, region), []):
+        if t != kind_key:
+            continue
+        d = {"SnapshotType": "manual", "SnapshotCreateTime": iso(NOW - timedelta(days=age)), "Status": "available", "AllocatedStorage": gb,
+             "Engine": eng, "EngineVersion": ver}
+        d.update(extra)
+        if d["SnapshotType"] == "shared" and "--include-shared" not in argv:
+            continue
+        if t == "cluster":
+            d.update({"DBClusterIdentifier": src, "DBClusterSnapshotIdentifier": sid, "StorageEncrypted": enc,
+                      "DBClusterSnapshotArn": d.get("DBClusterSnapshotArn", "arn:aws:rds:%s:%s:cluster-snapshot:%s" % (region, acct, sid))})
+        else:
+            d.update({"DBInstanceIdentifier": src, "DBSnapshotIdentifier": sid, "Encrypted": enc,
+                      "DBSnapshotArn": d.get("DBSnapshotArn", "arn:aws:rds:%s:%s:snapshot:%s" % (region, acct, sid))})
+        if enc:
+            d["KmsKeyId"] = KMS % (region, acct)
+        out.append(d)
+    return out
+
 
 def arn(r):
     return "arn:aws:rds:%s:%s:%s:%s" % (r[0], acct, "cluster" if r[2] == "cluster" else "db", r[1])
@@ -141,11 +197,11 @@ def snaps(r, kind_key):
 
 
 if svc == "rds" and op == "describe-db-cluster-snapshots":
-    print(json.dumps({"DBClusterSnapshots": [s for r in rows if r[2] == "cluster" for s in snaps(r, "cluster")]})); sys.exit(0)
+    print(json.dumps({"DBClusterSnapshots": [s for r in rows if r[2] == "cluster" for s in snaps(r, "cluster")] + orphan_snaps("cluster")})); sys.exit(0)
 if svc == "rds" and op == "describe-db-snapshots":
     if SCEN == "snapdeny":
         fail("AccessDenied", "DescribeDBSnapshots", "User is not authorized to perform: rds:DescribeDBSnapshots")
-    print(json.dumps({"DBSnapshots": [s for r in rows if r[2] == "instance" for s in snaps(r, "instance")]})); sys.exit(0)
+    print(json.dumps({"DBSnapshots": [s for r in rows if r[2] == "instance" for s in snaps(r, "instance")] + orphan_snaps("instance")})); sys.exit(0)
 if svc == "backup" and op == "list-backup-vaults":
     if SCEN == "backupdeny":
         fail("AccessDeniedException", "ListBackupVaults", "User is not authorized to perform: backup:ListBackupVaults")

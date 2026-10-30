@@ -11,6 +11,7 @@ monthly=11
 yearly=1
 weekly-days=11-60
 monthly-max-days=400
+# snapshot-price-per-gb=0.021
 # format=html,csv
 # output-dir=./reports
 # prefix=rds_backup_compliance
