@@ -29,7 +29,7 @@ if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) ))
 fi
 
 PROFILES=(); REGIONS=(); ALL_REGIONS=0; ENGINES=(); IDENTIFIERS=(); FORMATS=(); MERGE_ARGS=()
-OUTPUT_DIR=""; OUT_FILE=""; PREFIX="rds_backup_compliance"; DISPLAY_TZ="Asia/Kolkata"
+OUTPUT_DIR=""; OUT_FILE=""; MANUAL_OLDER=""; PREFIX="rds_backup_compliance"; DISPLAY_TZ="Asia/Kolkata"
 DAILY=7; DAILY_MAX_AGE_H=26; WEEKLY=4; MONTHLY=11; YEARLY=1
 WEEKLY_MIN_DAYS=11; WEEKLY_MAX_DAYS=60; MONTHLY_MAX_DAYS=400
 NC_ONLY=0; FAIL_ON_NC=0; LOG_FILE=""; CONFIG_FILE=""; AWS_TIMEOUT=30; MAX_ATTEMPTS=5
@@ -71,6 +71,7 @@ Report:
   -F, --format LIST         text,csv,json,html (default: text; html with --merge). Several formats need -o.
                             csv writes the compliance CSV and, with -o, also <name>_backups.csv
   -o, --output-dir DIR      Write <prefix>_<account>_YYYYmmdd_HHMMSS.<ext> into DIR. With --merge, -o FILE.html names the file
+      --manual-older-than N Also write <name>_manual_older_than_<N>d.csv: manual snapshots older than N days, oldest first
       --save-data [FILE]    Also write the raw data for --merge: rds_backup_<ACCOUNT>_<YYYYMMDD>.json per account
       --prefix NAME         File name prefix (default: rds_backup_compliance)
       --tz ZONE             Second time zone shown next to UTC (default: Asia/Kolkata = IST)
@@ -118,6 +119,7 @@ set_opt() {   # set_opt key value  (shared by CLI and --config)
         max-attempts|max_attempts) int_ok --max-attempts "$v"; MAX_ATTEMPTS="$v" ;;
         non-compliant-only|non_compliant_only) is_true "$v" && NC_ONLY=1 ;; fail-on-noncompliant|fail_on_noncompliant) is_true "$v" && FAIL_ON_NC=1 ;;
         save-data|save_data) is_true "$v" && SAVE_DATA=1 ;;
+        manual-older-than|manual_older_than) int_ok --manual-older-than "$v"; MANUAL_OLDER="$v" ;;
         *) return 1 ;;
     esac
     return 0
@@ -155,7 +157,7 @@ parse_args() {
             --keep-workdir) KEEP_WORKDIR=1 ;; --dry-run) DRY_RUN=1 ;; -v|--verbose) VERBOSE=1 ;;
             --save-data) SAVE_DATA=1; if [[ $# -ge 2 && "$2" != -* ]]; then SAVE_DATA_FILE="$2"; shift; fi ;;
             --merge) MERGE=1; while [[ $# -ge 2 && "$2" != -* ]]; do MERGE_ARGS+=("$2"); shift; done ;;
-            --daily|--daily-max-age|--weekly|--monthly|--yearly|--weekly-days|--monthly-max-days|--prefix|--tz|--aws-timeout|--max-attempts)
+            --daily|--daily-max-age|--weekly|--monthly|--yearly|--weekly-days|--monthly-max-days|--prefix|--tz|--aws-timeout|--max-attempts|--manual-older-than)
                 need_arg "$1" $#; set_opt "${1#--}" "$2"; shift ;;
             --*=*) set_opt "${1%%=*}" "${1#*=}" 2>/dev/null || die 1 "Unknown option: $1"; ;;
             *) die 1 "Unknown option: $1 (see --help)" ;;
@@ -189,8 +191,8 @@ tz_setup() {   # offset seconds + label of the second time zone (Git Bash date m
 cfg_json() {
     jq -cn --argjson d "$DAILY" --argjson h "$DAILY_MAX_AGE_H" --argjson w "$WEEKLY" --argjson m "$MONTHLY" --argjson y "$YEARLY" \
         --argjson wmin "$WEEKLY_MIN_DAYS" --argjson wmax "$WEEKLY_MAX_DAYS" --argjson mmax "$MONTHLY_MAX_DAYS" \
-        --argjson off "$TZ_OFFSET" --arg lab "$TZ_LABEL" \
-        '{daily: $d, daily_max_age_h: $h, weekly: $w, monthly: $m, yearly: $y, weekly_min_days: $wmin, weekly_max_days: $wmax,
+        --argjson off "$TZ_OFFSET" --arg lab "$TZ_LABEL" --argjson mo "${MANUAL_OLDER:-null}" \
+        '{manual_older_than: $mo, daily: $d, daily_max_age_h: $h, weekly: $w, monthly: $m, yearly: $y, weekly_min_days: $wmin, weekly_max_days: $wmax,
           monthly_max_days: $mmax, tz_offset: $off, tz_label: $lab}' | tr -d '\r'
 }
 
@@ -374,6 +376,10 @@ main() {
             [[ "$f" == csv ]] && write_out "${base}_backups.csv" render bcsv "$data"
         else render "$f" "$data" || die 4 "render failed"; fi
     done
+    if [[ -n "$MANUAL_OLDER" ]]; then   # manual-snapshot audit (all resources, ignores --non-compliant-only)
+        write_out "${OUTPUT_DIR:-.}/${PREFIX}_${tag}_${STAMP}_manual_older_than_${MANUAL_OLDER}d.csv" render mcsv "$WORK/data.json"
+        log_info "manual snapshots older than ${MANUAL_OLDER} days: $(render mcsv "$WORK/data.json" | tail -n +2 | grep -c . || true)"
+    fi
     for f in "${WRITTEN[@]}"; do log_info "wrote $f"; done
     local nc; nc="$(render rows "$WORK/data.json" | jqv '[.[] | select(.status == "NON-COMPLIANT")] | length')"
     log_info "resources: $(jqv '.resources | length' "$WORK/data.json"), non-compliant: $nc"

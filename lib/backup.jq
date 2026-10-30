@@ -93,6 +93,13 @@ def accounts_label: [ .accounts[].account ] | join(", ");
      | $r.snapshots | sort_by(-.created_epoch)[]
      | [$r.account_id, $r.region, $r.id, $r.type, .kind, .id, (.created_epoch | utc), (.created_epoch | loc), .status, .size_gb,
         (if .kind == "backup" then rp_class else "" end), (if .kind == "backup" then rp_ret else null end), (.expires_epoch | utc), (.vault // "")] | csvrow)
+  elif $mode == "mcsv" then
+    (["account_id","region","identifier","type","engine","snapshot","created_utc","created_" + ($cfg.tz_label | ascii_downcase),"age_days","status","size_gb"] | csvrow),
+    ([ $D.resources[] as $r | $r.snapshots[]? | select(.kind == "manual" and .created_epoch != null
+         and ($now - .created_epoch) > ($cfg.manual_older_than // 0) * 86400) | {r: $r, s: .} ]
+     | sort_by(.s.created_epoch, .r.account_id, .r.id)[]
+     | [.r.account_id, .r.region, .r.id, .r.type, .r.engine, .s.id, (.s.created_epoch | utc), (.s.created_epoch | loc),
+        (($now - .s.created_epoch) / 86400 | floor), .s.status, .s.size_gb] | csvrow)
   elif $mode == "txt" then
     totals($R) as $t
     | "RDS backup compliance - account \($D | accounts_label)",

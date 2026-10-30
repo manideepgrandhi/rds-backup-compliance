@@ -22,6 +22,11 @@
 # See which calls would run, without calling anything
 ./rds_backup_compliance_report.sh -A --dry-run
 
+# Audit manual snapshots older than 90 days (CSV, oldest first)
+./rds_backup_compliance_report.sh -A --manual-older-than 90 -o ./out
+./rds_backup_compliance_report.sh --merge ./saved -F html -o ./out --manual-older-than 180
+# In the HTML: Backups tab -> "Old manual snapshots (> 90 days)", or pick Backup type and Age yourself
+
 # Offline merge (Git Bash on Windows works too)
 ./rds_backup_compliance_report.sh --merge rds_backup_111111111111_20261030.json rds_backup_222222222222_20261030.json -o all.html
 ./rds_backup_compliance_report.sh --merge "./saved data/" -F csv -o ./merged

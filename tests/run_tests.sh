@@ -44,6 +44,7 @@ rowt fleet orders-aurora-pg15 '.status == "COMPLIANT" and .global_role == "prima
 rowt fleet orders-aurora-pg15 '.daily.have == 7 and .weekly.have == 5 and .monthly.have == 12 and .yearly.have == 2'
 rowt fleet orders-aurora-pg15 '.automated == 7'          # the awsbackup-type snapshot is not counted as automated
 rowt fleet orders-aurora-pg15 '.manual == 4'
+rowt fleet legacy-mysql '.manual == 2'
 rowt fleet billing-aurora-mysql '.status == "NON-COMPLIANT" and .gaps == "weekly 2/4; yearly 0/1"'
 rowt fleet new-aurora-pg16 '.status == "NOT YET DUE" and .monthly.st == "DUE" and .yearly.st == "DUE" and .gaps == ""'
 rowt fleet reports-pg '.status == "NON-COMPLIANT" and (.gaps | test("retention 3d < 7d")) and .type == "instance"'
@@ -144,6 +145,25 @@ has merge err 'account 111111111111: an older collection was ignored'
 rowt merge payroll-sqlserver '.status == "NON-COMPLIANT" and .gaps == "monthly 9/11"'
 t mergeold 0 fleet --merge "$OUT/prod_old.json" "$M/nonprod.json" -F json
 jqt mergeold '.rows | length == 4' "$OUT/mergeold.out"
+# manual-snapshot audit CSV (live and from merged data); v1.0.0 save-data files still merge
+mkdir -p "$OUT/mo"
+t mold 0 fleet -P prod -r us-east-1 -F json -o "$OUT/mo" --manual-older-than 90
+MO="$(ls "$OUT"/mo/*_manual_older_than_90d.csv 2>/dev/null | head -1)"
+chk "manual-older-than: csv written" test -s "$MO"
+chk "manual-older-than: header" bash -c "head -1 '$MO' | grep -q '^\"\?account_id\"\?,\"\?region\"\?,\"\?identifier\"\?,.*age_days'"
+chk "manual-older-than: only >90d manual (5 in prod us-east-1)" test "$(tail -n +2 "$MO" | grep -c .)" == 5
+chk "manual-older-than: oldest first, >12 months kept" bash -c "sed -n 2p '$MO' | grep -q 'legacy-mysql-manual-600d'"
+t moldbad 1 fleet -P prod -r us-east-1 --manual-older-than abc
+t moldmerge 0 fleet --merge "$M" -F json -o "$OUT/mo2" --manual-older-than 365
+chk "manual-older-than on merge: >365d across accounts" bash -c "tail -n +2 \"$OUT\"/mo2/*_manual_older_than_365d.csv | cut -d, -f3 | sort -u | tr -d '\"' | paste -sd' ' | grep -qx 'legacy-mysql orders-aurora-pg15 payroll-sqlserver'"
+if git -C "$HERE/.." cat-file -e 602abe2 2>/dev/null; then
+    V1="$OUT/v100"; mkdir -p "$V1/lib"
+    for f in rds_backup_compliance_report.sh lib/collect.jq lib/backup.jq lib/merge.jq lib/backup_page.js; do git -C "$HERE/.." show "602abe2:$f" >"$V1/$f"; done
+    chmod +x "$V1/rds_backup_compliance_report.sh"
+    MOCK_SCENARIO=fleet "$V1/rds_backup_compliance_report.sh" -P dev -r eu-west-1 --save-data "$OUT/v100_dev.json" -F json >/dev/null 2>&1
+    t mergev100 0 fleet --merge "$OUT/v100_dev.json" "$M/prod.json" -F json
+    jqt mergev100 '[.accounts[].account] | sort == ["111111111111", "333333333333"]' "$OUT/mergev100.out"
+fi
 t mergedir 0 fleet --merge "$M" -o "$OUT/all accounts.html"
 chk "merge -o FILE.html written" test -s "$OUT/all accounts.html"
 chk "merged html lists 3 accounts in title" grep -q '<title>RDS backup compliance - 111111111111, 222222222222, 333333333333</title>' "$OUT/all accounts.html"

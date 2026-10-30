@@ -65,10 +65,18 @@ The HTML report has two tabs:
   - Export CSV, which exports the filtered rows.
   - A per-region table with an "All regions" total, and the region errors.
 - **Backups tab:**
-  - Pick a cluster or instance, and a period: last 3, 6 or 12 months.
-  - Three sections: manual snapshots, RDS automated backups, and AWS Backup recovery points (with class, retention, expiry and vault).
-  - **All clusters and instances (manual snapshots)**, the first option in the resource list: one table of every resource's manual snapshots with account, region, resource and type columns. The period, plus Account, Region and Engine filters, narrow it, and Export CSV exports what is shown. Automated and AWS Backup sections are per resource and are hidden in this mode.
-  - A CSV of what is shown.
+  - **Resource:** "All clusters and instances" (the first option) or one cluster or instance.
+  - **Backup type:** All types, Manual, Automated or AWS Backup.
+  - **Age:** Last 3, 6 or 12 months (newest first); Older than 30, 90, 180 or 365 days (oldest first); or Any age.
+  - **Single resource:** three sections (manual, RDS automated, AWS Backup with class, retention, expiry and vault). Backup type shows only the chosen section.
+  - **All clusters and instances:** one combined table with Account, Region, Resource, Resource type, Backup type, Created (UTC and IST), Age (days), Status, Size GB, Rule (daily for automated; weekly, monthly, yearly or short for AWS Backup), Retention and Vault. The Account, Region and Engine filters narrow it.
+  - A count and total GB of the matching rows, and **Export CSV** of exactly what is shown (all filters applied).
+  - **Old manual snapshots (> 90 days)** sets All + Manual + Older than 90 days in one click, for auditing leftover manual snapshots.
+  - Manual snapshots of any age are kept in the data (nothing is trimmed to 12 months).
+
+### Manual snapshot audit CSV
+
+`--manual-older-than N` also writes `<prefix>_<account>_<stamp>_manual_older_than_<N>d.csv`. It lists every manual snapshot older than N days, oldest first, with account, region, identifier, type, engine, snapshot, created (UTC and IST), age_days, status and size_gb. It works for live scans and with `--merge`, and is written to `-o DIR` (or the current directory).
 
 ### Several accounts
 

@@ -60,13 +60,13 @@ FLEET = {
         ("us-east-1", "billing-aurora-mysql", "cluster", "aurora-mysql", "8.0.mysql_aurora.3.08.0", 800, 7, 7, 5, 2, 11, 0, None, None, [45]),
         ("us-east-1", "new-aurora-pg16", "cluster", "aurora-postgresql", "16.4", 60, 7, 7, 3, 4, 1, 0, None, None, []),
         ("us-east-1", "reports-pg", "instance", "postgres", "16.3", 900, 3, 3, 4, 4, 11, 1, None, None, [10]),
-        ("us-east-1", "legacy-mysql", "instance", "mysql", "8.0.39", 700, 7, 7, 74, 4, 11, 1, None, None, []),
+        ("us-east-1", "legacy-mysql", "instance", "mysql", "8.0.39", 700, 7, 7, 74, 4, 11, 1, None, None, [200, 600]),
         ("us-west-2", "orders-dr-pg15", "cluster", "aurora-postgresql", "15.8", 600, 7, 7, 6, 0, 0, 0, "orders-global", False, []),
         ("us-west-2", "shop-dr-mysql", "cluster", "aurora-mysql", "8.0.mysql_aurora.3.08.0", 500, 1, 1, 6, 0, 0, 0, "shop-global", False, []),
     ],
     "222222222222": [
         ("ap-south-1", "hr-aurora-pg", "cluster", "aurora-postgresql", "15.8", 1200, 14, 14, 2, 4, 11, 1, None, None, [5, 150]),
-        ("ap-south-1", "payroll-sqlserver", "instance", "sqlserver-se", "15.00.4415.2.v1", 1500, 7, 7, 8, 4, 9, 1, None, None, []),
+        ("ap-south-1", "payroll-sqlserver", "instance", "sqlserver-se", "15.00.4415.2.v1", 1500, 7, 7, 8, 4, 9, 1, None, None, [95, 1100]),
     ],
     "333333333333": [
         ("eu-west-1", "dev-aurora-mysql", "cluster", "aurora-mysql", "8.0.mysql_aurora.3.08.0", 400, 7, 7, 4, 4, 11, 1, None, None, []),
