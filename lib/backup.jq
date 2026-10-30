@@ -86,13 +86,15 @@ def accounts_label: [ .accounts[].account ] | join(", ");
       "last_automated_utc","last_automated_" + ($cfg.tz_label | ascii_downcase),"daily","weekly","monthly","yearly","status","gaps"] | csvrow),
     ($R[] | [.account_id, .region, .identifier, .type, .engine, .engine_version, .global_cluster, .global_role, .retention_days,
              .last_automated_utc, .last_automated_local, cell(.daily), cell(.weekly), cell(.monthly), cell(.yearly), .status, .gaps] | csvrow)
-  elif $mode == "bcsv" then
+  elif $mode == "bcsv" then   # same columns and order as the HTML Backups tab "Export CSV"
     (["account_id","region","identifier","type","kind","snapshot_or_recovery_point","created_utc","created_" + ($cfg.tz_label | ascii_downcase),
-      "status","size_gb","class","retention_days","expires_utc","vault"] | csvrow),
+      "age_days","status","size_gb","rule","retention_days","expires_utc","vault"] | csvrow),
     ($D.resources | sort_by(.account_id, .region, .id)[] as $r
      | $r.snapshots | sort_by(-.created_epoch)[]
-     | [$r.account_id, $r.region, $r.id, $r.type, .kind, .id, (.created_epoch | utc), (.created_epoch | loc), .status, .size_gb,
-        (if .kind == "backup" then rp_class else "" end), (if .kind == "backup" then rp_ret else null end), (.expires_epoch | utc), (.vault // "")] | csvrow)
+     | [$r.account_id, $r.region, $r.id, $r.type, .kind, .id, (.created_epoch | utc), (.created_epoch | loc),
+        (if .created_epoch == null then null else (($now - .created_epoch) / 86400 | floor) end), .status, .size_gb,
+        (if .kind == "backup" then rp_class elif .kind == "automated" then "daily" else "" end),
+        (if .kind == "backup" then rp_ret else null end), (.expires_epoch | utc), (.vault // "")] | csvrow)
   elif $mode == "mcsv" then
     (["account_id","region","identifier","type","engine","snapshot","created_utc","created_" + ($cfg.tz_label | ascii_downcase),"age_days","status","size_gb"] | csvrow),
     ([ $D.resources[] as $r | $r.snapshots[]? | select(.kind == "manual" and .created_epoch != null

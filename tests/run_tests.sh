@@ -29,7 +29,7 @@ rowt() { jq -e --arg i "$2" ".rows[] | select(.identifier == \$i) | $3" "$OUT/$1
 ncalls() { wc -l <"$MOCK_LOG" 2>/dev/null | tr -d ' ' || echo 0; }
 
 echo "== CLI"
-t version 0 fleet --version; has version out '1\.0\.0'
+t version 0 fleet --version; has version out '1\.1\.0'
 t help 0 fleet --help; has help out 'list-recovery-points-by-backup-vault'; has help out 'weekly-days'
 t badopt 1 fleet --nope
 t multifmt 1 fleet -P prod -r us-east-1 -F csv,html
@@ -82,6 +82,8 @@ chk "csv has 7 rows + header" test "$(wc -l <"$CSV")" -eq 8
 chk "csv has every status" bash -c "grep -q '\"COMPLIANT\"' '$CSV' && grep -q '\"NON-COMPLIANT\"' '$CSV' && grep -q '\"NOT YET DUE\"' '$CSV'"
 chk "backups csv has manual, automated, backup kinds" bash -c "grep -q ',\"manual\",' '$BCSV' && grep -q ',\"automated\",' '$BCSV' && grep -q ',\"backup\",' '$BCSV'"
 chk "backups csv has IST column and classes" bash -c "head -1 '$BCSV' | grep -q created_ist && grep -q '\"weekly\"' '$BCSV' && grep -q '\"yearly\"' '$BCSV' && grep -q '\"short\"' '$BCSV'"
+chk "backups csv header = in-page export order" bash -c "head -1 '$BCSV' | tr -d '\"\r' | grep -qx 'account_id,region,identifier,type,kind,snapshot_or_recovery_point,created_utc,created_ist,age_days,status,size_gb,rule,retention_days,expires_utc,vault'"
+chk "backups csv: automated rule daily, manual rule empty, age_days numeric" bash -c "grep ',\"automated\",' '$BCSV' | head -1 | grep -q ',\"daily\",' && grep ',\"manual\",' '$BCSV' | head -1 | grep -qE ',\"[0-9]+\",\"available\",\"100\",\"\",\"\",'"
 chk "backups csv: no EC2 recovery point" bash -c "! grep -q ami-0abc '$BCSV'"
 chk "html: no empty region (ca-central-1, ap-south-1)" bash -c "! grep -qE 'ca-central-1|ap-south-1' '$HTML'"
 chk "html: no region names above the tabs" bash -c "! sed -n '1,/class=\"tabs\"/p' '$HTML' | grep -qE '(us|eu|ap|ca)-[a-z]+-[0-9]'"

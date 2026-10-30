@@ -1,6 +1,6 @@
 # rds-backup-compliance
 
-`rds_backup_compliance_report.sh` v1.0.0 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
+`rds_backup_compliance_report.sh` v1.1.0 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
 
 ## Install (CloudShell)
 
@@ -127,3 +127,12 @@ Compliance is re-evaluated at merge time, so threshold options also work with `-
 tests/run_tests.sh               # mock AWS CLI and headless browser checks (needs node + puppeteer-core for the browser part)
 tests/validate_cli.py            # checks that every field read exists in the bundled AWS CLI service models
 ```
+
+## Changelog
+
+- **1.1.0**
+  - Backups tab: Backup type filter (All, Manual, Automated, AWS Backup) and an Age filter (last 3/6/12 months, older than 30/90/180/365 days, any age).
+  - "All clusters and instances" shows every backup type in one table, with Age (days), Rule, a count and total GB. Rule, Retention and Vault columns hide when empty.
+  - "Old manual snapshots (> 90 days)" one-click audit, and the `--manual-older-than N` audit CSV.
+  - `_backups.csv` gains age_days and rule, in the same column order as the in-page export.
+- **1.0.0** First release.

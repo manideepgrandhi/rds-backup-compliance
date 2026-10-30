@@ -1,0 +1,6 @@
+"account_id","region","identifier","type","engine","snapshot","created_utc","created_ist","age_days","status","size_gb"
+"111111111111","us-east-1","legacy-mysql","instance","mysql","legacy-mysql-manual-600d","2025-03-09 00:24 UTC","2025-03-09 05:54 IST","600","available","100"
+"111111111111","us-east-1","orders-aurora-pg15","cluster","aurora-postgresql","orders-aurora-pg15-manual-400d","2025-09-25 00:24 UTC","2025-09-25 05:54 IST","400","available","100"
+"111111111111","us-east-1","orders-aurora-pg15","cluster","aurora-postgresql","orders-aurora-pg15-manual-250d","2026-02-22 00:24 UTC","2026-02-22 05:54 IST","250","available","100"
+"111111111111","us-east-1","legacy-mysql","instance","mysql","legacy-mysql-manual-200d","2026-04-13 00:24 UTC","2026-04-13 05:54 IST","200","available","100"
+"111111111111","us-east-1","orders-aurora-pg15","cluster","aurora-postgresql","orders-aurora-pg15-manual-100d","2026-07-22 00:24 UTC","2026-07-22 05:54 IST","100","available","100"

@@ -1,5 +1,5 @@
 RDS backup compliance - account 111111111111
-Generated 2026-10-30 00:23 UTC / 2026-10-30 05:53 IST
+Generated 2026-10-30 00:24 UTC / 2026-10-30 05:54 IST
 Rule: daily >= 7 (RDS automated, last <= 26h), weekly >= 4, monthly >= 11, yearly >= 1 (AWS Backup); global secondaries daily only
 Resources 7: compliant 2, non-compliant 4, not yet due 1, unknown 0
 
