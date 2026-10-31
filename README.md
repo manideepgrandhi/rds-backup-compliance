@@ -61,7 +61,7 @@ All outputs show the account number, and every time is shown in UTC and IST (`--
 | Format | What you get |
 |---|---|
 | text | Console summary. |
-| csv | Compliance CSV. With `-o`, you also get `<name>_backups.csv`, which lists every manual snapshot, automated backup and AWS Backup recovery point. |
+| csv | Compliance CSV with numeric columns per check: `<check>_status`, `_found`, `_expected`, `_target`, `_missing` (`2026-10-24 Sat; ...`) and `_full_on`. No cell is a value Excel turns into a date. With `-o`, you also get `<name>_backups.csv`, which lists every manual snapshot, automated backup and AWS Backup recovery point. |
 | json | Rows and raw backups. |
 | html | Two tabs, described below. |
 
@@ -71,7 +71,9 @@ The HTML report has two tabs:
   - Total cards.
   - Filters for account, region, type, engine, role, global cluster, status and identifier, plus **Show: Not yet due / Retention warnings**.
   - A Created column (date and age in days). Yearly shows only when `yearly` > 0.
-  - Export CSV, which exports the filtered rows.
+  - Compact count cells (`4/5` with a red `1 missing` tag; hover for the dates) and a one-line Gaps summary. Fixed column widths that wrap; on a phone the table scrolls sideways.
+  - Click a row (or its ▶ caret, or Enter on it) to open its detail row: full gaps, not-yet-due and warnings, a per-check table, and every AWS Backup recovery point with created date, retention, class, status, whether it counted and why.
+  - Export CSV, which exports the filtered rows with exactly the same columns and quoting as the script's CSV.
   - A per-region table with an "All regions" total, and the region errors.
 - **Backups tab:**
   - **Resource:** "All clusters and instances" (the first option) or one cluster or instance.
@@ -122,13 +124,12 @@ Compliance is re-evaluated at merge time, so threshold options also work with `-
 With several regions (`-r a,b,c` or `-A`), up to `--parallel N` regions of an account are scanned at once (default 4, conf key `parallel`). `--parallel 1` scans one region at a time, as before. Each region runs as a background job that writes only to its own temp folder. The results are then combined in region order, so the report is the same whatever order the regions finish in.
 
 ```
-[INFO] 111111111111: scanning 17 regions, up to 4 at a time
-[INFO] [1/17] ap-northeast-1: started
-...
 [INFO] [3/17] us-east-1: 4 clusters, 2 instances, 61 snapshots, 80 recovery points (6s)
 [ERROR] [9/17] eu-west-3: failed (exit 1)
-[INFO] 111111111111 regions in order: ap-northeast-1: done (0 resources); ...; eu-west-3: failed (0 resources); ...
+[INFO] 111111111111: 17 regions scanned, 14 empty: ap-northeast-1, ap-northeast-2, ...; 1 failed: eu-west-3
 ```
+
+Only regions with databases, and errors, get their own line; empty regions are folded into the summary line. `-v` / `--verbose` prints every region line (`started`, `(empty)`) and the `regions in order` line, as in v1.3.0.
 
 If one region fails, the other regions still finish. The failed region is listed under Region errors in the report, and the exit code follows the usual rules. Bash 4.3+ uses `wait -n`. Without it the tool waits for each batch to finish. The temp folder is removed on exit, including Ctrl-C. In parallel mode each region that has clusters calls `describe-global-clusters` itself, so there are a few more calls than with `--parallel 1`.
 
@@ -175,6 +176,15 @@ tests/validate_cli.py            # checks that every field read exists in the bu
 ```
 
 ## Changelog
+
+- **1.3.1**
+  - CSV: the `x/y` text cells are replaced by numeric columns per check (`daily_status`, `daily_found`, `daily_expected`, `daily_target`, `daily_missing`, `daily_full_on`, then weekly, monthly, and yearly when on). Dates are written as `2026-10-24 Sat`, so Excel never turns a cell into a date. The HTML Export CSV produces the identical file.
+  - HTML: compact count cells with a red `N missing` tag and tooltip, a one-line Gaps summary, and an expandable detail row (click the row or caret). Fixed column widths that wrap on desktop and mobile.
+  - Recovery-point diagnostics: every AWS Backup recovery point of a resource is listed (date, retention, class, counted or not, and why) in the detail row and in the JSON (`recovery_points`).
+  - Weekly fixes: recovery points without `CalculatedLifecycle` now use `Lifecycle.DeleteAfterDays`; status `AVAILABLE` counts like `COMPLETED`; continuous (PITR) recovery points are never counted as snapshots; resource ARNs match case-insensitively.
+  - Console: one line per region with databases (and errors), then `N regions scanned, M empty: a, b`. `--verbose` prints every region line. Scanning stays parallel.
+  - The `Output (N files):` block lists each file by its full absolute path.
+  - No new AWS calls or permissions. Saved data from v1.2.1 and v1.3.0 still merges.
 
 - **1.3.0**
   - Schedule-aware checks: daily for each of the last 7 UTC days, weekly for every Saturday in the last 30 days, monthly for the first Sunday of each of the last 12 months, with ±1 day tolerance. Yearly is off by default and hidden in all outputs.

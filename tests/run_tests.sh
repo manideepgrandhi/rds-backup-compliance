@@ -29,7 +29,7 @@ rowt() { jq -e --arg i "$2" ".rows[] | select(.identifier == \$i) | $3" "$OUT/$1
 ncalls() { wc -l <"$MOCK_LOG" 2>/dev/null | tr -d ' ' || echo 0; }
 
 echo "== CLI"
-t version 0 fleet --version; has version out '1\.3\.0'
+t version 0 fleet --version; has version out '1\.3\.1'
 t help 0 fleet --help; has help out 'list-recovery-points-by-backup-vault'; has help out 'weekly-days'
 t badopt 1 fleet --nope
 t multifmt 1 fleet -P prod -r us-east-1 -F csv,html
@@ -100,20 +100,44 @@ jqt savedata '[.orphans[] | select(.id == "analytics-aurora-final")][0] | .sourc
 jqt savedata '[.resources[] | has("arn")] | any | not' "$SD"
 CSV="$(ls "$OUT"/o/rds_backup_compliance_111111111111_*[0-9].csv | head -1)"; BCSV="$(ls "$OUT"/o/*_backups.csv | head -1)"
 HTML="$(ls "$OUT"/o/*.html | head -1)"; JSON="$(ls "$OUT"/o/rds_backup_compliance_*.json | head -1)"
-chk "csv header" grep -qx '"account_id","region","identifier","type","engine","engine_version","global_cluster","global_role","retention_days","created_utc","age_days","backup_window","copy_tags_to_snapshot","last_automated_utc","last_automated_ist","daily","weekly","monthly","status","not_yet_due","gaps","warnings","weekly_retention","monthly_retention","backup_plans"' "$CSV"
+HDR='"account_id","region","identifier","type","engine","engine_version","global_cluster","global_role","retention_days","created_utc","age_days","backup_window","copy_tags_to_snapshot","last_automated_utc","last_automated_ist"'
+for k in daily weekly monthly; do HDR+=",\"${k}_status\",\"${k}_found\",\"${k}_expected\",\"${k}_target\",\"${k}_missing\",\"${k}_full_on\""; done
+HDR+=',"status","not_yet_due","gaps","warnings","weekly_retention","monthly_retention","backup_plans"'
+chk "csv header" grep -qxF "$HDR" "$CSV"
 chk "csv has 8 rows + header" test "$(wc -l <"$CSV")" -eq 9
 chk "csv: no yearly column at yearly=0" bash -c "! head -1 '$CSV' | grep -q yearly"
 chk "csv: not_yet_due + full on" bash -c "grep '\"fresh-pg\"' '$CSV' | grep -q 'daily full on'"
-chk "csv: weekly cell lists missing Saturday" bash -c "grep '\"billing-aurora-mysql\"' '$CSV' | grep -qE '\"[34]/[45] · missing Sat [0-9]{2} [A-Z][a-z]{2}\"'"
-chk "csv: so far (target 7)" bash -c "grep '\"fresh-pg\"' '$CSV' | grep -qE '\"[45]/[45] so far \(target 7\)\"'"
+csvq() { python3 -c 'import csv,sys; rows=list(csv.DictReader(open(sys.argv[1], encoding="utf-8"))); sys.exit(0 if eval(sys.argv[2]) else 1)' "$@"; }
+chk "csv: weekly numeric found/expected/target + missing Saturday ISO" csvq "$CSV" 'any(r["identifier"]=="billing-aurora-mysql" and r["weekly_status"]=="FAIL" and r["weekly_found"] in ("3","4") and int(r["weekly_expected"])==int(r["weekly_found"])+1 and r["weekly_target"]==r["weekly_expected"] and __import__("re").fullmatch(r"20\d\d-\d\d-\d\d Sat", r["weekly_missing"]) for r in rows)'
+chk "csv: building up = found/expected < target 7, full_on ISO" csvq "$CSV" 'any(r["identifier"]=="fresh-pg" and r["daily_found"]==r["daily_expected"] and r["daily_expected"] in ("4","5") and r["daily_target"]=="7" and __import__("re").fullmatch(r"20\d\d-\d\d-\d\d [A-Z][a-z]{2}", r["daily_full_on"]) for r in rows)'
+chk "csv: count columns are plain integers (or empty for N/A)" csvq "$CSV" 'all(__import__("re").fullmatch(r"\d*", r[k+"_"+c]) for r in rows for k in ("daily","weekly","monthly") for c in ("found","expected","target"))'
+chk "csv: N/A periods keep status, empty numbers" csvq "$CSV" 'any(r["identifier"]=="orders-dr-pg15" and r["weekly_status"]=="N/A" and r["weekly_found"]=="" for r in rows)'
+chk "csv: no cell Excel would read as a date" python3 -c 'import csv,re,sys
+bad=re.compile(r"^\s*(\d{1,4}[/-]\d{1,2}([/-]\d{1,4})?|\d{1,2}[ -](Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*([ -]\d{2,4})?|(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[ -]\d{1,4})\s*$")
+cells=[c for row in csv.reader(open(sys.argv[1], encoding="utf-8")) for c in row]
+hits=[c for c in cells if bad.match(c)]; hits and print(hits[:5], file=sys.stderr); sys.exit(1 if hits else 0)' "$CSV"
 chk "text: no YEARLY column at yearly=0" bash -c "! grep -q YEARLY \"\$(ls '$OUT'/o/*.txt | head -1)\""
-has files err '\[[0-9]/5\] ap-south-1: \(empty\)$'
-has files err "^Output \\([0-9]+ files\\) in $OUT/o:\$"
-has files err '^  rds_backup_compliance_111111111111_[0-9_]+\.html$'
-has files err '^  rds_backup_111111111111_[0-9_]+\.json$'
+hasnt files err 'ap-south-1: \(empty\)'
+has files err '\[[0-9]/5\] us-east-1: [0-9]+ clusters'
+has files err '111111111111: 5 regions scanned, 2 empty: ap-south-1, eu-west-1$'
+has files err "^Output \\([0-9]+ files\\):\$"
+has files err "^  $OUT/o/rds_backup_compliance_111111111111_[0-9_]+\\.html\$"
+has files err "^  $OUT/o/rds_backup_compliance_111111111111_[0-9_]+\\.csv\$"
+has files err "^  $OUT/o/rds_backup_111111111111_[0-9]+\\.json\$"
+chk "output block: every file line is an absolute path that exists" bash -c "sed -n '/^Output/,\$p' '$OUT/files.err' | tail -n +2 | while IFS= read -r l; do [[ \"\$l\" == '  /'* && -s \"\${l#  }\" ]] || exit 1; done"
+t filesv 0 fleet -P prod -A -F json -v
+has filesv err '\[[0-9]/5\] ap-south-1: \(empty\)$'
+has filesv err '5 regions scanned, 2 empty'
+t rpq 0 rpquirks -P prod -r us-east-1 -i orders-* -F json
+rowt rpq orders-aurora-pg15 '.weekly.have == .weekly.need and .weekly.need >= 4 and .weekly.st == "OK"'
+rowt rpq orders-aurora-pg15 '.weekly.have as $h | [.recovery_points[] | select(.class == "weekly" and .counted and .status == "AVAILABLE" and .ret == 35)] | length == $h'
+rowt rpq orders-aurora-pg15 '[.recovery_points[] | select(.reason | test("^continuous backup")) | select(.counted | not)] | length == 1'
+rowt fleet orders-aurora-pg15 '[.recovery_points[] | select(.ret == 35)] | all(.counted and (.reason | test("^weekly: counts for Sat [0-9]{2} [A-Z][a-z]{2}, retention 35d in weekly window 25-40d$")))'
+rowt fleet orders-aurora-pg15 '.recovery_points | all(has("date") and has("ret") and has("class") and has("counted") and has("reason")) and (.[0].date | test("^20[0-9]{2}-[0-9]{2}-[0-9]{2} [A-Z][a-z]{2}$"))'
 chk "output block: no // or ./ in paths" bash -c "! sed -n '/^Output/,\$p' '$OUT/files.err' | grep -qE '//|/\\./|~'"
 mkdir -p "$OUT/o2/sub"; ( cd "$OUT/o2" && t relout 0 fleet -P prod -r us-east-1 -F csv -o ./sub//../sub/ )
-has relout err "^Output \\(3 files\\) in $OUT/o2/sub:\$"
+has relout err "^Output \\(3 files\\):\$"
+has relout err "^  $OUT/o2/sub/rds_backup_compliance_111111111111_[0-9_]+_backups\\.csv\$"
 chk "csv has every status" bash -c "grep -q '\"COMPLIANT\"' '$CSV' && grep -q '\"NON-COMPLIANT\"' '$CSV' && grep -q '\"NOT YET DUE\"' '$CSV'"
 chk "backups csv has manual, automated, backup kinds" bash -c "grep -q ',\"manual\",' '$BCSV' && grep -q ',\"automated\",' '$BCSV' && grep -q ',\"backup\",' '$BCSV'"
 chk "backups csv has IST column and classes" bash -c "head -1 '$BCSV' | grep -q created_ist && grep -q '\"weekly\"' '$BCSV' && grep -q '\"monthly\"' '$BCSV' && grep -q '\"mismatch\"' '$BCSV'"
@@ -181,7 +205,7 @@ t wk6 0 fleet -P prod -r us-east-1 -i orders-* --weekly 6 -F json; rowt wk6 orde
 t wd40 0 fleet -P prod -r us-east-1 -i orders-* --weekly-days 40-60 -F json; rowt wd40 orders-aurora-pg15 '.weekly.have == 0 and (.warnings | test("35d"))'
 t mmax 0 fleet -P prod -r us-east-1 -i orders-* --monthly-max-days 300 -F json; rowt mmax orders-aurora-pg15 '.monthly.have == 0 and (.warnings | test("365d"))'
 t mdays 0 fleet -P prod -r us-east-1 -i orders-* --monthly-days 360-370 -F json; rowt mdays orders-aurora-pg15 '.monthly.have == 12 and .status == "COMPLIANT"'
-t yearly1 0 fleet -P prod -r us-east-1 -i orders-* --yearly 1 -F csv; has yearly1 out '"monthly","yearly","status"'
+t yearly1 0 fleet -P prod -r us-east-1 -i orders-* --yearly 1 -F csv; has yearly1 out '"monthly_full_on","yearly_status","yearly_found","yearly_expected","yearly_target","yearly_missing","yearly_full_on","status"'
 t yearly1j 0 fleet -P prod -r us-east-1 -i orders-* --yearly 1 -F json; rowt yearly1j orders-aurora-pg15 '.yearly.have == 2 and .yearly.st == "OK" and .warnings == ""'
 t yearly1t 0 fleet -P prod -r us-east-1 -i orders-* --yearly 1; has yearly1t out 'MONTHLY	YEARLY	STATUS'
 t yearly1h 0 fleet -P prod -r us-east-1 -i orders-* --yearly 1 -F html -o "$OUT/y1"; chk "html: Yearly shown at yearly=1" bash -c "grep -q 'yearly x1' \"$OUT\"/y1/*.html"
@@ -194,6 +218,8 @@ M2="$(jq -rn '[now | gmtime | .[0] * 12 + .[1] | range(0; 14) as $k | (. - $k) a
 rowt tol1 payroll-sqlserver ".gaps == \"monthly 10/12 missing $M2\""
 t tol0 0 fleet -P nonprod -r ap-south-1 -F json --tolerance-days 0; rowt tol0 hr-aurora-pg '.status == "NON-COMPLIANT" and (.gaps | test("^weekly [34]/[45] missing Sat "))'
 t wdsun 0 fleet -P nonprod -r ap-south-1 -F json --weekly-weekday sun --tolerance-days 0; rowt wdsun hr-aurora-pg '.weekly.have <= 1'
+rowt wd40 orders-aurora-pg15 '[.recovery_points[] | select(.ret == 35) | .reason] | length > 0 and all(test("^retention 35d outside weekly window 40-60d and monthly window"))'
+rowt wdsun hr-aurora-pg '[.recovery_points[] | select(.class == "weekly" and (.counted | not)) | .reason] | all(test("not within ±0d of a checked Sunday"))'
 t daily14 0 fleet -P nonprod -r ap-south-1 --daily 14 -F json; rowt daily14 hr-aurora-pg '.daily.st == "OK"'; rowt daily14 payroll-sqlserver '.daily.st == "FAIL"'
 t age 0 fleet -P prod -r us-east-1 -i legacy-* --daily-max-age 80 -F json; rowt age legacy-mysql '(.gaps | test("last automated") | not)'
 printf 'weekly = 6\r\n# comment\r\nregion=us-east-1\r\nidentifier = orders-*\r\nformat=json\r\n' >"$OUT/my conf.conf"
@@ -206,7 +232,7 @@ chk "jq: +05:30 timestamps parse to UTC" test "$(jq -n --slurpfile x /dev/null '
 echo "== parallel regions"
 t badpar 1 fleet --parallel 0
 t badpar2 1 fleet --parallel x
-NORM='del(.. | .collected_epoch?, .collected_at?, .generated_epoch?, .generated_at?, .age_days?)'
+NORM='del(.. | .collected_epoch?, .collected_at?, .generated_epoch?, .generated_at?, .generated_utc?, .generated_local?, .age_days?)'
 MOCK_NOW="$(date -u +%s)"; export MOCK_NOW
 MOCK_SLEEP=ap-south-1=1,ca-central-1=0.5 t par1 0 fleet -P prod -A --parallel 1 -F json
 MOCK_SLEEP=ap-south-1=1,ca-central-1=0.5 t par4 0 fleet -P prod -A --parallel 4 -F json
@@ -215,11 +241,16 @@ chk "parallel 4 output identical to sequential (slow first region finishes last)
 chk "batch fallback (no wait -n) identical to sequential" cmp -s <(jq -S "$NORM" "$OUT/par1.out") <(jq -S "$NORM" "$OUT/par2b.out")
 hasnt par1 err 'started|at a time|regions in order'
 has par4 err 'scanning 5 regions, up to 4 at a time'
-has par4 err '\[1/5\] ap-south-1: started'
-has par4 err '\[5/5\] us-west-2: started'
-has par4 err 'regions in order: ap-south-1: done \(0 resources\); ca-central-1: done \(0 resources\); eu-west-1: done \(0 resources\); us-east-1: done \(6 resources\); us-west-2: done \(2 resources\)$'
-chk "par4: slow ap-south-1 reports done after us-east-1" bash -c "grep -n 'us-east-1: 3 clusters' '$OUT/par4.err' | cut -d: -f1 | { read a; b=\$(grep -n 'ap-south-1: (empty)' '$OUT/par4.err' | cut -d: -f1); (( a < b )); }"
-chk "par2b: never more than 2 regions started before one finished" bash -c "awk '/: started\$/{r++; if(r>m)m=r} /: [0-9]+ clusters|\\(empty\\)/{r--} END{exit !(m==2)}' '$OUT/par2b.err'"
+hasnt par4 err 'started|regions in order|\(empty\)'
+has par4 err '111111111111: 5 regions scanned, 2 empty: ap-south-1, eu-west-1$'
+chk "par: same summary line as sequential" bash -c "diff <(grep -o 'regions scanned.*' '$OUT/par1.err') <(grep -o 'regions scanned.*' '$OUT/par4.err')"
+MOCK_SLEEP=ap-south-1=1,ca-central-1=0.5 t par4v 0 fleet -P prod -A --parallel 4 -F json -v
+has par4v err '\[1/5\] ap-south-1: started'
+has par4v err '\[5/5\] us-west-2: started'
+has par4v err 'regions in order: ap-south-1: done \(0 resources\); ca-central-1: done \(0 resources\); eu-west-1: done \(0 resources\); us-east-1: done \(6 resources\); us-west-2: done \(2 resources\)$'
+chk "par4v: slow ap-south-1 reports done after us-east-1" bash -c "grep -n 'us-east-1: 3 clusters' '$OUT/par4v.err' | cut -d: -f1 | { read a; b=\$(grep -n 'ap-south-1: (empty)' '$OUT/par4v.err' | cut -d: -f1); (( a < b )); }"
+MOCK_SLEEP=ap-south-1=1 RDS_BCR_NO_WAIT_N=1 t par2bv 0 fleet -P prod -A --parallel 2 -F json -v
+chk "par2bv: never more than 2 regions started before one finished" bash -c "awk '/: started\$/{r++; if(r>m)m=r} /: [0-9]+ clusters|\\(empty\\)/{r--} END{exit !(m==2)}' '$OUT/par2bv.err'"
 t parconf 0 fleet --config <(printf 'profile = prod\nall-regions = yes\nparallel = 2\nformat = json\n')
 has parconf err 'up to 2 at a time'
 t parcrash 0 regioncrash -P prod -A -F json
@@ -227,7 +258,7 @@ jqt parcrash '.regions[] | select(.region == "us-west-2") | .status == "error" a
 jqt parcrash '[.rows[] | select(.region == "us-east-1")] | length == 6' "$OUT/parcrash.out"
 rowt parcrash orders-aurora-pg15 '.status == "COMPLIANT"'
 has parcrash err '\[ERROR\] \[5/5\] us-west-2: failed'
-has parcrash err 'us-west-2: failed \(0 resources\)$'
+has parcrash err '5 regions scanned, 2 empty: ap-south-1, eu-west-1; 1 failed: us-west-2$'
 has parcrash err '1 of 5 region\(s\) failed'
 t parcrashnc 5 regioncrash -P prod -A -F json --fail-on-noncompliant
 mkdir -p "$OUT/ptmp"; TMPDIR="$OUT/ptmp" MOCK_SCENARIO=regioncrash "$SCRIPT" -P prod -A -F json >/dev/null 2>&1
@@ -314,7 +345,9 @@ chk "CRLF jq: html written" grep -q 'orders-aurora-pg15' "$OUT/cr.html"
 echo "== browser"
 if command -v node >/dev/null && [[ -x "${CHROME:-/usr/bin/google-chrome}" ]] && node -e 'require("puppeteer-core")' 2>/dev/null; then
     for h in "$HTML" "$OUT/all accounts.html"; do
-        res="$(node "$HERE/browser_check.js" "$h" ${SHOTS:+"$SHOTS"} 2>&1)"; rc=$?
+        cmp=""; [[ "$h" == "$HTML" ]] && cmp="$CSV"
+        res="$(CSV_CMP="$cmp" node "$HERE/browser_check.js" "$h" ${SHOTS:+"$SHOTS"} 2>&1)"; rc=$?
+        [[ -n "$cmp" && $rc -eq 0 ]] && { grep -q '"checks":[0-9]' <<<"$res" && ok "browser: HTML CSV export compared with $(basename "$CSV")"; }
         if [[ $rc -eq 0 ]]; then ok "browser: $(basename "$h") $res"; else bad "browser: $(basename "$h") $res"; fi
         SHOTS="${SHOTS:+$SHOTS/merged}"
     done

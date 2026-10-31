@@ -19,7 +19,7 @@ set -Eeuo pipefail
 umask 077
 
 readonly SCRIPT_NAME="${0##*/}"
-readonly SCRIPT_VERSION="1.3.0"
+readonly SCRIPT_VERSION="1.3.1"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_DIR
 LIBDIR="${RDS_BCR_LIB:-$SCRIPT_DIR/lib}"
@@ -98,7 +98,8 @@ Behaviour:
       --max-attempts N      AWS CLI retry attempts (default: 5)
       --keep-workdir        Keep raw AWS responses for debugging
       --dry-run             Print the AWS calls that would run; call nothing
-  -v, --verbose / -h, --help / -V, --version
+  -v, --verbose             Print every region line (empty regions too) and debug logs
+  -h, --help / -V, --version
 
 AWS calls (all read-only): sts get-caller-identity; ec2 describe-regions (-A); rds describe-db-clusters,
 describe-db-instances, describe-global-clusters (once per account), describe-db-cluster-snapshots and
@@ -309,8 +310,9 @@ region_failed() {   # region_failed <account> <region> <dir> <why>: placeholder 
         '{account: $a, region: $r, status: "error", resources: 0, errors: [$e], snapshot_scan: false, existing: []}' >"$d/region.json"
 }
 
-region_progress() {   # one line per scanned region: [i/N] region: counts (seconds); errors on the same line
+region_progress() {   # one line per region with resources (all regions with -v): [i/N] region: counts (seconds); errors always shown
     local reg="$1" res="$2" no="$3"; shift 3
+    # shellcheck disable=SC2031  # REG_T0 is set per region inside that region's own (sub)shell on purpose
     local line secs=$(( SECONDS - ${REG_T0:-$SECONDS} ))
     line="$(jqv -r --argjson no "$no" '([.[] | select(.type == "cluster")] | length) as $c | ([.[] | select(.type == "instance")] | length) as $i
         | ([.[].snapshots[]? | select(.kind != "backup")] | length) as $s | ([.[].snapshots[]? | select(.kind == "backup")] | length) as $b
@@ -318,9 +320,16 @@ region_progress() {   # one line per scanned region: [i/N] region: counts (secon
           else "\($c) cluster\(if $c == 1 then "" else "s" end), \($i) instance\(if $i == 1 then "" else "s" end), \($s) snapshot\(if $s == 1 then "" else "s" end), \($b) recovery point\(if $b == 1 then "" else "s" end)"
                + (if $no > 0 then ", \($no) without source" else "" end) end' "$res")"
     [[ -n "$line" ]] || line="failed: unreadable AWS output"
+    [[ "$line" == "(empty)" && $# -eq 0 && "$VERBOSE" != 1 ]] && return 0   # empty regions: listed in the summary line
     [[ "$line" == "(empty)" ]] || line+=" (${secs}s)"
     if (( $# )); then line+=" - ERROR: $(IFS='; '; echo "$*")"; [[ "$line" == *"(empty)"* ]] && line="${line/(empty)/(no data)}"; fi
     log_info "[$REG_I/$REG_N] $reg: $line"
+}
+
+region_summary() {   # one line per account: "8 regions scanned, 5 empty: a, b, c" (+ failed regions)
+    log_info "$1: $(jqv -rs '(map(select(.status == "empty") | .region)) as $e | (map(select(.status == "error") | .region)) as $f
+        | "\(length) region\(if length == 1 then "" else "s" end) scanned, \($e | length) empty\(if ($e | length) > 0 then ": " + ($e | join(", ")) else "" end)"
+          + (if ($f | length) > 0 then "; \($f | length) failed: \($f | join(", "))" else "" end)' "$WORK/$1"/*/region.json)"
 }
 
 scan_profile() {   # scan_profile <profile>  -> $WORK/data_<account>.json
@@ -357,7 +366,7 @@ scan_profile() {   # scan_profile <profile>  -> $WORK/data_<account>.json
             if (( HAVE_WAIT_N )); then wait -n || true; running=$((running - 1))
             else wait || true; running=0; fi   # no wait -n: finish the batch first
         fi
-        log_info "[$i/$n] $reg: started"
+        (( VERBOSE )) && log_info "[$i/$n] $reg: started"
         region_job "$prof" "$acct" "$reg" "$d" & BG_PIDS+=("$!"); running=$((running + 1))
     done
     if (( SCAN_PAR )); then
@@ -373,10 +382,11 @@ scan_profile() {   # scan_profile <profile>  -> $WORK/data_<account>.json
             if [[ -s "$d/stats" ]]; then local c f; read -r c f <"$d/stats"; AWS_CALLS=$((AWS_CALLS + c)); AWS_FAILS=$((AWS_FAILS + f)); fi
             summ+=("$(jqv -r '"\(.region): \(if .status == "error" then "failed" else "done" end) (\(.resources) resource\(if .resources == 1 then "" else "s" end))"' "$d/region.json")")
         done
-        local joined; printf -v joined '%s; ' "${summ[@]}"; log_info "$acct regions in order: ${joined%; }"
+        if (( VERBOSE )); then local joined; printf -v joined '%s; ' "${summ[@]}"; log_info "$acct regions in order: ${joined%; }"; fi
         (( fails )) && log_warn "$acct: $fails of $n region(s) failed; see Region errors in the report"
     fi
     (( DRY_RUN )) && return 0
+    region_summary "$acct"
     jqv -n --arg s "$DATA_SCHEMA" --argjson v "$DATA_SCHEMA_VERSION" --arg tool "$SCRIPT_VERSION" --arg a "$acct" --arg p "${prof:-default}" --argjson now "$NOW" \
         '{schema: $s, schema_version: $v, tool_version: $tool, collected_epoch: $now, collected_at: ($now | todate),
           accounts: [{account: $a, profile: $p, collected_epoch: $now}],
@@ -420,18 +430,11 @@ abs_dir() {   # absolute, normalised directory (no //, ./, ..; ~ expanded) - Clo
     for part in "${keep[@]}"; do out+="/$part"; done
     printf '%s' "${out:-/}"
 }
-output_block() {   # Output (N files) in /abs/dir: then one file name per line (grouped by directory)
+output_block() {   # Output (N files): then one complete absolute path per line
     (( ${#WRITTEN[@]} )) || return 0
-    local f d last="" n=${#WRITTEN[@]}; local -a dirs=() names=()
-    for f in "${WRITTEN[@]}"; do dirs+=("$(abs_dir "$(dirname -- "$f")")"); names+=("${f##*/}"); done
-    local i; for ((i = 0; i < n; i++)); do
-        d="${dirs[$i]}"
-        if [[ "$d" != "$last" ]]; then
-            local c=0 j; for ((j = i; j < n; j++)); do [[ "${dirs[$j]}" == "$d" ]] && c=$((c + 1)); done
-            printf 'Output (%d file%s) in %s:\n' "$c" "$( (( c == 1 )) || echo s)" "$d" >&2; last="$d"
-        fi
-        printf '  %s\n' "${names[$i]}" >&2
-    done
+    local f n=${#WRITTEN[@]}
+    printf 'Output (%d file%s):\n' "$n" "$( (( n == 1 )) || echo s)" >&2
+    for f in "${WRITTEN[@]}"; do printf '  %s/%s\n' "$(abs_dir "$(dirname -- "$f")")" "${f##*/}" >&2; done
     if [[ -n "$LOG_FILE" ]]; then printf 'wrote %s\n' "${WRITTEN[@]}" >>"$LOG_FILE" 2>/dev/null || true; fi
 }
 render() {   # render <mode> <data> -> stdout

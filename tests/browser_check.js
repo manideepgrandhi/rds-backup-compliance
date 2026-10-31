@@ -16,7 +16,7 @@ const sleep = ms => new Promise(x => setTimeout(x, ms));
   await g.evaluate(() => { window.__csv = []; const o = URL.createObjectURL; URL.createObjectURL = b => { b.arrayBuffer().then(a => window.__csv.push(new TextDecoder('utf-8', {ignoreBOM: true}).decode(a))); return o(b); }; });
   const st = () => g.evaluate(() => {
     const card = k => +document.querySelector('.card[data-k="' + k + '"] .v').textContent;
-    return {rows: document.querySelectorAll('#main tbody tr').length, res: card('resources'), comp: card('compliant'), nc: card('non-compliant'),
+    return {rows: document.querySelectorAll('#main tbody tr.res').length, res: card('resources'), comp: card('compliant'), nc: card('non-compliant'),
       due: card('not-yet-due'), regions: [...document.querySelectorAll('#regions tbody tr')].map(t => t.dataset.k),
       foot: document.querySelector('#regions tfoot tr').textContent, count: document.getElementById('f-count').textContent,
       head: document.body.innerHTML.split('<div class="tabs">')[0]}; });
@@ -38,7 +38,7 @@ const sleep = ms => new Promise(x => setTimeout(x, ms));
   await sel('f-show', 'nyd'); s = await st();
   const nydN = DD.rows.filter(r => r.status === 'NOT YET DUE' || r.not_yet_due).length;
   ok(s.rows === nydN && s.rows > 0, 'Show: Not yet due (' + s.rows + ' = ' + nydN + ')');
-  ok(await g.evaluate(() => [...document.querySelectorAll('#main tbody tr')].every(tr => /full on/.test(tr.textContent))), 'not yet due rows show "full on <date>"');
+  ok(await g.evaluate(() => [...document.querySelectorAll('#main tbody tr.det')].every(tr => /full on/.test(tr.textContent))), 'not yet due rows show "full on <date>"');
   ok(await g.evaluate(() => [...document.querySelectorAll('#main tbody td')].some(t => /so far \(target \d+\)/.test(t.textContent))), 'building-up cells show "x/y so far (target z)"');
   await shot('not_yet_due_filter');
   await sel('f-show', 'warn'); s = await st();
@@ -46,16 +46,36 @@ const sleep = ms => new Promise(x => setTimeout(x, ms));
   ok(await g.evaluate(() => [...document.querySelectorAll('#main .warn')].every(w => /retention doesn't match/.test(w.textContent))), 'yellow retention warning text');
   await g.click('#f-reset'); await sleep(50);
   await sel('f-show', 'nyd'); await g.click('#f-csv'); await sleep(200);
-  const ncsv = await g.evaluate(() => window.__csv[window.__csv.length - 1]).then(t => t.replace(/^\ufeff/, '').trim().split('\r\n'));
-  ok(/,not_yet_due,/.test(ncsv[0]) && /,created_utc,age_days,/.test(ncsv[0]) && (DD.cfg.yearly > 0) === /,yearly,/.test(ncsv[0]), 'filtered csv: created / age / not_yet_due, yearly only when on');
+  const ncsv = await g.evaluate(() => window.__csv[window.__csv.length - 1]).then(t => t.replace(/^\ufeff/, '').trim().split('\r\n').map((l, i) => i ? l : l.replace(/"/g, '')));
+  ok(/,not_yet_due,/.test(ncsv[0]) && /,created_utc,age_days,/.test(ncsv[0]) && /,weekly_found,weekly_expected,weekly_target,weekly_missing,weekly_full_on,/.test(ncsv[0]) && (DD.cfg.yearly > 0) === /,yearly_status,/.test(ncsv[0]), 'filtered csv: created / age / not_yet_due, yearly only when on');
   await g.click('#f-reset'); await sleep(50);
+  // v1.3.1: unfiltered HTML export == the script's CSV (same header, same cells, same quoting)
+  await g.click('#f-csv'); await sleep(200);
+  const fullCsv = await g.evaluate(() => window.__csv[window.__csv.length - 1]);
+  if (process.env.CSV_CMP) ok(fullCsv.replace(/^\ufeff/, '').replace(/\r\n/g, '\n').trim() === fs.readFileSync(process.env.CSV_CMP, 'utf8').replace(/^\ufeff/, '').replace(/\r\n/g, '\n').trim(), 'HTML CSV export == script CSV');
+  // v1.3.1: compact count cells, one-line gaps, expandable detail row
+  const cx = await g.evaluate(() => ({miss: [...document.querySelectorAll('#main tr.res .miss')].every(m => /^\d+ missing$/.test(m.textContent) && m.closest('td').title.length > 0),
+    nmiss: document.querySelectorAll('#main tr.res .miss').length, det: document.querySelectorAll('#main tr.det').length,
+    hidden: [...document.querySelectorAll('#main tr.det')].every(d => d.offsetParent === null || getComputedStyle(d).display === 'none'),
+    oneline: [...document.querySelectorAll('#main tr.res td.gaps')].every(t => !/\n/.test(t.textContent)),
+    fixed: getComputedStyle(document.querySelector('#main table, table#main')).tableLayout === 'fixed'}));
+  ok(cx.nmiss > 0 && cx.miss, 'red "N missing" tags with tooltip (' + cx.nmiss + ')');
+  ok(cx.det === all && cx.hidden, 'one hidden detail row per resource');
+  ok(cx.oneline, 'gaps one-line summary'); ok(cx.fixed, 'fixed table layout');
+  await g.click('#main tr.res td.gaps'); await sleep(80);
+  const op1 = await g.evaluate(() => { const d = document.querySelector('#main tr.res').nextElementSibling; return {vis: d.offsetParent !== null, rp: /Recovery point/i.test(d.textContent), car: document.querySelector('#main tr.res .car').getAttribute('aria-expanded')}; });
+  ok(op1.vis && op1.rp && op1.car === 'true', 'row click expands detail with recovery-point diagnostics');
+  await g.evaluate(() => { document.querySelectorAll('.tw').forEach(w => { w.scrollLeft = 0; }); window.scrollTo(0, 0); }); await sleep(50);
+  await shot('row_expanded');
+  await g.focus('#main tr.res .car'); await g.keyboard.press('Enter'); await sleep(80);
+  ok(await g.evaluate(() => document.querySelector('#main tr.res').nextElementSibling.offsetParent === null), 'caret Enter collapses');
   await sel('f-status', 'NON-COMPLIANT'); s = await st();
   ok(s.rows === s.nc && s.comp === 0 && s.rows > 0, 'status filter NON-COMPLIANT');
   await g.click('#f-csv'); await sleep(200);
   const csv = await g.evaluate(() => window.__csv[window.__csv.length - 1]);
   const lines = csv.replace(/^\ufeff/, '').trim().split('\r\n');
   ok(csv.charCodeAt(0) === 0xfeff, 'csv BOM'); ok(lines.length === s.rows + 1, 'csv has filtered rows only (' + lines.length + ')');
-  ok(/^account_id,region,identifier/.test(lines[0]) && !lines[0].split(',').some(c => /(^|_)arn$|^env|owner|^app|notes?$/i.test(c)), 'csv header');
+  ok(/^"account_id","region","identifier"/.test(lines[0]) && !lines[0].replace(/"/g, '').split(',').some(c => /(^|_)arn$|^env|owner|^app|notes?$/i.test(c)), 'csv header');
   ok(lines.slice(1).every(l => /NON-COMPLIANT/.test(l)), 'csv rows all NON-COMPLIANT');
   await g.click('#f-reset'); await sleep(50);
   await sel('f-global', 'orders-global'); s = await st(); ok(s.rows === 2, 'global filter orders-global = 2 rows (' + s.rows + ')');
@@ -97,7 +117,7 @@ const sleep = ms => new Promise(x => setTimeout(x, ms));
     ok(b3.sec.backup < b12.sec.backup, 'AWS Backup points shrink with period (' + b3.sec.backup + ' < ' + b12.sec.backup + ')');
     if (shots) await g.screenshot({path: path.join(shots, 'backups_tab_3m.png'), fullPage: true});
     await g.click('#b-csv'); await sleep(200);
-    const bc = await g.evaluate(() => window.__csv[window.__csv.length - 1]).then(t => t.replace(/^\ufeff/, '').trim().split('\r\n'));
+    const bc = await g.evaluate(() => window.__csv[window.__csv.length - 1]).then(t => t.replace(/^\ufeff/, '').trim().split('\r\n').map((l, i) => i ? l : l.replace(/"/g, '')));
     ok(bc.length === 1 + b3.sec.manual + b3.sec.automated + b3.sec.backup, 'backups csv rows = 3m view');
     // single view: Backup type filter shows one section; Older than sorts oldest first
     await sel('b-period', '12'); await sel('b-kind', 'automated'); let bk1 = await bt();
@@ -145,7 +165,7 @@ const sleep = ms => new Promise(x => setTimeout(x, ms));
     ok(ar.rows.length > 0 && ar.rows.every(r => r.region === reg), 'all mode region filter');
     ok(!['Rule', 'Retention', 'Vault'].some(c => ar.cols.includes(c)), 'manual-only view hides empty Rule/Retention/Vault');
     await g.click('#b-csv'); await sleep(200);
-    const ac = await g.evaluate(() => window.__csv[window.__csv.length - 1]).then(t => t.replace(/^\ufeff/, '').trim().split('\r\n'));
+    const ac = await g.evaluate(() => window.__csv[window.__csv.length - 1]).then(t => t.replace(/^\ufeff/, '').trim().split('\r\n').map((l, i) => i ? l : l.replace(/"/g, '')));
     ok(/^account_id,region,identifier,type,kind,snapshot_or_recovery_point,created_utc,created_ist,age_days,/.test(ac[0]) && ac.length === ar.rows.length + 1 && ac.slice(1).every(l => l.includes(',manual,')), 'all mode csv = filtered table (' + ac.length + ')');
     ok(ac.every(l => l.split(',').length === 16), 'csv keeps all 16 columns in manual-only view');
     await sel('b-region', ''); const accts = [...new Set(o90.rows.map(r => r.acct))];
@@ -177,7 +197,7 @@ const sleep = ms => new Promise(x => setTimeout(x, ms));
     ok(orf.rows.every((r, i, a) => i === 0 || a[i - 1].age <= r.age), 'orphaned view sorted newest first like other views');
     ok(orf.cols.includes('Est. $/month') && orf.cols.includes('Source'), 'orphan columns');
     await g.click('#b-csv'); await sleep(200);
-    const oc = await g.evaluate(() => window.__csv[window.__csv.length - 1]).then(t => t.replace(/^\ufeff/, '').trim().split('\r\n'));
+    const oc = await g.evaluate(() => window.__csv[window.__csv.length - 1]).then(t => t.replace(/^\ufeff/, '').trim().split('\r\n').map((l, i) => i ? l : l.replace(/"/g, '')));
     ok(/,source_status$/.test(oc[0]) && oc.length === orf.rows.length + 1 && oc.slice(1).every(l => /,ORPHANED$/.test(l) && !/\(deleted\)/.test(l)), 'orphaned csv export: source_status, raw source id');
     if (shots) await g.screenshot({path: path.join(shots, 'backups_orphaned.png'), fullPage: true});
     await sel('b-src', 'SHARED'); let sh = await av();

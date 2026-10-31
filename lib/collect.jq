@@ -14,10 +14,12 @@ def arnp: if type == "string" and startswith("arn:") then split(":") | {region: 
 ($globals[0].GlobalClusters // []) as $G
 | ([ $G[] | .GlobalClusterIdentifier as $g | .GlobalClusterMembers[]? | {key: .DBClusterArn, value: {g: $g, w: (.IsWriter == true)}} ] | from_entries) as $GM
 | ($rps[0] // []) as $RP
-| def rps($arn): [ $RP[] | select(.ResourceArn == $arn)
+| def rps($arn): ($arn | ascii_downcase) as $la | [ $RP[] | select((.ResourceArn // "" | ascii_downcase) == $la)
       | {kind: "backup", id: (.RecoveryPointArn | split(":") | last), created_epoch: (.CreationDate | ts), status: .Status,
          size_gb: (if .BackupSizeInBytes == null then null else ((.BackupSizeInBytes / 1073741824 * 10 | round) / 10) end),
          expires_epoch: (.CalculatedLifecycle.DeleteAt | ts), vault: .BackupVaultName}
+      + (if .Lifecycle.DeleteAfterDays != null then {ret_days: .Lifecycle.DeleteAfterDays} else {} end)
+      + (if (.RecoveryPointArn // "" | test(":continuous:")) or .BackupType == "CONTINUOUS" then {continuous: true} else {} end)
       + ((.CreatedBy // {}) | {plan: (.BackupPlanName // .BackupPlanId // null), rule: (.BackupRuleName // .BackupRuleId // null),
                                cron: (.BackupRuleCron // null), rtz: (.BackupRuleTimezone // null)} | with_entries(select(.value != null))) ];
   def role($arn; $repl): if $global_ok | not then (if $repl then "replica" else "unknown" end)

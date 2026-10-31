@@ -58,9 +58,28 @@ Sample outputs from the mock fleet are in `samples/`, and screenshots are in `do
 The run ends with the output files:
 
 ```
-Output (4 files) in /home/cloudshell-user/out:
-  rds_backup_compliance_111111111111_20261031_144500.html
-  rds_backup_compliance_111111111111_20261031_144500.csv
-  rds_backup_compliance_111111111111_20261031_144500_backups.csv
-  rds_backup_compliance_111111111111_20261031_144500_orphaned_snapshots.csv
+[INFO] 111111111111: 17 regions scanned, 15 empty: ap-northeast-1, ap-northeast-2, ...
+Output (4 files):
+  /home/cloudshell-user/out/rds_backup_compliance_111111111111_20261031_144500.html
+  /home/cloudshell-user/out/rds_backup_compliance_111111111111_20261031_144500.csv
+  /home/cloudshell-user/out/rds_backup_compliance_111111111111_20261031_144500_backups.csv
+  /home/cloudshell-user/out/rds_backup_compliance_111111111111_20261031_144500_orphaned_snapshots.csv
 ```
+
+## v1.3.1
+
+```bash
+# Show every region line, empty regions included
+./rds_backup_compliance_report.sh -A -v
+
+# Why is weekly 0/4? List each AWS Backup recovery point and why it did or did not count
+./rds_backup_compliance_report.sh -r us-east-1 -i orders-aurora-pg15 -F json \
+  | jq -r '.rows[0].recovery_points[] | [.date, .ret, .class, .status, .counted, .reason] | @tsv'
+```
+
+```
+2026-10-24 Sat  35   weekly    COMPLETED  true   weekly: counts for Sat 24 Oct, retention 35d in weekly window 25-40d
+2026-10-21 Wed  2555 mismatch  COMPLETED  false  retention 2555d outside weekly window 25-40d and monthly window 300-400d
+```
+
+The same table is in the HTML report: click a row to open it. CSV columns per check (`weekly_found`, `weekly_expected`, `weekly_missing`, ...) are plain numbers or `YYYY-MM-DD Day` text that Excel keeps as text.

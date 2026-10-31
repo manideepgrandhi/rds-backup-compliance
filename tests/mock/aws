@@ -7,6 +7,7 @@ Profiles: prod -> 111111111111 (us-east-1 fleet + us-west-2 global secondaries),
 MOCK_SCENARIO: fleet (default) | backupdeny (backup list-backup-vaults AccessDenied) | globaldeny (describe-global-clusters
                AccessDenied) | snapdeny (describe-db-snapshots AccessDenied) | empty (no databases anywhere)
                | regioncrash (us-west-2 describe-db-clusters returns broken JSON: the region job itself fails)
+               | rpquirks (prod vault: weekly points without CalculatedLifecycle and Status AVAILABLE, plus a continuous point)
 MOCK_NOW: fixed epoch for "now".  MOCK_SLEEP: "region=seconds,..." delay per region (completion order in parallel tests).
 MOCK_LOG: append argv as JSONL.  MOCK_DEFAULT_REGION: answer for `aws configure get region`.
 """
@@ -283,5 +284,14 @@ if svc == "backup" and op == "list-recovery-points-by-backup-vault":
         pts.append({"RecoveryPointArn": "arn:aws:ec2:%s::image/ami-0abc" % region, "BackupVaultName": vault,
                     "ResourceArn": "arn:aws:ec2:%s:%s:instance/i-0abc" % (region, acct), "ResourceType": "EC2",
                     "CreationDate": iso(NOW), "Status": "COMPLETED"})
+    if SCEN == "rpquirks" and vault == "prod vault":   # v1.3.1: no CalculatedLifecycle, Status AVAILABLE, continuous (PITR) points
+        for d in pts:
+            if d.get("Lifecycle", {}).get("DeleteAfterDays") == 35:
+                d.pop("CalculatedLifecycle", None); d["Status"] = "AVAILABLE"
+        for r in rows:
+            t = saturdays(6)[1]
+            pts.append({"RecoveryPointArn": "arn:aws:backup:%s:%s:recovery-point:continuous:%s-4f2a" % (r[0], acct, r[1]), "BackupVaultName": vault,
+                        "ResourceArn": arn(r), "ResourceType": "Aurora" if r[2] == "cluster" else "RDS", "CreationDate": iso(t, ist=True),
+                        "Status": "COMPLETED", "Lifecycle": {"DeleteAfterDays": 35}, "CalculatedLifecycle": {"DeleteAt": iso(t + timedelta(days=35))}})
     print(json.dumps({"RecoveryPoints": pts})); sys.exit(0)
 fail("InvalidAction", op or "?", "mock does not implement %s %s" % (svc, op), rc=252)
