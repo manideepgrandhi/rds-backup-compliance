@@ -17,7 +17,9 @@ def arnp: if type == "string" and startswith("arn:") then split(":") | {region: 
 | def rps($arn): [ $RP[] | select(.ResourceArn == $arn)
       | {kind: "backup", id: (.RecoveryPointArn | split(":") | last), created_epoch: (.CreationDate | ts), status: .Status,
          size_gb: (if .BackupSizeInBytes == null then null else ((.BackupSizeInBytes / 1073741824 * 10 | round) / 10) end),
-         expires_epoch: (.CalculatedLifecycle.DeleteAt | ts), vault: .BackupVaultName} ];
+         expires_epoch: (.CalculatedLifecycle.DeleteAt | ts), vault: .BackupVaultName}
+      + ((.CreatedBy // {}) | {plan: (.BackupPlanName // .BackupPlanId // null), rule: (.BackupRuleName // .BackupRuleId // null),
+                               cron: (.BackupRuleCron // null), rtz: (.BackupRuleTimezone // null)} | with_entries(select(.value != null))) ];
   def role($arn; $repl): if $global_ok | not then (if $repl then "replica" else "unknown" end)
       elif $GM[$arn] then (if $GM[$arn].w then "primary" else "secondary" end)
       elif $repl then "replica" else "none" end;
@@ -41,6 +43,7 @@ def arnp: if type == "string" and startswith("arn:") then split(":") | {region: 
   [ ($clusters[0].DBClusters // [])[] | select(.Engine | skip_engine | not) | . as $c
     | {account_id: $acct, region: $region, id: .DBClusterIdentifier, type: "cluster", engine: .Engine, engine_version: .EngineVersion,
        created_epoch: (.ClusterCreateTime | ts), retention: (.BackupRetentionPeriod // 0),
+       backup_window: (.PreferredBackupWindow // null), copy_tags: (if .CopyTagsToSnapshot == null then null else .CopyTagsToSnapshot end),
        global_cluster: ($GM[.DBClusterArn].g // (if $global_ok then null else "unknown" end)),
        global_role: role(.DBClusterArn; ((.ReplicationSourceIdentifier // "") != "")),
        snap_ok: $csnap_ok, backup_ok: $backup_ok, arn: .DBClusterArn,
@@ -50,6 +53,7 @@ def arnp: if type == "string" and startswith("arn:") then split(":") | {region: 
   + [ ($instances[0].DBInstances // [])[] | select((.DBClusterIdentifier // "") == "" and (.Engine | skip_engine | not)) | . as $i
     | {account_id: $acct, region: $region, id: .DBInstanceIdentifier, type: "instance", engine: .Engine, engine_version: .EngineVersion,
        created_epoch: (.InstanceCreateTime | ts), retention: (.BackupRetentionPeriod // 0), global_cluster: null,
+       backup_window: (.PreferredBackupWindow // null), copy_tags: (if .CopyTagsToSnapshot == null then null else .CopyTagsToSnapshot end),
        global_role: (if (.ReadReplicaSourceDBInstanceIdentifier // "") != "" then "replica" else "none" end),
        snap_ok: $isnap_ok, backup_ok: $backup_ok, arn: .DBInstanceArn,
        snapshots: ([ ($isnaps[0].DBSnapshots // [])[] | select(.DBInstanceIdentifier == $i.DBInstanceIdentifier and (.SnapshotType == "manual" or .SnapshotType == "automated"))

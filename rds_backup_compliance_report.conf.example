@@ -4,13 +4,21 @@
 # region=us-east-1,us-west-2
 # all-regions=true
 # engine=aurora-*
+# Schedule: RDS automated daily (7d), AWS Backup every Saturday (~1 month), first Sunday monthly (1 year), no yearly
 daily=7
 daily-max-age=26
-weekly=4
-monthly=11
-yearly=1
-weekly-days=11-60
-monthly-max-days=400
+# weekly=auto checks every weekly-weekday in the last weekly-window-days; weekly=N checks the last N
+weekly=auto
+weekly-weekday=sat
+weekly-window-days=30
+monthly=12
+monthly-rule=first-sun
+yearly=0
+weekly-days=25-40
+monthly-days=300-400
+tolerance-days=1
+# regions of one account scanned at the same time (1 = one by one)
+parallel=4
 # snapshot-price-per-gb=0.021
 # format=html,csv
 # output-dir=./reports

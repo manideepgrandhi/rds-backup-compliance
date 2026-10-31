@@ -3,11 +3,12 @@
 # rds_backup_compliance_report.sh - backup compliance of Aurora clusters and standalone RDS instances, per account
 # and region. READ-ONLY: rds describe-*, backup list-*, sts get-caller-identity, ec2 describe-regions.
 #
-# Rules (defaults, all configurable):
-#   daily   RDS automated backups: retention >= 7 days, >= 7 daily automated backups, the latest <= 26 h old
-#   weekly  >= 4  AWS Backup recovery points in distinct weeks   (retention 11-60 days)
-#   monthly >= 11 AWS Backup recovery points in distinct months  (retention 61-400 days)
-#   yearly  >= 1  AWS Backup recovery point                      (retention over 400 days or never expires)
+# Rules (schedule based; defaults, all configurable):
+#   daily   RDS automated backups: retention >= 7 days, one backup on each of the last 7 UTC days, the latest <= 26 h old
+#   weekly  AWS Backup point (retention 25-40 days) for every Saturday of the last 30 days (+/- 1 day tolerance)
+#   monthly AWS Backup point (retention 300-400 days) for the first Sunday of each of the last 12 months (+/- 1 day)
+#   yearly  off by default (yearly=0); yearly=N checks N points with retention over the monthly range
+#   Dates before the resource was created are never expected. Points whose retention fits no class: warning only.
 #   Aurora global database secondaries and read replicas: daily only (weekly / monthly / yearly N/A).
 # Status: COMPLIANT | NON-COMPLIANT (gaps column) | NOT YET DUE (resource too young) | UNKNOWN (a call failed).
 # Output: text | csv | json | html. Exit: 0 ok, 5 NON-COMPLIANT with --fail-on-noncompliant, 1 usage, 2 pre-check,
@@ -18,7 +19,7 @@ set -Eeuo pipefail
 umask 077
 
 readonly SCRIPT_NAME="${0##*/}"
-readonly SCRIPT_VERSION="1.2.1"
+readonly SCRIPT_VERSION="1.3.0"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_DIR
 LIBDIR="${RDS_BCR_LIB:-$SCRIPT_DIR/lib}"
@@ -30,9 +31,11 @@ fi
 
 PROFILES=(); REGIONS=(); ALL_REGIONS=0; ENGINES=(); IDENTIFIERS=(); FORMATS=(); MERGE_ARGS=()
 OUTPUT_DIR=""; OUT_FILE=""; MANUAL_OLDER=""; SNAP_PRICE="0.021"; PREFIX="rds_backup_compliance"; DISPLAY_TZ="Asia/Kolkata"
-DAILY=7; DAILY_MAX_AGE_H=26; WEEKLY=4; MONTHLY=11; YEARLY=1
-WEEKLY_MIN_DAYS=11; WEEKLY_MAX_DAYS=60; MONTHLY_MAX_DAYS=400
+DAILY=7; DAILY_MAX_AGE_H=26; WEEKLY=auto; MONTHLY=12; YEARLY=0
+WEEKLY_MIN_DAYS=25; WEEKLY_MAX_DAYS=40; MONTHLY_MIN_DAYS=300; MONTHLY_MAX_DAYS=400
+WEEKLY_WEEKDAY=sat; MONTHLY_RULE=first-sun; TOLERANCE_DAYS=1; WEEKLY_WINDOW_DAYS=30; PARALLEL=4
 NC_ONLY=0; FAIL_ON_NC=0; LOG_FILE=""; CONFIG_FILE=""; AWS_TIMEOUT=30; MAX_ATTEMPTS=5
+BG_PIDS=(); SCAN_PAR=0; HAVE_WAIT_N=0
 KEEP_WORKDIR=0; DRY_RUN=0; VERBOSE=0; SAVE_DATA=0; SAVE_DATA_FILE=""; MERGE=0
 WORK=""; NOW=0; STAMP=""; AWS_CALLS=0; AWS_FAILS=0
 declare -a WRITTEN=() DATA_FILES=()
@@ -57,13 +60,20 @@ Scope:
   -i, --identifier GLOB     Cluster / instance identifier                                               [repeatable]
 
 Compliance (defaults in brackets):
-      --daily N             RDS automated: retention >= N days and N daily backups               [7]
+      --daily N             RDS automated: retention >= N days, a backup on each of the last N days [7]
       --daily-max-age H     Latest automated backup at most H hours old                         [26]
-      --weekly N            AWS Backup recovery points in N distinct weeks                       [4]
-      --monthly N           ... in N distinct months                                             [11]
-      --yearly N            ... in N distinct years                                              [1]
-      --weekly-days MIN-MAX Retention (days) that classifies a recovery point as weekly         [11-60]
-      --monthly-max-days N  Retention up to N days = monthly; above N or never expires = yearly [400]
+      --weekly auto|N       Weekly points expected: auto = every scheduled weekday in the
+                            --weekly-window-days window (4 or 5); N = the last N scheduled days  [auto]
+      --weekly-window-days N  Window for --weekly auto                                          [30]
+      --weekly-weekday DAY  Day the weekly backup runs (sun..sat)                               [sat]
+      --monthly N           First-<day> points expected, one per month for the last N months    [12]
+      --monthly-rule RULE   first-sun (first Sunday of the month), first-mon, ... first-sat     [first-sun]
+      --parallel N          Scan up to N regions of an account at the same time; 1 = one by one [4]
+      --tolerance-days N    A point counts for a scheduled day if taken up to N days before/after [1]
+      --yearly N            AWS Backup points with retention above the monthly range; 0 = off   [0]
+      --weekly-days MIN-MAX Retention (days) that classifies a recovery point as weekly         [25-40]
+      --monthly-days MIN-MAX Retention (days) that classifies a recovery point as monthly       [300-400]
+      --monthly-max-days N  Same as the MAX of --monthly-days (kept for older configs)
       --non-compliant-only  Show only NON-COMPLIANT rows (totals still count everything)
       --fail-on-noncompliant  Exit 5 when a NON-COMPLIANT resource is found
 
@@ -101,6 +111,8 @@ add_list() { local -n _a="$1"; local _i; local -a _p; IFS=',' read -r -a _p <<<"
              for _i in "${_p[@]}"; do _i="${_i//[[:space:]]/}"; [[ -n "$_i" ]] && _a+=("$_i"); done; return 0; }
 is_true() { case "${1,,}" in 1|y|yes|true|on) return 0 ;; *) return 1 ;; esac; }
 need_arg() { [[ "$2" -ge 2 ]] || die 1 "Option $1 requires a value (see --help)"; }
+dow_ok() { [[ "${2,,}" =~ ^(sun|mon|tue|wed|thu|fri|sat)$ ]] || die 1 "$1 must be sun, mon, tue, wed, thu, fri or sat (got '$2')"; }
+dow_num() { case "$1" in sun) echo 0 ;; mon) echo 1 ;; tue) echo 2 ;; wed) echo 3 ;; thu) echo 4 ;; fri) echo 5 ;; *) echo 6 ;; esac; }
 int_ok() { [[ "$2" =~ ^[0-9]+$ ]] || die 1 "$1 must be a whole number (got '$2')"; }
 json_array() { if (( $# )); then printf '%s\n' "$@" | jq -R . | jq -cs . | tr -d '\r'; else printf '[]'; fi; }
 jqv() { jq "$@" | tr -d '\r'; }       # jq.exe on Windows writes CRLF: strip for values and files
@@ -111,10 +123,17 @@ set_opt() {   # set_opt key value  (shared by CLI and --config)
         profile) add_list PROFILES "$v" ;; region) add_list REGIONS "$v" ;; all-regions|all_regions) is_true "$v" && ALL_REGIONS=1 ;;
         engine) add_list ENGINES "$v" ;; identifier) add_list IDENTIFIERS "$v" ;;
         daily) int_ok --daily "$v"; DAILY="$v" ;; daily-max-age|daily_max_age) int_ok --daily-max-age "$v"; DAILY_MAX_AGE_H="$v" ;;
-        weekly) int_ok --weekly "$v"; WEEKLY="$v" ;; monthly) int_ok --monthly "$v"; MONTHLY="$v" ;; yearly) int_ok --yearly "$v"; YEARLY="$v" ;;
+        weekly) [[ "$v" == auto ]] || int_ok --weekly "$v"; WEEKLY="$v" ;; monthly) int_ok --monthly "$v"; MONTHLY="$v" ;; yearly) int_ok --yearly "$v"; YEARLY="$v" ;;
         weekly-days|weekly_days) [[ "$v" =~ ^([0-9]+)-([0-9]+)$ ]] || die 1 "--weekly-days must be MIN-MAX (got '$v')"
             WEEKLY_MIN_DAYS="${BASH_REMATCH[1]}"; WEEKLY_MAX_DAYS="${BASH_REMATCH[2]}" ;;
         monthly-max-days|monthly_max_days) int_ok --monthly-max-days "$v"; MONTHLY_MAX_DAYS="$v" ;;
+        monthly-days|monthly_days) [[ "$v" =~ ^([0-9]+)-([0-9]+)$ ]] || die 1 "--monthly-days must be MIN-MAX (got '$v')"
+            MONTHLY_MIN_DAYS="${BASH_REMATCH[1]}"; MONTHLY_MAX_DAYS="${BASH_REMATCH[2]}" ;;
+        weekly-weekday|weekly_weekday) dow_ok --weekly-weekday "$v"; WEEKLY_WEEKDAY="${v,,}" ;;
+        monthly-rule|monthly_rule) [[ "${v,,}" =~ ^first-(sun|mon|tue|wed|thu|fri|sat)$ ]] || die 1 "--monthly-rule must be first-sun .. first-sat (got '$v')"; MONTHLY_RULE="${v,,}" ;;
+        parallel) int_ok --parallel "$v"; (( v >= 1 && v <= 32 )) || die 1 "--parallel must be 1-32 (got '$v')"; PARALLEL="$v" ;;
+        tolerance-days|tolerance_days) int_ok --tolerance-days "$v"; (( v <= 3 )) || die 1 "--tolerance-days must be 0-3 (got '$v')"; TOLERANCE_DAYS="$v" ;;
+        weekly-window-days|weekly_window_days) int_ok --weekly-window-days "$v"; (( v >= 7 )) || die 1 "--weekly-window-days must be at least 7"; WEEKLY_WINDOW_DAYS="$v" ;;
         format) add_list FORMATS "$v" ;; output-dir|output_dir) OUTPUT_DIR="$v" ;; prefix) PREFIX="$v" ;; tz) DISPLAY_TZ="$v" ;;
         log-file|log_file) LOG_FILE="$v" ;; aws-timeout|aws_timeout) int_ok --aws-timeout "$v"; AWS_TIMEOUT="$v" ;;
         max-attempts|max_attempts) int_ok --max-attempts "$v"; MAX_ATTEMPTS="$v" ;;
@@ -159,7 +178,7 @@ parse_args() {
             --keep-workdir) KEEP_WORKDIR=1 ;; --dry-run) DRY_RUN=1 ;; -v|--verbose) VERBOSE=1 ;;
             --save-data) SAVE_DATA=1; if [[ $# -ge 2 && "$2" != -* ]]; then SAVE_DATA_FILE="$2"; shift; fi ;;
             --merge) MERGE=1; while [[ $# -ge 2 && "$2" != -* ]]; do MERGE_ARGS+=("$2"); shift; done ;;
-            --daily|--daily-max-age|--weekly|--monthly|--yearly|--weekly-days|--monthly-max-days|--prefix|--tz|--aws-timeout|--max-attempts|--manual-older-than|--snapshot-price-per-gb)
+            --daily|--daily-max-age|--weekly|--monthly|--yearly|--weekly-days|--monthly-max-days|--monthly-days|--weekly-weekday|--monthly-rule|--tolerance-days|--parallel|--weekly-window-days|--prefix|--tz|--aws-timeout|--max-attempts|--manual-older-than|--snapshot-price-per-gb)
                 need_arg "$1" $#; set_opt "${1#--}" "$2"; shift ;;
             --*=*) set_opt "${1%%=*}" "${1#*=}" 2>/dev/null || die 1 "Unknown option: $1"; ;;
             *) die 1 "Unknown option: $1 (see --help)" ;;
@@ -169,7 +188,8 @@ parse_args() {
     (( ${#cli_formats[@]} )) && FORMATS=("${cli_formats[@]}")
     local f; for f in "${FORMATS[@]}"; do case "$f" in text|txt|csv|json|html) ;; *) die 1 "Unknown format '$f' (text,csv,json,html)" ;; esac; done
     (( ${#FORMATS[@]} )) || { if (( MERGE )); then FORMATS=(html); else FORMATS=(text); fi; }
-    (( WEEKLY_MIN_DAYS <= WEEKLY_MAX_DAYS && WEEKLY_MAX_DAYS < MONTHLY_MAX_DAYS )) || die 1 "Need weekly-days MIN <= MAX < monthly-max-days"
+    (( WEEKLY_MIN_DAYS <= WEEKLY_MAX_DAYS && WEEKLY_MAX_DAYS < MONTHLY_MIN_DAYS && MONTHLY_MIN_DAYS <= MONTHLY_MAX_DAYS )) \
+        || die 1 "Need weekly-days MIN <= MAX < monthly-days MIN <= MAX (got weekly $WEEKLY_MIN_DAYS-$WEEKLY_MAX_DAYS, monthly $MONTHLY_MIN_DAYS-$MONTHLY_MAX_DAYS)"
     if (( MERGE )); then
         (( ${#MERGE_ARGS[@]} )) || die 1 "--merge needs at least one FILE or DIR"
         (( ${#PROFILES[@]} || ${#REGIONS[@]} || ALL_REGIONS )) && die 1 "--merge works offline: do not combine it with -P / -r / -A"
@@ -191,11 +211,14 @@ tz_setup() {   # offset seconds + label of the second time zone (Git Bash date m
 }
 
 cfg_json() {
-    jq -cn --argjson d "$DAILY" --argjson h "$DAILY_MAX_AGE_H" --argjson w "$WEEKLY" --argjson m "$MONTHLY" --argjson y "$YEARLY" \
-        --argjson wmin "$WEEKLY_MIN_DAYS" --argjson wmax "$WEEKLY_MAX_DAYS" --argjson mmax "$MONTHLY_MAX_DAYS" \
+    local w="$WEEKLY"; [[ "$w" == auto ]] && w='"auto"'
+    jq -cn --argjson d "$DAILY" --argjson h "$DAILY_MAX_AGE_H" --argjson w "$w" --argjson m "$MONTHLY" --argjson y "$YEARLY" \
+        --argjson wmin "$WEEKLY_MIN_DAYS" --argjson wmax "$WEEKLY_MAX_DAYS" --argjson mmin "$MONTHLY_MIN_DAYS" --argjson mmax "$MONTHLY_MAX_DAYS" \
+        --argjson wd "$(dow_num "$WEEKLY_WEEKDAY")" --argjson md "$(dow_num "${MONTHLY_RULE#first-}")" --argjson tol "$TOLERANCE_DAYS" --argjson ww "$WEEKLY_WINDOW_DAYS" \
         --argjson off "$TZ_OFFSET" --arg lab "$TZ_LABEL" --argjson mo "${MANUAL_OLDER:-null}" --argjson sp "$SNAP_PRICE" \
         '{manual_older_than: $mo, snapshot_price_per_gb: $sp, daily: $d, daily_max_age_h: $h, weekly: $w, monthly: $m, yearly: $y, weekly_min_days: $wmin, weekly_max_days: $wmax,
-          monthly_max_days: $mmax, tz_offset: $off, tz_label: $lab}' | tr -d '\r'
+          monthly_min_days: $mmin, monthly_max_days: $mmax, weekly_weekday: $wd, monthly_weekday: $md, tolerance_days: $tol, weekly_window_days: $ww,
+          tz_offset: $off, tz_label: $lab}' | tr -d '\r'
 }
 
 # ---------------------------------------------------------------------------- AWS (read-only)
@@ -215,6 +238,8 @@ glob_match() { local v="${1,,}" g; shift; (( $# )) || return 0; for g in "$@"; d
 
 scan_region() {   # scan_region <profile> <account> <region> <dir>  -> <dir>/resources.json, <dir>/region.json
     local prof="$1" acct="$2" reg="$3" d="$4" e; local -a errs=()
+    local c0=$AWS_CALLS f0=$AWS_FAILS gf="$WORK/$acct.globals.json"
+    (( SCAN_PAR )) && { gf="$d/globals.json"; GLOBAL_DONE=0; GLOBAL_OK=true; }   # parallel: each region job has its own copy
     local csnap_ok=true isnap_ok=true backup_ok=true
     echo '{}' >"$d/c.json"; echo '{}' >"$d/i.json"; echo '{}' >"$d/cs.json"; echo '{}' >"$d/is.json"; echo '[]' >"$d/rp.json"
     awsc "$d/c.json" "$prof" "$reg" rds describe-db-clusters || { errs+=("describe-db-clusters: $(err_of "$d/c.json")"); echo '{}' >"$d/c.json"; }
@@ -228,8 +253,8 @@ scan_region() {   # scan_region <profile> <account> <region> <dir>  -> <dir>/res
     awsc "$d/is.json" "$prof" "$reg" rds describe-db-snapshots --include-shared || { isnap_ok=false; errs+=("describe-db-snapshots: $(err_of "$d/is.json")"); echo '{}' >"$d/is.json"; }
     if (( nc + ni > 0 )); then
         if (( nc > 0 && ! GLOBAL_DONE )); then GLOBAL_DONE=1
-            if awsc "$WORK/$acct.globals.json" "$prof" "$reg" rds describe-global-clusters; then GLOBAL_OK=true
-            else GLOBAL_OK=false; errs+=("describe-global-clusters: $(err_of "$WORK/$acct.globals.json")"); echo '{}' >"$WORK/$acct.globals.json"; fi
+            if awsc "$gf" "$prof" "$reg" rds describe-global-clusters; then GLOBAL_OK=true
+            else GLOBAL_OK=false; errs+=("describe-global-clusters: $(err_of "$gf")"); echo '{}' >"$gf"; fi
         fi
         if awsc "$d/v.json" "$prof" "$reg" backup list-backup-vaults; then
             local v k=0
@@ -241,9 +266,9 @@ scan_region() {   # scan_region <profile> <account> <region> <dir>  -> <dir>/res
             if (( k )); then jqv -s '[ .[].RecoveryPoints[]? | select(.ResourceType == "Aurora" or .ResourceType == "RDS" or (.ResourceArn // "" | test(":rds:"))) ]' "$d"/rp[0-9]*.json >"$d/rp.json"; fi
         else backup_ok=false; errs+=("list-backup-vaults: $(err_of "$d/v.json")"); fi
     fi
-    [[ -s "$WORK/$acct.globals.json" ]] || echo '{}' >"$WORK/$acct.globals.json"   # (re)fetched only once: GLOBAL_DONE
+    [[ -s "$gf" ]] || echo '{}' >"$gf"   # (re)fetched only once: GLOBAL_DONE
     jqv -n --arg acct "$acct" --arg region "$reg" --slurpfile clusters "$d/c.json" --slurpfile instances "$d/i.json" \
-        --slurpfile csnaps "$d/cs.json" --slurpfile isnaps "$d/is.json" --slurpfile rps "$d/rp.json" --slurpfile globals "$WORK/$acct.globals.json" \
+        --slurpfile csnaps "$d/cs.json" --slurpfile isnaps "$d/is.json" --slurpfile rps "$d/rp.json" --slurpfile globals "$gf" \
         --argjson csnap_ok "$csnap_ok" --argjson isnap_ok "$isnap_ok" --argjson backup_ok "$backup_ok" --argjson global_ok "${GLOBAL_OK:-true}" -f "$LIBDIR/collect.jq" >"$d/coll.json"
     jqv '.resources' "$d/coll.json" >"$d/all.json"
     # engine / identifier filters
@@ -263,9 +288,39 @@ scan_region() {   # scan_region <profile> <account> <region> <dir>  -> <dir>/res
     local n no status; n="$(jqv length "$d/resources.json")"; no="$(jqv length "$d/orphans.json")"
     if (( ${#errs[@]} )); then status=error; elif (( n > 0 )); then status="with databases"; elif (( no > 0 )); then status="snapshots only"; else status=empty; fi
     for e in "${errs[@]}"; do log_warn "$acct $reg: $e"; done
+    region_progress "$reg" "$d/resources.json" "$no" "${errs[@]}"
     jqv -n --arg a "$acct" --arg r "$reg" --arg s "$status" --argjson n "$n" --argjson e "$(json_array "${errs[@]}")" \
         --argjson snapok "$( [[ $csnap_ok == true && $isnap_ok == true ]] && echo true || echo false)" --slurpfile c "$d/coll.json" \
         '{account: $a, region: $r, status: $s, resources: $n, errors: $e, snapshot_scan: $snapok, existing: $c[0].existing}' >"$d/region.json"
+    echo "$((AWS_CALLS - c0)) $((AWS_FAILS - f0))" >"$d/stats"
+}
+
+# shellcheck disable=SC2030,SC2031  # REG_T0 is per job on purpose
+region_job() {   # background job: scan_region in a subshell; <dir>/rc marks a normal finish
+    local d="$4"
+    trap - EXIT INT TERM; set +e
+    ( set -e; shopt -s inherit_errexit 2>/dev/null || true; REG_T0=$SECONDS; scan_region "$@" ); echo $? >"$d/rc"
+}
+
+region_failed() {   # region_failed <account> <region> <dir> <why>: placeholder result so other regions still report
+    local a="$1" r="$2" d="$3" why="$4"
+    echo '[]' >"$d/resources.json"; echo '[]' >"$d/orphans.json"
+    jqv -n --arg a "$a" --arg r "$r" --arg e "region scan failed: $why" \
+        '{account: $a, region: $r, status: "error", resources: 0, errors: [$e], snapshot_scan: false, existing: []}' >"$d/region.json"
+}
+
+region_progress() {   # one line per scanned region: [i/N] region: counts (seconds); errors on the same line
+    local reg="$1" res="$2" no="$3"; shift 3
+    local line secs=$(( SECONDS - ${REG_T0:-$SECONDS} ))
+    line="$(jqv -r --argjson no "$no" '([.[] | select(.type == "cluster")] | length) as $c | ([.[] | select(.type == "instance")] | length) as $i
+        | ([.[].snapshots[]? | select(.kind != "backup")] | length) as $s | ([.[].snapshots[]? | select(.kind == "backup")] | length) as $b
+        | if $c + $i == 0 and $no == 0 then "(empty)"
+          else "\($c) cluster\(if $c == 1 then "" else "s" end), \($i) instance\(if $i == 1 then "" else "s" end), \($s) snapshot\(if $s == 1 then "" else "s" end), \($b) recovery point\(if $b == 1 then "" else "s" end)"
+               + (if $no > 0 then ", \($no) without source" else "" end) end' "$res")"
+    [[ -n "$line" ]] || line="failed: unreadable AWS output"
+    [[ "$line" == "(empty)" ]] || line+=" (${secs}s)"
+    if (( $# )); then line+=" - ERROR: $(IFS='; '; echo "$*")"; [[ "$line" == *"(empty)"* ]] && line="${line/(empty)/(no data)}"; fi
+    log_info "[$REG_I/$REG_N] $reg: $line"
 }
 
 scan_profile() {   # scan_profile <profile>  -> $WORK/data_<account>.json
@@ -291,11 +346,36 @@ scan_profile() {   # scan_profile <profile>  -> $WORK/data_<account>.json
         regs=("$reg")
     fi
     log_info "account $acct (profile ${prof:-default}): ${#regs[@]} region(s)"
-    local i=0
-    for reg in "${regs[@]}"; do
-        i=$((i + 1)); local d="$WORK/$acct/$i"; mkdir -p "$d"
-        scan_region "$prof" "$acct" "$reg" "$d"
+    local i=0 d n=${#regs[@]} par=$PARALLEL running=0 st
+    (( DRY_RUN || n < 2 )) && par=1
+    SCAN_PAR=$(( par > 1 ))
+    (( SCAN_PAR )) && log_info "$acct: scanning $n regions, up to $par at a time"
+    for reg in "${regs[@]}"; do   # dirs are zero-padded so the glob below keeps region order (10+ regions)
+        i=$((i + 1)); printf -v d '%s/%s/%04d' "$WORK" "$acct" "$i"; mkdir -p "$d"; REG_I=$i; REG_N=$n; REG_T0=$SECONDS
+        if (( ! SCAN_PAR )); then scan_region "$prof" "$acct" "$reg" "$d"; continue; fi
+        if (( running >= par )); then
+            if (( HAVE_WAIT_N )); then wait -n || true; running=$((running - 1))
+            else wait || true; running=0; fi   # no wait -n: finish the batch first
+        fi
+        log_info "[$i/$n] $reg: started"
+        region_job "$prof" "$acct" "$reg" "$d" & BG_PIDS+=("$!"); running=$((running + 1))
     done
+    if (( SCAN_PAR )); then
+        wait || true; BG_PIDS=()
+        i=0; local fails=0 summ=()
+        for reg in "${regs[@]}"; do   # combine in region order: per-region files only, no shared writes
+            i=$((i + 1)); printf -v d '%s/%s/%04d' "$WORK" "$acct" "$i"
+            st="$(cat "$d/rc" 2>/dev/null || echo killed)"
+            if [[ "$st" != 0 || ! -s "$d/region.json" || ! -s "$d/resources.json" ]]; then
+                [[ "$st" == 0 ]] && st="0, incomplete result"
+                fails=$((fails + 1)); log_error "[$i/$n] $reg: failed (exit $st)"; region_failed "$acct" "$reg" "$d" "exit $st"
+            fi
+            if [[ -s "$d/stats" ]]; then local c f; read -r c f <"$d/stats"; AWS_CALLS=$((AWS_CALLS + c)); AWS_FAILS=$((AWS_FAILS + f)); fi
+            summ+=("$(jqv -r '"\(.region): \(if .status == "error" then "failed" else "done" end) (\(.resources) resource\(if .resources == 1 then "" else "s" end))"' "$d/region.json")")
+        done
+        local joined; printf -v joined '%s; ' "${summ[@]}"; log_info "$acct regions in order: ${joined%; }"
+        (( fails )) && log_warn "$acct: $fails of $n region(s) failed; see Region errors in the report"
+    fi
     (( DRY_RUN )) && return 0
     jqv -n --arg s "$DATA_SCHEMA" --argjson v "$DATA_SCHEMA_VERSION" --arg tool "$SCRIPT_VERSION" --arg a "$acct" --arg p "${prof:-default}" --argjson now "$NOW" \
         '{schema: $s, schema_version: $v, tool_version: $tool, collected_epoch: $now, collected_at: ($now | todate),
@@ -329,6 +409,31 @@ collect_merge_inputs() {
 }
 
 # ---------------------------------------------------------------------------- output
+abs_dir() {   # absolute, normalised directory (no //, ./, ..; ~ expanded) - CloudShell and Git Bash
+    local p="$1" out="" part; local -a parts=() keep=()
+    [[ "$p" == "~" || "$p" == \~/* ]] && p="$HOME${p#\~}"
+    [[ "$p" == /* ]] || p="$PWD/$p"
+    IFS='/' read -r -a parts <<<"$p"
+    for part in "${parts[@]}"; do
+        case "$part" in ''|.) ;; ..) (( ${#keep[@]} )) && unset 'keep[${#keep[@]}-1]' ;; *) keep+=("$part") ;; esac
+    done
+    for part in "${keep[@]}"; do out+="/$part"; done
+    printf '%s' "${out:-/}"
+}
+output_block() {   # Output (N files) in /abs/dir: then one file name per line (grouped by directory)
+    (( ${#WRITTEN[@]} )) || return 0
+    local f d last="" n=${#WRITTEN[@]}; local -a dirs=() names=()
+    for f in "${WRITTEN[@]}"; do dirs+=("$(abs_dir "$(dirname -- "$f")")"); names+=("${f##*/}"); done
+    local i; for ((i = 0; i < n; i++)); do
+        d="${dirs[$i]}"
+        if [[ "$d" != "$last" ]]; then
+            local c=0 j; for ((j = i; j < n; j++)); do [[ "${dirs[$j]}" == "$d" ]] && c=$((c + 1)); done
+            printf 'Output (%d file%s) in %s:\n' "$c" "$( (( c == 1 )) || echo s)" "$d" >&2; last="$d"
+        fi
+        printf '  %s\n' "${names[$i]}" >&2
+    done
+    if [[ -n "$LOG_FILE" ]]; then printf 'wrote %s\n' "${WRITTEN[@]}" >>"$LOG_FILE" 2>/dev/null || true; fi
+}
 render() {   # render <mode> <data> -> stdout
     jqv -r --arg mode "$1" --argjson now "$NOW" --argjson cfg "$CFG" --arg tool "$SCRIPT_VERSION" --rawfile page "$LIBDIR/backup_page.js" -f "$LIBDIR/backup.jq" "$2"
 }
@@ -342,7 +447,8 @@ main() {
     NOW="$(date -u +%s)"; STAMP="$(date -u +%Y%m%d_%H%M%S)"; tz_setup; CFG="$(cfg_json)"
     WORK="$(mktemp -d "${TMPDIR:-/tmp}/rds_bcr.XXXXXX")"
     trap '(( KEEP_WORKDIR )) && echo "workdir kept: $WORK" >&2 || rm -rf -- "$WORK"' EXIT
-    trap 'exit 130' INT TERM
+    trap '(( ${#BG_PIDS[@]} )) && kill "${BG_PIDS[@]}" 2>/dev/null; exit 130' INT TERM
+    HAVE_WAIT_N=0; [[ -z "${RDS_BCR_NO_WAIT_N:-}" ]] && (( BASH_VERSINFO[0] > 4 || BASH_VERSINFO[1] >= 3 )) && HAVE_WAIT_N=1
     [[ -n "$OUTPUT_DIR" ]] && { mkdir -p -- "$OUTPUT_DIR" 2>/dev/null || die 4 "Cannot create $OUTPUT_DIR"; }
 
     if (( MERGE )); then collect_merge_inputs
@@ -388,10 +494,10 @@ main() {
         write_out "${OUTPUT_DIR:-.}/${PREFIX}_${tag}_${STAMP}_manual_older_than_${MANUAL_OLDER}d.csv" render mcsv "$WORK/data.json"
         log_info "manual snapshots older than ${MANUAL_OLDER} days: $(render mcsv "$WORK/data.json" | tail -n +2 | grep -c . || true)"
     fi
-    for f in "${WRITTEN[@]}"; do log_info "wrote $f"; done
     local nc; nc="$(render rows "$WORK/data.json" | jqv '[.[] | select(.status == "NON-COMPLIANT")] | length')"
     log_info "resources: $(jqv '.resources | length' "$WORK/data.json"), non-compliant: $nc"
     log_info "$(render osum "$WORK/data.json")"
+    output_block
     if (( FAIL_ON_NC && nc > 0 )); then exit 5; fi
     exit 0
 }

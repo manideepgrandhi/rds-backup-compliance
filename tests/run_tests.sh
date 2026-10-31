@@ -29,33 +29,53 @@ rowt() { jq -e --arg i "$2" ".rows[] | select(.identifier == \$i) | $3" "$OUT/$1
 ncalls() { wc -l <"$MOCK_LOG" 2>/dev/null | tr -d ' ' || echo 0; }
 
 echo "== CLI"
-t version 0 fleet --version; has version out '1\.2\.1'
+t version 0 fleet --version; has version out '1\.3\.0'
 t help 0 fleet --help; has help out 'list-recovery-points-by-backup-vault'; has help out 'weekly-days'
 t badopt 1 fleet --nope
 t multifmt 1 fleet -P prod -r us-east-1 -F csv,html
 t badwd 1 fleet --weekly-days 70-60
 t badint 1 fleet --weekly x
+t badwd2 1 fleet --weekly-days 25-40 --monthly-days 30-400
+t badtol 1 fleet --tolerance-days 4
+t baddow 1 fleet --weekly-weekday saturday
+t badrule 1 fleet --monthly-rule last-sun
 t mergeP 1 fleet --merge x.json -P prod
 t noregion 2 fleet -P prod
 
 echo "== fleet (prod, two regions)"
 t fleet 0 fleet -P prod -r us-east-1,us-west-2 -F json
 rowt fleet orders-aurora-pg15 '.status == "COMPLIANT" and .global_role == "primary" and .global_cluster == "orders-global"'
-rowt fleet orders-aurora-pg15 '.daily.have == 7 and .weekly.have == 5 and .monthly.have == 12 and .yearly.have == 2'
+rowt fleet orders-aurora-pg15 '.daily.have == 7 and .weekly.have == .weekly.need and (.weekly.need | . == 4 or . == 5) and .monthly.have == 12 and .monthly.need == 12 and .yearly.st == "OFF"'
+rowt fleet orders-aurora-pg15 '.warnings == "retention doesn'"'"'t match: 2 recovery points (2555d, never expires) not counted" and .gaps == ""'
+rowt fleet orders-aurora-pg15 '.settings.backup_window == "03:00-03:30" and .settings.copy_tags == false and .settings.weekly_retention == "35d" and .settings.monthly_retention == "365d"'
+rowt fleet orders-aurora-pg15 '.settings.plans == "prod-rds-plan / monthly-first-sun, prod-rds-plan / weekly-sat" and (.settings.schedules | test("SAT"))'
+rowt fleet orders-aurora-pg15 '.age_days == 1000 and (.created | test(" 00:00 UTC$"))'
+rowt fleet legacy-mysql '.settings.copy_tags == false and .settings.backup_window == "04:00-04:30"'
+rowt fleet reports-pg '.settings.copy_tags == true'
 rowt fleet orders-aurora-pg15 '.automated == 7'          # the awsbackup-type snapshot is not counted as automated
 rowt fleet orders-aurora-pg15 '.manual == 4'
 rowt fleet legacy-mysql '.manual == 2'
-rowt fleet billing-aurora-mysql '.status == "NON-COMPLIANT" and .gaps == "weekly 2/4; yearly 0/1"'
-rowt fleet new-aurora-pg16 '.status == "NOT YET DUE" and .monthly.st == "DUE" and .yearly.st == "DUE" and .gaps == ""'
+rowt fleet billing-aurora-mysql '.status == "NON-COMPLIANT" and (.gaps | test("^weekly [34]/[45] missing Sat [0-9]{2} [A-Z][a-z]{2}$"))'
+SAT1="$(jq -rn 'now / 86400 | floor | . - ((. + 4) % 7 - 6 + 7) % 7 | if (. * 86400 + 5 * 3600) > now then . - 7 else . end | . - 7 | . * 86400 | strftime("Sat %d %b")')"
+rowt fleet billing-aurora-mysql ".weekly.st == \"FAIL\" and (.gaps | endswith(\"$SAT1\"))"
+chk "billing weekly cell lists the missing Saturday" bash -c "jq -e '.rows[] | select(.identifier == \"billing-aurora-mysql\")' '$OUT/fleet.out' >/dev/null"
+rowt fleet new-aurora-pg16 '.status == "NOT YET DUE" and .daily.st == "OK" and .weekly.st == "DUE" and .monthly.st == "DUE" and .gaps == "" and .age_days == 20'
+rowt fleet new-aurora-pg16 '.weekly.have == .weekly.need and .weekly.need < .weekly.target and (.not_yet_due | test("^weekly full on [0-9]{2} [A-Z][a-z]{2} 20[0-9]{2}; monthly full on "))'
+FULL7="$(date -u -d '+2 days' '+%d %b %Y')"; FULLW="$(date -u -d '+10 days' '+%d %b %Y')"
+rowt fleet new-aurora-pg16 ".weekly.full_on == \"$FULLW\""
+rowt fleet fresh-pg ".status == \"NOT YET DUE\" and .daily.st == \"DUE\" and .daily.target == 7 and .daily.have == .daily.need and (.daily.need | . == 4 or . == 5) and .daily.full_on == \"$FULL7\" and .age_days == 5"
+rowt fleet fresh-pg '.monthly.need <= 1 and .monthly.target == 12 and .monthly.st == "DUE"'
 rowt fleet reports-pg '.status == "NON-COMPLIANT" and (.gaps | test("retention 3d < 7d")) and .type == "instance"'
 rowt fleet legacy-mysql '.status == "NON-COMPLIANT" and (.gaps | test("last automated 7[34](\\.[0-9])?h ago"))'
 rowt fleet orders-dr-pg15 '.status == "COMPLIANT" and .global_role == "secondary" and .weekly.st == "N/A" and .yearly.st == "N/A"'
 rowt fleet shop-dr-mysql '.status == "NON-COMPLIANT" and .global_cluster == "shop-global" and (.gaps | test("^daily"))'
 jqt fleet '[.rows[].identifier] | index("docs-cluster") == null' "$OUT/fleet.out"
 jqt fleet '[.rows[].identifier] | map(select(test("-1$"))) | length == 0' "$OUT/fleet.out"
-jqt fleet '.totals == {resources: 7, compliant: 2, non_compliant: 4, not_yet_due: 1, unknown: 0}' "$OUT/fleet.out"
-jqt fleet '.thresholds.weekly_min_days == 11 and .thresholds.weekly_max_days == 60 and .thresholds.monthly_max_days == 400' "$OUT/fleet.out"
-jqt fleet '[.rows[] | keys[]] | unique | map(select(test("arn|environment|owner|application|note"))) | length == 0' "$OUT/fleet.out"
+jqt fleet '.totals == {resources: 8, compliant: 2, non_compliant: 4, not_yet_due: 2, unknown: 0}' "$OUT/fleet.out"
+jqt fleet '.thresholds | .weekly_min_days == 25 and .weekly_max_days == 40 and .monthly_min_days == 300 and .monthly_max_days == 400 and .weekly == "auto" and .monthly == 12 and .yearly == 0 and .weekly_weekday == 6 and .monthly_weekday == 0 and .tolerance_days == 1' "$OUT/fleet.out"
+has fleet err '^.*\[1/2\] us-east-1: 3 clusters, 3 instances, [0-9]+ snapshots, [0-9]+ recovery points, 4 without source \([0-9]+s\)$'
+has fleet err '\[2/2\] us-west-2: 2 clusters, 0 instances, [0-9]+ snapshots, 0 recovery points'
+jqt fleet '[.rows[] | keys[]] | unique | map(select(test("(^|_)arn$|^env|owner|^app|notes?$"))) | length == 0' "$OUT/fleet.out"
 t fleettxt 0 fleet -P prod -r us-east-1
 has fleettxt out '^RDS backup compliance - account 111111111111$'; has fleettxt out 'UTC / .* IST'
 chk "text header has no region names" bash -c "head -4 '$OUT/fleettxt.out' | grep -qvE 'us-east-1' && ! head -4 '$OUT/fleettxt.out' | grep -q us-east-1"
@@ -80,11 +100,23 @@ jqt savedata '[.orphans[] | select(.id == "analytics-aurora-final")][0] | .sourc
 jqt savedata '[.resources[] | has("arn")] | any | not' "$SD"
 CSV="$(ls "$OUT"/o/rds_backup_compliance_111111111111_*[0-9].csv | head -1)"; BCSV="$(ls "$OUT"/o/*_backups.csv | head -1)"
 HTML="$(ls "$OUT"/o/*.html | head -1)"; JSON="$(ls "$OUT"/o/rds_backup_compliance_*.json | head -1)"
-chk "csv header" grep -qx '"account_id","region","identifier","type","engine","engine_version","global_cluster","global_role","retention_days","last_automated_utc","last_automated_ist","daily","weekly","monthly","yearly","status","gaps"' "$CSV"
-chk "csv has 7 rows + header" test "$(wc -l <"$CSV")" -eq 8
+chk "csv header" grep -qx '"account_id","region","identifier","type","engine","engine_version","global_cluster","global_role","retention_days","created_utc","age_days","backup_window","copy_tags_to_snapshot","last_automated_utc","last_automated_ist","daily","weekly","monthly","status","not_yet_due","gaps","warnings","weekly_retention","monthly_retention","backup_plans"' "$CSV"
+chk "csv has 8 rows + header" test "$(wc -l <"$CSV")" -eq 9
+chk "csv: no yearly column at yearly=0" bash -c "! head -1 '$CSV' | grep -q yearly"
+chk "csv: not_yet_due + full on" bash -c "grep '\"fresh-pg\"' '$CSV' | grep -q 'daily full on'"
+chk "csv: weekly cell lists missing Saturday" bash -c "grep '\"billing-aurora-mysql\"' '$CSV' | grep -qE '\"[34]/[45] · missing Sat [0-9]{2} [A-Z][a-z]{2}\"'"
+chk "csv: so far (target 7)" bash -c "grep '\"fresh-pg\"' '$CSV' | grep -qE '\"[45]/[45] so far \(target 7\)\"'"
+chk "text: no YEARLY column at yearly=0" bash -c "! grep -q YEARLY \"\$(ls '$OUT'/o/*.txt | head -1)\""
+has files err '\[[0-9]/5\] ap-south-1: \(empty\)$'
+has files err "^Output \\([0-9]+ files\\) in $OUT/o:\$"
+has files err '^  rds_backup_compliance_111111111111_[0-9_]+\.html$'
+has files err '^  rds_backup_111111111111_[0-9_]+\.json$'
+chk "output block: no // or ./ in paths" bash -c "! sed -n '/^Output/,\$p' '$OUT/files.err' | grep -qE '//|/\\./|~'"
+mkdir -p "$OUT/o2/sub"; ( cd "$OUT/o2" && t relout 0 fleet -P prod -r us-east-1 -F csv -o ./sub//../sub/ )
+has relout err "^Output \\(3 files\\) in $OUT/o2/sub:\$"
 chk "csv has every status" bash -c "grep -q '\"COMPLIANT\"' '$CSV' && grep -q '\"NON-COMPLIANT\"' '$CSV' && grep -q '\"NOT YET DUE\"' '$CSV'"
 chk "backups csv has manual, automated, backup kinds" bash -c "grep -q ',\"manual\",' '$BCSV' && grep -q ',\"automated\",' '$BCSV' && grep -q ',\"backup\",' '$BCSV'"
-chk "backups csv has IST column and classes" bash -c "head -1 '$BCSV' | grep -q created_ist && grep -q '\"weekly\"' '$BCSV' && grep -q '\"yearly\"' '$BCSV' && grep -q '\"short\"' '$BCSV'"
+chk "backups csv has IST column and classes" bash -c "head -1 '$BCSV' | grep -q created_ist && grep -q '\"weekly\"' '$BCSV' && grep -q '\"monthly\"' '$BCSV' && grep -q '\"mismatch\"' '$BCSV'"
 chk "backups csv header = in-page export order" bash -c "head -1 '$BCSV' | tr -d '\"\r' | grep -qx 'account_id,region,identifier,type,kind,snapshot_or_recovery_point,created_utc,created_ist,age_days,status,size_gb,rule,retention_days,expires_utc,vault,source_status'"
 chk "backups csv: automated rule daily, manual rule empty, age_days numeric" bash -c "grep ',\"automated\",' '$BCSV' | head -1 | grep -q ',\"daily\",' && grep ',\"manual\",' '$BCSV' | head -1 | grep -qE ',\"[0-9]+\",\"available\",\"100\",\"\",\"\",'"
 chk "backups csv: no EC2 recovery point" bash -c "! grep -q ami-0abc '$BCSV'"
@@ -119,6 +151,7 @@ t bdeny 0 backupdeny -P prod -r us-east-1,us-west-2 -F json
 rowt bdeny orders-aurora-pg15 '.status == "UNKNOWN" and .weekly.st == "UNKNOWN" and (.gaps | test("unreadable"))'
 rowt bdeny orders-dr-pg15 '.status == "COMPLIANT"'
 rowt bdeny billing-aurora-mysql '.status == "UNKNOWN"'
+has bdeny err '\[1/2\] us-east-1: .* - ERROR: .*list-backup-vaults'
 jqt bdeny '[.regions[] | select(.status == "error")] | length == 2' "$OUT/bdeny.out"
 t gdeny 0 globaldeny -P prod -r us-west-2 -F json
 rowt gdeny orders-dr-pg15 '.global_role == "unknown" and .weekly.st == "FAIL"'
@@ -144,9 +177,23 @@ t defregion 2 fleet -P nonprod -F json; MOCK_DEFAULT_REGION=ap-south-1 t defregi
 jqt defregion2 '.rows | length == 2' "$OUT/defregion2.out"
 
 echo "== thresholds"
-t wk6 0 fleet -P prod -r us-east-1 -i orders-* --weekly 6 -F json; rowt wk6 orders-aurora-pg15 '.weekly == {have: 5, need: 6, st: "FAIL"}'
-t wd40 0 fleet -P prod -r us-east-1 -i orders-* --weekly-days 40-60 -F json; rowt wd40 orders-aurora-pg15 '.weekly.have == 0'
-t mmax 0 fleet -P prod -r us-east-1 -i orders-* --monthly-max-days 300 -F json; rowt mmax orders-aurora-pg15 '.monthly.have == 0 and .yearly.have >= 2'
+t wk6 0 fleet -P prod -r us-east-1 -i orders-* --weekly 6 -F json; rowt wk6 orders-aurora-pg15 '.weekly.have == 5 and .weekly.need == 6 and .weekly.st == "FAIL" and (.gaps | test("^weekly 5/6 missing Sat "))'
+t wd40 0 fleet -P prod -r us-east-1 -i orders-* --weekly-days 40-60 -F json; rowt wd40 orders-aurora-pg15 '.weekly.have == 0 and (.warnings | test("35d"))'
+t mmax 0 fleet -P prod -r us-east-1 -i orders-* --monthly-max-days 300 -F json; rowt mmax orders-aurora-pg15 '.monthly.have == 0 and (.warnings | test("365d"))'
+t mdays 0 fleet -P prod -r us-east-1 -i orders-* --monthly-days 360-370 -F json; rowt mdays orders-aurora-pg15 '.monthly.have == 12 and .status == "COMPLIANT"'
+t yearly1 0 fleet -P prod -r us-east-1 -i orders-* --yearly 1 -F csv; has yearly1 out '"monthly","yearly","status"'
+t yearly1j 0 fleet -P prod -r us-east-1 -i orders-* --yearly 1 -F json; rowt yearly1j orders-aurora-pg15 '.yearly.have == 2 and .yearly.st == "OK" and .warnings == ""'
+t yearly1t 0 fleet -P prod -r us-east-1 -i orders-* --yearly 1; has yearly1t out 'MONTHLY	YEARLY	STATUS'
+t yearly1h 0 fleet -P prod -r us-east-1 -i orders-* --yearly 1 -F html -o "$OUT/y1"; chk "html: Yearly shown at yearly=1" bash -c "grep -q 'yearly x1' \"$OUT\"/y1/*.html"
+# Saturday / first-Sunday matching with tolerance (hr-aurora-pg's 2nd weekly point ran on Sunday 07:00 UTC)
+t tol1 0 fleet -P nonprod -r ap-south-1 -F json; rowt tol1 hr-aurora-pg '.status == "COMPLIANT" and .weekly.st == "OK"'
+rowt tol1 payroll-sqlserver '.status == "NON-COMPLIANT" and (.gaps | test("^monthly 10/12 missing [A-Z][a-z]{2} 20[0-9]{2}, [A-Z][a-z]{2} 20[0-9]{2}$"))'
+rowt tol1 payroll-sqlserver '.settings.plans == "1a2b3c4d-plan / rule-monthly-first-sun, 1a2b3c4d-plan / rule-weekly-sat" and .settings.schedules == ""'
+M2="$(jq -rn '[now | gmtime | .[0] * 12 + .[1] | range(0; 14) as $k | (. - $k) as $mi | ([($mi / 12 | floor), ($mi % 12), 1, 0, 0, 0, 0, 0] | mktime) as $d1
+       | ($d1 / 86400 | floor) as $dn | ($dn + ((0 - (($dn + 4) % 7) + 7) % 7)) | select(. * 86400 + 4 * 3600 <= now) | . * 86400 | strftime("%b %Y")] | "\(.[5]), \(.[2])"')"
+rowt tol1 payroll-sqlserver ".gaps == \"monthly 10/12 missing $M2\""
+t tol0 0 fleet -P nonprod -r ap-south-1 -F json --tolerance-days 0; rowt tol0 hr-aurora-pg '.status == "NON-COMPLIANT" and (.gaps | test("^weekly [34]/[45] missing Sat "))'
+t wdsun 0 fleet -P nonprod -r ap-south-1 -F json --weekly-weekday sun --tolerance-days 0; rowt wdsun hr-aurora-pg '.weekly.have <= 1'
 t daily14 0 fleet -P nonprod -r ap-south-1 --daily 14 -F json; rowt daily14 hr-aurora-pg '.daily.st == "OK"'; rowt daily14 payroll-sqlserver '.daily.st == "FAIL"'
 t age 0 fleet -P prod -r us-east-1 -i legacy-* --daily-max-age 80 -F json; rowt age legacy-mysql '(.gaps | test("last automated") | not)'
 printf 'weekly = 6\r\n# comment\r\nregion=us-east-1\r\nidentifier = orders-*\r\nformat=json\r\n' >"$OUT/my conf.conf"
@@ -155,6 +202,37 @@ t confcli 0 fleet -P prod --config "$OUT/my conf.conf" --weekly 4; rowt confcli 
 printf 'bogus=1\n' >"$OUT/bad.conf"; t badconf 1 fleet --config "$OUT/bad.conf"
 t tz 0 fleet -P prod -r us-east-1 --tz UTC -F csv; has tz out 'last_automated_utc"'
 chk "jq: +05:30 timestamps parse to UTC" test "$(jq -n --slurpfile x /dev/null 'include "collect" {search: "'"$HERE"'/../lib"}; 1' 2>/dev/null; jq -rn '"2026-10-01T08:30:00.123000+05:30" | capture("^(?<d>[0-9-]+T[0-9:]+)") | .d + "Z" | fromdateiso8601 - 19800 | todate')" == "2026-10-01T03:00:00Z"
+
+echo "== parallel regions"
+t badpar 1 fleet --parallel 0
+t badpar2 1 fleet --parallel x
+NORM='del(.. | .collected_epoch?, .collected_at?, .generated_epoch?, .generated_at?, .age_days?)'
+MOCK_NOW="$(date -u +%s)"; export MOCK_NOW
+MOCK_SLEEP=ap-south-1=1,ca-central-1=0.5 t par1 0 fleet -P prod -A --parallel 1 -F json
+MOCK_SLEEP=ap-south-1=1,ca-central-1=0.5 t par4 0 fleet -P prod -A --parallel 4 -F json
+MOCK_SLEEP=ap-south-1=1 RDS_BCR_NO_WAIT_N=1 t par2b 0 fleet -P prod -A --parallel 2 -F json
+chk "parallel 4 output identical to sequential (slow first region finishes last)" cmp -s <(jq -S "$NORM" "$OUT/par1.out") <(jq -S "$NORM" "$OUT/par4.out")
+chk "batch fallback (no wait -n) identical to sequential" cmp -s <(jq -S "$NORM" "$OUT/par1.out") <(jq -S "$NORM" "$OUT/par2b.out")
+hasnt par1 err 'started|at a time|regions in order'
+has par4 err 'scanning 5 regions, up to 4 at a time'
+has par4 err '\[1/5\] ap-south-1: started'
+has par4 err '\[5/5\] us-west-2: started'
+has par4 err 'regions in order: ap-south-1: done \(0 resources\); ca-central-1: done \(0 resources\); eu-west-1: done \(0 resources\); us-east-1: done \(6 resources\); us-west-2: done \(2 resources\)$'
+chk "par4: slow ap-south-1 reports done after us-east-1" bash -c "grep -n 'us-east-1: 3 clusters' '$OUT/par4.err' | cut -d: -f1 | { read a; b=\$(grep -n 'ap-south-1: (empty)' '$OUT/par4.err' | cut -d: -f1); (( a < b )); }"
+chk "par2b: never more than 2 regions started before one finished" bash -c "awk '/: started\$/{r++; if(r>m)m=r} /: [0-9]+ clusters|\\(empty\\)/{r--} END{exit !(m==2)}' '$OUT/par2b.err'"
+t parconf 0 fleet --config <(printf 'profile = prod\nall-regions = yes\nparallel = 2\nformat = json\n')
+has parconf err 'up to 2 at a time'
+t parcrash 0 regioncrash -P prod -A -F json
+jqt parcrash '.regions[] | select(.region == "us-west-2") | .status == "error" and (.errors[0] | startswith("region scan failed"))' "$OUT/parcrash.out"
+jqt parcrash '[.rows[] | select(.region == "us-east-1")] | length == 6' "$OUT/parcrash.out"
+rowt parcrash orders-aurora-pg15 '.status == "COMPLIANT"'
+has parcrash err '\[ERROR\] \[5/5\] us-west-2: failed'
+has parcrash err 'us-west-2: failed \(0 resources\)$'
+has parcrash err '1 of 5 region\(s\) failed'
+t parcrashnc 5 regioncrash -P prod -A -F json --fail-on-noncompliant
+mkdir -p "$OUT/ptmp"; TMPDIR="$OUT/ptmp" MOCK_SCENARIO=regioncrash "$SCRIPT" -P prod -A -F json >/dev/null 2>&1
+chk "parallel: temp work dir removed by the trap" bash -c "[[ -z \"\$(ls -A '$OUT/ptmp')\" ]]"
+unset MOCK_NOW
 
 echo "== merge (offline)"
 M="$OUT/merge dir"; mkdir -p "$M"
@@ -166,12 +244,12 @@ n0="$(ncalls)"
 t merge 0 fleet --merge "$M/prod.json" "$M/nonprod.json" "$M/dev.json" "$OUT/prod_old.json" -F json
 chk "merge made zero AWS calls" test "$(ncalls)" == "$n0"
 jqt merge '[.accounts[].account] | sort == ["111111111111", "222222222222", "333333333333"]' "$OUT/merge.out"
-jqt merge '.rows | length == 10' "$OUT/merge.out"
+jqt merge '.rows | length == 11' "$OUT/merge.out"
 jqt merge '.orphan_totals.orphaned == 5 and .orphan_totals.summary == "5 orphaned snapshots, 1.6 TB, ~$34/month (estimate)"' "$OUT/merge.out"
 jqt merge '[.orphaned_snapshots[] | select(.source_status == "ORPHANED") | .account_id] | unique == ["111111111111", "222222222222", "333333333333"]' "$OUT/merge.out"
 jqt merge '[.orphaned_snapshots[] | select(.id == "orders-aurora-pg15-dr-copy")][0].source_status == "EXISTING"' "$OUT/merge.out"
 has merge err 'account 111111111111: an older collection was ignored'
-rowt merge payroll-sqlserver '.status == "NON-COMPLIANT" and .gaps == "monthly 9/11"'
+rowt merge payroll-sqlserver '.status == "NON-COMPLIANT" and (.gaps | startswith("monthly 10/12 missing "))'
 t mergeold 0 fleet --merge "$OUT/prod_old.json" "$M/nonprod.json" -F json
 jqt mergeold '.rows | length == 4' "$OUT/mergeold.out"
 # manual-snapshot audit CSV (live and from merged data); v1.0.0 save-data files still merge
@@ -204,6 +282,18 @@ if git -C "$HERE/.." cat-file -e 61a6cd9 2>/dev/null; then   # v1.1.0 save-data 
     t mergev110 0 fleet --merge "$OUT/v110_nonprod.json" "$M/dev.json" -F csv,html -o "$OUT/m110"
     chk "v1.1.0 merge: html + orphaned csv (dev only)" bash -c "compgen -G '$OUT/m110/*.html' >/dev/null && test \"\$(tail -n +2 $OUT/m110/*_orphaned_snapshots.csv | cut -d, -f3 | tr -d '\"')\" == dev-scratch-final"
 fi
+if git -C "$HERE/.." cat-file -e b2f6c70 2>/dev/null; then   # v1.2.1 save-data (no settings / plan fields) still merges, new fields blank
+    V12="$OUT/v121"; mkdir -p "$V12/lib"
+    for f in rds_backup_compliance_report.sh lib/collect.jq lib/backup.jq lib/merge.jq lib/backup_page.js; do git -C "$HERE/.." show "b2f6c70:$f" >"$V12/$f"; done
+    chmod +x "$V12/rds_backup_compliance_report.sh"
+    MOCK_SCENARIO=fleet "$V12/rds_backup_compliance_report.sh" -P prod -r us-east-1 --save-data "$OUT/v121_prod.json" -F json >/dev/null 2>&1
+    jqt v121file '.schema_version == 1 and ([.resources[] | has("backup_window")] | any | not)' "$OUT/v121_prod.json"
+    t mergev121 0 fleet --merge "$OUT/v121_prod.json" "$M/dev.json" -F json
+    rowt mergev121 orders-aurora-pg15 '.settings.backup_window == "" and .settings.copy_tags == "" and .settings.plans == "" and .settings.weekly_retention == "35d" and .status == "COMPLIANT"'
+    rowt mergev121 dev-aurora-mysql '.settings.backup_window == "03:00-03:30" and (.warnings | test("14d"))'
+    t mergev121h 0 fleet --merge "$OUT/v121_prod.json" "$M/dev.json" -F csv,html -o "$OUT/m121"
+    chk "v1.2.1 merge: html + csv written" bash -c "compgen -G '$OUT/m121/*.html' >/dev/null && compgen -G '$OUT/m121/*[0-9].csv' >/dev/null"
+fi
 t mergedir 0 fleet --merge "$M" -o "$OUT/all accounts.html"
 chk "merge -o FILE.html written" test -s "$OUT/all accounts.html"
 chk "merged html lists 3 accounts in title" grep -q '<title>RDS backup compliance - 111111111111, 222222222222, 333333333333</title>' "$OUT/all accounts.html"
@@ -217,7 +307,7 @@ echo 'not json' >"$OUT/garbage.json"; t mergegarbage 3 fleet --merge "$OUT/garba
 CR="$OUT/crjq"; mkdir -p "$CR"; REALJQ="$(command -v jq)"
 printf '#!/usr/bin/env bash\n"%s" "$@" | sed "s/$/\\r/"\nexit "${PIPESTATUS[0]}"\n' "$REALJQ" >"$CR/jq"; chmod +x "$CR/jq"
 PATH="$CR:$PATH" t crlf 0 fleet --merge "$M" -F json
-jqt crlf '.rows | length == 10' <(tr -d '\r' <"$OUT/crlf.out")
+jqt crlf '.rows | length == 11' <(tr -d '\r' <"$OUT/crlf.out")
 PATH="$CR:$PATH" t crlfhtml 0 fleet --merge "$M" -o "$OUT/cr.html"
 chk "CRLF jq: html written" grep -q 'orders-aurora-pg15' "$OUT/cr.html"
 

@@ -6,12 +6,14 @@ Profiles: prod -> 111111111111 (us-east-1 fleet + us-west-2 global secondaries),
           dev -> 333333333333 (eu-west-1), (none) -> prod, broken -> invalid credentials.
 MOCK_SCENARIO: fleet (default) | backupdeny (backup list-backup-vaults AccessDenied) | globaldeny (describe-global-clusters
                AccessDenied) | snapdeny (describe-db-snapshots AccessDenied) | empty (no databases anywhere)
+               | regioncrash (us-west-2 describe-db-clusters returns broken JSON: the region job itself fails)
+MOCK_NOW: fixed epoch for "now".  MOCK_SLEEP: "region=seconds,..." delay per region (completion order in parallel tests).
 MOCK_LOG: append argv as JSONL.  MOCK_DEFAULT_REGION: answer for `aws configure get region`.
 """
 import json, os, sys
 from datetime import datetime, timedelta, timezone
 
-NOW = datetime.now(timezone.utc)
+NOW = datetime.fromtimestamp(int(os.environ["MOCK_NOW"]), timezone.utc) if os.environ.get("MOCK_NOW") else datetime.now(timezone.utc)
 SCEN = os.environ.get("MOCK_SCENARIO", "fleet")
 argv = sys.argv[1:]
 if os.environ.get("MOCK_LOG"):
@@ -40,6 +42,11 @@ pos = [a for i, a in enumerate(argv) if not a.startswith("--") and (i == 0 or no
 svc, op = (pos + ["", ""])[:2]
 profile = opt("--profile", os.environ.get("AWS_PROFILE", "prod"))
 region = opt("--region", os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "")))
+for _kv in filter(None, os.environ.get("MOCK_SLEEP", "").split(",")):
+    if _kv.split("=")[0] == region:
+        import time; time.sleep(float(_kv.split("=")[1]))
+if SCEN == "regioncrash" and region == "us-west-2" and op == "describe-db-clusters":
+    print('{"DBClusters": [ {broken'); sys.exit(0)
 ACCT = {"prod": "111111111111", "nonprod": "222222222222", "dev": "333333333333"}
 if svc == "configure" and op == "get":
     print(os.environ.get("MOCK_DEFAULT_REGION", "")); sys.exit(0 if os.environ.get("MOCK_DEFAULT_REGION") else 1)
@@ -53,23 +60,27 @@ if svc == "ec2" and op == "describe-regions":
                                   for r in ["us-east-1", "us-west-2", "ap-south-1", "eu-west-1", "ca-central-1"]]})); sys.exit(0)
 
 # ---------------------------------------------------------------- fleet definition
-# (region, id, kind, engine, version, age_days, retention, daily_n, last_h, weekly, monthly, yearly, global, writer, manual_ages)
+# (region, id, kind, engine, version, age_days, retention, daily_n, last_h, weekly, monthly, yearly, global, writer, manual_ages[, opts])
+# weekly / monthly: "all" = a point on every scheduled day (Saturday / first Sunday, newest first), or a list of the
+# indexes that have one (0 = the most recent scheduled day that has passed). yearly: points in "Default" with 2555 d /
+# no expiry (a retention that fits no class when yearly=0). opts: wshift {index: hours later}, extra_ret [days], ids_only.
 FLEET = {
     "111111111111": [
-        ("us-east-1", "orders-aurora-pg15", "cluster", "aurora-postgresql", "15.8", 1000, 7, 7, 5, 5, 12, 2, "orders-global", True, [20, 100, 250, 400]),
-        ("us-east-1", "billing-aurora-mysql", "cluster", "aurora-mysql", "8.0.mysql_aurora.3.08.0", 800, 7, 7, 5, 2, 11, 0, None, None, [45]),
-        ("us-east-1", "new-aurora-pg16", "cluster", "aurora-postgresql", "16.4", 60, 7, 7, 3, 4, 1, 0, None, None, []),
-        ("us-east-1", "reports-pg", "instance", "postgres", "16.3", 900, 3, 3, 4, 4, 11, 1, None, None, [10]),
-        ("us-east-1", "legacy-mysql", "instance", "mysql", "8.0.39", 700, 7, 7, 74, 4, 11, 1, None, None, [200, 600]),
-        ("us-west-2", "orders-dr-pg15", "cluster", "aurora-postgresql", "15.8", 600, 7, 7, 6, 0, 0, 0, "orders-global", False, []),
-        ("us-west-2", "shop-dr-mysql", "cluster", "aurora-mysql", "8.0.mysql_aurora.3.08.0", 500, 1, 1, 6, 0, 0, 0, "shop-global", False, []),
+        ("us-east-1", "orders-aurora-pg15", "cluster", "aurora-postgresql", "15.8", 1000, 7, 7, 5, "all", "all", 2, "orders-global", True, [20, 100, 250, 400]),
+        ("us-east-1", "billing-aurora-mysql", "cluster", "aurora-mysql", "8.0.mysql_aurora.3.08.0", 800, 7, 7, 5, [0, 2, 3, 4, 5], "all", 0, None, None, [45]),
+        ("us-east-1", "new-aurora-pg16", "cluster", "aurora-postgresql", "16.4", 20, 7, 30, 3, "all", "all", 0, None, None, []),
+        ("us-east-1", "fresh-pg", "instance", "postgres", "16.4", 5, 7, 30, 3, "all", "all", 0, None, None, []),
+        ("us-east-1", "reports-pg", "instance", "postgres", "16.3", 900, 3, 3, 4, "all", "all", 0, None, None, [10]),
+        ("us-east-1", "legacy-mysql", "instance", "mysql", "8.0.39", 700, 7, 7, 74, "all", "all", 0, None, None, [200, 600]),
+        ("us-west-2", "orders-dr-pg15", "cluster", "aurora-postgresql", "15.8", 600, 7, 7, 6, [], [], 0, "orders-global", False, []),
+        ("us-west-2", "shop-dr-mysql", "cluster", "aurora-mysql", "8.0.mysql_aurora.3.08.0", 500, 1, 1, 6, [], [], 0, "shop-global", False, []),
     ],
     "222222222222": [
-        ("ap-south-1", "hr-aurora-pg", "cluster", "aurora-postgresql", "15.8", 1200, 14, 14, 2, 4, 11, 1, None, None, [5, 150]),
-        ("ap-south-1", "payroll-sqlserver", "instance", "sqlserver-se", "15.00.4415.2.v1", 1500, 7, 7, 8, 4, 9, 1, None, None, [95, 1100]),
+        ("ap-south-1", "hr-aurora-pg", "cluster", "aurora-postgresql", "15.8", 1200, 14, 14, 2, "all", "all", 0, None, None, [5, 150], {"wshift": {1: 26}}),
+        ("ap-south-1", "payroll-sqlserver", "instance", "sqlserver-se", "15.00.4415.2.v1", 1500, 7, 7, 8, "all", [0, 1, 3, 4, 6, 7, 8, 9, 10, 11], 0, None, None, [95, 1100], {"ids_only": True}),
     ],
     "333333333333": [
-        ("eu-west-1", "dev-aurora-mysql", "cluster", "aurora-mysql", "8.0.mysql_aurora.3.08.0", 400, 7, 7, 4, 4, 11, 1, None, None, []),
+        ("eu-west-1", "dev-aurora-mysql", "cluster", "aurora-mysql", "8.0.mysql_aurora.3.08.0", 400, 7, 7, 4, "all", "all", 0, None, None, [], {"extra_ret": [14]}),
     ],
 }
 rows = [] if SCEN == "empty" else [r for r in FLEET[acct] if r[0] == region]
@@ -135,8 +146,35 @@ def arn(r):
     return "arn:aws:rds:%s:%s:%s:%s" % (r[0], acct, "cluster" if r[2] == "cluster" else "db", r[1])
 
 
-def created(r):
-    return NOW - timedelta(days=r[5])
+def created(r):   # midnight UTC, r[5] days ago
+    d = NOW - timedelta(days=r[5])
+    return d.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def opts(r):
+    return r[15] if len(r) > 15 else {}
+
+
+def picked(spec, k):
+    return spec == "all" or k in spec
+
+
+def saturdays(n):   # the last n Saturdays whose 05:00 UTC run has passed, newest first
+    d = NOW.replace(hour=5, minute=0, second=0, microsecond=0) - timedelta(days=(NOW.weekday() - 5) % 7)
+    if d > NOW:
+        d -= timedelta(days=7)
+    return [d - timedelta(days=7 * k) for k in range(n)]
+
+
+def first_sundays(n):   # the last n first-Sundays-of-the-month whose 04:00 UTC run has passed, newest first
+    out, y, m = [], NOW.year, NOW.month
+    while len(out) < n:
+        d = datetime(y, m, 1, 4, 0, tzinfo=timezone.utc)
+        d += timedelta(days=(6 - d.weekday()) % 7)
+        if d <= NOW:
+            out.append(d)
+        y, m = (y, m - 1) if m > 1 else (y - 1, 12)
+    return out
 
 
 if svc == "rds" and op == "describe-db-clusters":
@@ -145,7 +183,8 @@ if svc == "rds" and op == "describe-db-clusters":
         if r[2] != "cluster":
             continue
         out.append({"DBClusterIdentifier": r[1], "DBClusterArn": arn(r), "Engine": r[3], "EngineVersion": r[4], "Status": "available",
-                    "BackupRetentionPeriod": r[6], "ClusterCreateTime": iso(created(r)), "LatestRestorableTime": iso(NOW - timedelta(minutes=5)),
+                    "BackupRetentionPeriod": r[6], "ClusterCreateTime": iso(created(r)),
+                    "PreferredBackupWindow": "03:00-03:30" if r[0] != "ap-south-1" else "20:30-21:00", "CopyTagsToSnapshot": r[12] is None, "LatestRestorableTime": iso(NOW - timedelta(minutes=5)),
                     "GlobalClusterIdentifier": r[12] or None, "MultiAZ": True,
                     "DBClusterMembers": [{"DBInstanceIdentifier": r[1] + "-1", "IsClusterWriter": True}]})
     if region == "us-east-1" and SCEN != "empty" and acct == "111111111111":
@@ -160,7 +199,8 @@ if svc == "rds" and op == "describe-db-instances":
                         "EngineVersion": r[4], "DBClusterIdentifier": r[1], "BackupRetentionPeriod": 1, "InstanceCreateTime": iso(created(r))})
         else:
             out.append({"DBInstanceIdentifier": r[1], "DBInstanceArn": arn(r), "Engine": r[3], "EngineVersion": r[4],
-                        "BackupRetentionPeriod": r[6], "InstanceCreateTime": iso(created(r)), "DBInstanceStatus": "available"})
+                        "BackupRetentionPeriod": r[6], "InstanceCreateTime": iso(created(r)), "DBInstanceStatus": "available",
+                        "PreferredBackupWindow": "04:00-04:30", "CopyTagsToSnapshot": r[1] != "legacy-mysql"})
     print(json.dumps({"DBInstances": out})); sys.exit(0)
 if svc == "rds" and op == "describe-global-clusters":
     if SCEN == "globaldeny":
@@ -210,24 +250,31 @@ if svc == "backup" and op == "list-backup-vaults":
 if svc == "backup" and op == "list-recovery-points-by-backup-vault":
     vault = opt("--backup-vault-name")
     pts = []
-    def rp(r, t, days, v):
+    def rp(r, t, days, v, rule=None):
         d = {"RecoveryPointArn": "arn:aws:rds:%s:%s:%ssnapshot:awsbackup:job-%s-%d" % (r[0], acct, "cluster-" if r[2] == "cluster" else "", r[1], int(t.timestamp())),
              "BackupVaultName": v, "ResourceArn": arn(r), "ResourceType": "Aurora" if r[2] == "cluster" else "RDS",
              "CreationDate": iso(t, ist=True), "Status": "COMPLETED", "BackupSizeInBytes": 53687091200, "IsParent": False}
         if days is not None:
             d["CalculatedLifecycle"] = {"DeleteAt": iso(t + timedelta(days=days))}
             d["Lifecycle"] = {"DeleteAfterDays": days}
+        if rule and opts(r).get("ids_only"):   # older CLI: ids only
+            d["CreatedBy"] = {"BackupPlanId": "1a2b3c4d-plan", "BackupPlanVersion": "v1", "BackupRuleId": "rule-" + rule}
+        elif rule:
+            d["CreatedBy"] = {"BackupPlanId": "9f8e7d6c-plan", "BackupPlanArn": "arn:aws:backup:%s:%s:backup-plan:9f8e7d6c-plan" % (r[0], acct),
+                              "BackupPlanName": "prod-rds-plan", "BackupPlanVersion": "v1", "BackupRuleId": "rid-" + rule, "BackupRuleName": rule,
+                              "BackupRuleCron": "cron(0 5 ? * SAT *)" if rule == "weekly-sat" else "cron(0 4 ? * 1#1 *)", "BackupRuleTimezone": "Etc/UTC"}
         return d
     for r in rows:
         if vault == "prod vault":
-            for k in range(r[9]):
-                t = NOW - timedelta(days=2 + 7 * k)
-                if t > created(r): pts.append(rp(r, t, 35, vault))
-            for k in range(r[10]):
-                t = NOW - timedelta(days=3 + 30.44 * k)
-                if t > created(r): pts.append(rp(r, t, 365, vault))
-            for k in range(3):   # 7-day AWS Backup dailies: class "short", never counted
-                pts.append(rp(r, NOW - timedelta(days=k + 1), 7, vault))
+            for k, t in enumerate(saturdays(6)):
+                t = t + timedelta(hours=opts(r).get("wshift", {}).get(k, 0))
+                if picked(r[9], k) and t > created(r) and t < NOW and t + timedelta(days=35) > NOW:
+                    pts.append(rp(r, t, 35, vault, "weekly-sat"))
+            for k, t in enumerate(first_sundays(13)):
+                if picked(r[10], k) and t > created(r) and t + timedelta(days=365) > NOW:
+                    pts.append(rp(r, t, 365, vault, "monthly-first-sun"))
+            for days in opts(r).get("extra_ret", []):   # a retention that fits no class: warning only
+                pts.append(rp(r, NOW - timedelta(days=2), days, vault))
         else:
             for k in range(r[11]):
                 t = NOW - timedelta(days=10 + 365 * k)

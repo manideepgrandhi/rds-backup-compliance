@@ -1,0 +1,15 @@
+RDS backup compliance - account 111111111111
+Generated 2026-10-31 14:47 UTC / 2026-10-31 20:17 IST
+Rule: daily: each of the last 7 days (RDS automated, last <= 26h) · weekly every Saturday in the last 30 days (retention 25-40d) · monthly first Sunday x12 (retention 300-400d) · ±1d, UTC dates · global secondaries: daily only
+Orphaned manual snapshots: 4 orphaned snapshots, 1.8 TB, ~$38/month (estimate) at $0.021/GB-month - rough upper estimate, snapshot billing is incremental
+Resources 8: compliant 2, non-compliant 4, not yet due 2, unknown 0
+
+ACCOUNT	REGION	IDENTIFIER	TYPE	ROLE	AGE_DAYS	DAILY	WEEKLY	MONTHLY	STATUS	GAPS	WARNINGS
+111111111111	us-east-1	billing-aurora-mysql	cluster	none	800	7/7	4/5 · missing Sat 24 Oct	12/12	NON-COMPLIANT	weekly 4/5 missing Sat 24 Oct	
+111111111111	us-east-1	fresh-pg	instance	none	5	5/5 so far (target 7)	1/1 so far (target 5)	0/0 so far (target 12)	NOT YET DUE	daily full on 02 Nov 2026; weekly full on 25 Nov 2026; monthly full on 03 Oct 2027	
+111111111111	us-east-1	legacy-mysql	instance	none	700	5/7 · missing Thu 29 Oct, Fri 30 Oct	5/5	12/12	NON-COMPLIANT	daily: last automated 74.1h ago; daily 5/7 missing Thu 29 Oct, Fri 30 Oct	
+111111111111	us-east-1	new-aurora-pg16	cluster	none	20	7/7	3/3 so far (target 5)	0/0 so far (target 12)	NOT YET DUE	weekly full on 10 Nov 2026; monthly full on 03 Oct 2027	
+111111111111	us-east-1	orders-aurora-pg15	cluster	primary	1000	7/7	5/5	12/12	COMPLIANT		retention doesn't match: 2 recovery points (2555d, never expires) not counted
+111111111111	us-east-1	reports-pg	instance	none	900	3/7 · missing Sun 25 Oct, Mon 26 Oct, Tue 27 Oct, Wed 28 Oct	5/5	12/12	NON-COMPLIANT	daily: retention 3d < 7d; daily 3/7 missing Sun 25 Oct, Mon 26 Oct, Tue 27 Oct, Wed 28 Oct	
+111111111111	us-west-2	orders-dr-pg15	cluster	secondary	600	7/7	N/A	N/A	COMPLIANT		
+111111111111	us-west-2	shop-dr-mysql	cluster	secondary	500	1/7 · missing Sun 25 Oct, Mon 26 Oct, Tue 27 Oct, Wed 28 Oct, Thu 29 Oct, Fri 30 Oct	N/A	N/A	NON-COMPLIANT	daily: retention 1d < 7d; daily 1/7 missing Sun 25 Oct, Mon 26 Oct, Tue 27 Oct, Wed 28 Oct, Thu 29 Oct, Fri 30 Oct	

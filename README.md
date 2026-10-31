@@ -1,6 +1,6 @@
 # rds-backup-compliance
 
-`rds_backup_compliance_report.sh` v1.2.1 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
+`rds_backup_compliance_report.sh` v1.3.0 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
 
 ## Install (CloudShell)
 
@@ -14,23 +14,29 @@ sha256sum -c rds-backup-compliance.zip.sha256 && unzip -oq rds-backup-compliance
 
 ## Policy
 
+The default rules follow this schedule: RDS automated backups daily (7-day retention), AWS Backup every Saturday (kept about a month) and on the first Sunday of each month (kept a year). There are no yearly backups, so the yearly check is off.
+
 | Check | Source | Default rule | Applies to |
 |---|---|---|---|
-| Daily | RDS automated backups | Retention ≥ 7 days, 7 distinct days with an automated snapshot, and the latest one ≤ 26 h old | Every resource |
-| Weekly | AWS Backup | ≥ 4 recovery points in distinct weeks (Monday start) | Primary clusters, non-global clusters, standalone instances |
-| Monthly | AWS Backup | ≥ 11 in distinct months | Same as weekly |
-| Yearly | AWS Backup | ≥ 1 in distinct years | Same as weekly |
+| Daily | RDS automated backups | Retention ≥ 7 days, an automated snapshot on each of the last 7 UTC days, and the latest one ≤ 26 h old | Every resource |
+| Weekly | AWS Backup | A recovery point for every Saturday in the last 30 days (`--weekly auto`), or for the last N Saturdays (`--weekly N`) | Primary clusters, non-global clusters, standalone instances |
+| Monthly | AWS Backup | A recovery point for the first Sunday of each of the last 12 months | Same as weekly |
+| Yearly | AWS Backup | Off (`yearly=0`). `--yearly N` turns it on: N points in distinct years with retention over the monthly range | Same as weekly |
+
+- **Scheduled dates.** A point counts for a scheduled date when it was taken that UTC day, or up to `--tolerance-days` (default 1) before or after. A scheduled day that has not ended yet and has no point is not expected yet.
+- **Creation date.** Dates on or before the day a resource was created are never expected. A resource that is still building up shows `3/3 so far (target 5)` and `weekly full on 10 Nov 2026`.
+- **Missing dates.** Failing checks list the dates they miss, for example `weekly 4/5 missing Sat 24 Oct` or `monthly 10/12 missing May 2026, Aug 2026`.
 
 AWS Backup recovery points are classified by their retention, which is CreationDate → CalculatedLifecycle.DeleteAt:
 
 | Retention | Class |
 |---|---|
-| 11–60 days | Weekly |
-| 61–400 days | Monthly |
-| Over 400 days, or never expires | Yearly |
-| Under 11 days | Short (listed, but not counted) |
+| 25–40 days | Weekly |
+| 300–400 days | Monthly |
+| Over 400 days, or never expires | Yearly, only when `yearly` > 0 |
+| Anything else | Mismatch: not counted, and the resource gets a yellow warning such as `retention doesn't match: 2 recovery points (2555d, never expires) not counted` |
 
-You can change these with `--weekly-days MIN-MAX` and `--monthly-max-days N`.
+You can change these with `--weekly-days MIN-MAX`, `--monthly-days MIN-MAX`, `--weekly-weekday sat`, `--monthly-rule first-sun`, `--tolerance-days N` (0–3) and `--weekly-window-days N`.
 
 How the role of each resource is decided:
 
@@ -44,8 +50,8 @@ How the role of each resource is decided:
 | Status | Meaning |
 |---|---|
 | COMPLIANT | All applicable checks pass. |
-| NON-COMPLIANT | At least one check fails. The **Gaps** column says which, for example `weekly 2/4; yearly 0/1`. |
-| NOT YET DUE | The resource is too new to have the full set yet, and it has every backup it could have had so far. A check counts as not yet due when age < N × period and have ≥ ⌊age/period⌋ − 1. The periods are 1 day, 7 days, 30.44 days and 365.25 days. |
+| NON-COMPLIANT | At least one check fails. The **Gaps** column says which and lists the missing dates, for example `weekly 4/5 missing Sat 24 Oct`. |
+| NOT YET DUE | The resource is too new to have the full set, and it has a backup for every scheduled date since it was created. The `not_yet_due` column says when each check will be full, for example `daily full on 02 Nov 2026`. |
 | UNKNOWN | A needed call was denied or failed, for example `backup:ListRecoveryPointsByBackupVault`. |
 
 ## Outputs
@@ -63,15 +69,17 @@ The HTML report has two tabs:
 
 - **Compliance tab:**
   - Total cards.
-  - Filters for account, region, type, engine, role, global cluster, status and identifier.
+  - Filters for account, region, type, engine, role, global cluster, status and identifier, plus **Show: Not yet due / Retention warnings**.
+  - A Created column (date and age in days). Yearly shows only when `yearly` > 0.
   - Export CSV, which exports the filtered rows.
   - A per-region table with an "All regions" total, and the region errors.
 - **Backups tab:**
   - **Resource:** "All clusters and instances" (the first option) or one cluster or instance.
   - **Backup type:** All types, Manual, Automated or AWS Backup.
   - **Age:** Last 3, 6 or 12 months (newest first); Older than 30, 90, 180 or 365 days (oldest first); or Any age.
-  - **Single resource:** three sections (manual, RDS automated, AWS Backup with class, retention, expiry and vault). Backup type shows only the chosen section.
-  - **All clusters and instances:** one combined table with Account, Region, Resource, Resource type, Backup type, Created (UTC and IST), Age (days), Status, Size GB, Rule (daily for automated; weekly, monthly, yearly or short for AWS Backup), Retention and Vault. The Account, Region and Engine filters narrow it.
+  - **Reset** puts the type, age and filters back to their defaults (newest first) and keeps the selected resource.
+  - **Single resource:** a Retention settings section, then three sections (manual, RDS automated, AWS Backup with class, retention, expiry and vault). Backup type shows only the chosen section.
+  - **All clusters and instances:** one combined table with Account, Region, Resource, Resource type, Backup type, Created (UTC and IST), Age (days), Status, Size GB, Rule (daily for automated; weekly, monthly, mismatch, or yearly when it is on, for AWS Backup), Retention and Vault. The Account, Region and Engine filters narrow it.
   - A count and total GB of the matching rows, and **Export CSV** of exactly what is shown (all filters applied).
   - **Old manual snapshots (> 90 days)** sets All + Manual + Older than 90 days in one click, for auditing leftover manual snapshots.
   - Manual snapshots of any age are kept in the data (nothing is trimmed to 12 months).
@@ -109,6 +117,21 @@ AWS Backup recovery points, automated snapshots, `awsbackup:` snapshots and Docu
 
 Compliance is re-evaluated at merge time, so threshold options also work with `--merge`. If the same account appears twice, the newer collection is used. The saved data contains no ARNs.
 
+## Scanning regions in parallel
+
+With several regions (`-r a,b,c` or `-A`), up to `--parallel N` regions of an account are scanned at once (default 4, conf key `parallel`). `--parallel 1` scans one region at a time, as before. Each region runs as a background job that writes only to its own temp folder. The results are then combined in region order, so the report is the same whatever order the regions finish in.
+
+```
+[INFO] 111111111111: scanning 17 regions, up to 4 at a time
+[INFO] [1/17] ap-northeast-1: started
+...
+[INFO] [3/17] us-east-1: 4 clusters, 2 instances, 61 snapshots, 80 recovery points (6s)
+[ERROR] [9/17] eu-west-3: failed (exit 1)
+[INFO] 111111111111 regions in order: ap-northeast-1: done (0 resources); ...; eu-west-3: failed (0 resources); ...
+```
+
+If one region fails, the other regions still finish. The failed region is listed under Region errors in the report, and the exit code follows the usual rules. Bash 4.3+ uses `wait -n`. Without it the tool waits for each batch to finish. The temp folder is removed on exit, including Ctrl-C. In parallel mode each region that has clusters calls `describe-global-clusters` itself, so there are a few more calls than with `--parallel 1`.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -138,7 +161,8 @@ Compliance is re-evaluated at merge time, so threshold options also work with `-
 - **Recovery points are read vault by vault.** `list-recovery-points-by-resource` does not return the lifecycle or DeleteAt that classification needs, so the tool uses `list-recovery-points-by-backup-vault`. It only sees vaults in the scanned account and region. Copies held in another account or region (for example a central backup account) are not counted.
 - **Daily backups are counted from automated snapshots.** RDS keeps one automated snapshot per day, and continuous backup/PITR between snapshots is not inspected.
 - **Unknown global roles get the full checks.** If `describe-global-clusters` is denied, roles show as `unknown` and the full checks are applied.
-- **Weekly grouping does not match ISO weeks at year boundaries.** Weeks start on Monday and are counted from the Unix epoch, so they are not ISO week numbers. This keeps the tool portable to jq.exe.
+- **Scheduled days are UTC dates.** A Saturday backup that runs late on Friday or early on Sunday UTC still counts with the default ±1 day tolerance. With `--tolerance-days 0` it does not.
+- **Plan and rule names** come from each recovery point's `CreatedBy`. When the CLI returns only IDs, the IDs are shown.
 - **`-A` calls every enabled region.** Both snapshot calls now run in every scanned region, even ones without databases (2 extra calls per empty region).
 - **The orphan cost is an upper estimate.** It uses the snapshot's allocated size, not the incremental billed bytes.
 - **Orphans are matched by identifier within one account and region.** If a new resource reuses the old name, its old snapshots count as Existing. A cross-region copy is Unverified unless its source region was scanned.
@@ -151,6 +175,17 @@ tests/validate_cli.py            # checks that every field read exists in the bu
 ```
 
 ## Changelog
+
+- **1.3.0**
+  - Schedule-aware checks: daily for each of the last 7 UTC days, weekly for every Saturday in the last 30 days, monthly for the first Sunday of each of the last 12 months, with ±1 day tolerance. Yearly is off by default and hidden in all outputs.
+  - The creation date counts: dates before a resource existed are not expected. Building-up checks show `x/y so far (target z)` and `full on <date>`. Failing checks list the missing dates.
+  - Recovery points whose retention fits no class get a warning and are not counted.
+  - Created/age column, a "Show: Not yet due / Retention warnings" filter, and `not_yet_due` and `warnings` CSV columns.
+  - Backups tab: a Reset button, and a Retention settings section for one resource (retention, backup window, copy tags, AWS Backup retention seen, plan / rule, schedule). It uses data the tool already reads, so there are no new AWS calls or permissions.
+  - Regions are scanned in parallel (`--parallel N`, default 4). One progress line per region (`[3/17] us-east-1: 4 clusters, ... (6s)`, `(empty)`, errors on the same line). A failing region does not stop the others.
+  - The run ends with an `Output (N files) in /absolute/dir:` block, one file per line.
+  - New options and conf keys: `weekly` (auto or N), `monthly-days`, `weekly-weekday`, `monthly-rule`, `tolerance-days`, `weekly-window-days`, `parallel`. Defaults are now weekly-days 25-40, monthly-days 300-400, monthly 12, yearly 0.
+  - Saved data stays at schema_version 1. Files from v1.2.1 still merge, and the new fields show blank.
 
 - **1.2.1**
   - Security fix: the Backups tab now HTML-escapes snapshot `kind`, `rd`, status and label values that come from the data file, so a tampered `--merge` file can no longer inject markup or script (stored XSS). The regression test renders a poisoned merge file in headless Chrome.
