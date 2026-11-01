@@ -235,7 +235,7 @@ const sleep = ms => new Promise(x => setTimeout(x, ms));
     await sel('b-kind', 'manual');
     if (shots) await g.screenshot({path: path.join(shots, 'backups_all_manual.png'), fullPage: true});
     await sel('b-kind', '');
-    await g.click('#b-out a.go'); await sleep(100); let back = await bt();
+    await g.evaluate(() => { const a = document.querySelector('#b-out a.go:not([data-c])') || document.querySelector('#b-out a.go'); document.getElementById('b-res').value = a.dataset.k; document.getElementById('b-res').dispatchEvent(new Event('change')); }); await sleep(100); let back = await bt();
     ok(['manual', 'automated', 'backup'].every(k => k in back.sec), 'resource link in all mode opens single view');
     const hid = await g.evaluate(() => [...document.querySelectorAll('.ballf')].every(l => l.style.display === 'none'));
     ok(hid, 'all-mode filters hidden in single view');

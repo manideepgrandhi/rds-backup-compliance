@@ -1,6 +1,6 @@
 # rds-backup-compliance
 
-`rds_backup_compliance_report.sh` v1.3.0 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
+`rds_backup_compliance_report.sh` v1.4.1 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
 
 ## Install (CloudShell)
 
@@ -199,6 +199,12 @@ tests/validate_cli.py            # checks that every field read exists in the bu
 ```
 
 ## Changelog
+
+- **1.4.1**
+  - Cross-tab links. On the Backups tab, a resource identifier opens the Compliance tab showing only that resource (account and region filters set, other filters cleared, a `× clear` chip), with its row expanded, highlighted and scrolled into view. On the Compliance tab, each row has a small `backups` link (the identifier still works too) that opens the Backups tab on that resource. Snapshots whose source is gone (`(deleted) ...`) keep opening their own snapshot list.
+  - Links are keyed by account + region + identifier, so merged reports with the same identifier in several accounts or regions go to the right row. A resource with no backups shows a "No backups found" message.
+  - The page address records the view (`#view=comp&id=<account|region|identifier>` or `#view=bk&res=...`): the browser Back and Forward buttons return to the previous view and filters, and such links can be bookmarked or shared. Links work with the keyboard (Tab, Enter).
+  - HTML only: CSV, JSON, console output and AWS calls are unchanged.
 
 - **1.4.0**
   - Strict retention: daily `BackupRetentionPeriod` 7, weekly points 30 days, monthly points 365 days (±1 day). New options and conf keys `--daily-retention-days` / `DAILY_RETENTION_DAYS`, `--weekly-retention-days` / `WEEKLY_RETENTION_DAYS=30`, `--monthly-retention-days` / `MONTHLY_RETENTION_DAYS=365`, `--retention-tolerance-days` / `RET_TOLERANCE_DAYS=1`. A point with another retention still counts (a 35-day point is still weekly) and is highlighted yellow: `weekly point has 35d, expected 30d`. Diagnostics reasons say so.

@@ -113,3 +113,7 @@ legacy-mysql    weekly point has 35d, expected 30d (x5)                         
 Recovery-point reasons now read `weekly: counts for Sat 24 Oct, but weekly point has 35d, expected 30d` (or `..., retention 30d as expected`).
 In the HTML: Compliance tab -> Show "Retention mismatch" / "Excess backups" / "Holds more than retention", or type in Search; Backups tab -> Account and Search work for one resource too, and Reset clears everything.
 
+
+## v1.4.1
+
+Cross-tab links: click a resource on the Backups tab to open its Compliance row (expanded and highlighted), or click `backups` on a Compliance row to see its backups. Browser Back returns to where you were. Bookmarkable: `report.html#view=comp&id=111111111111%7Cus-east-1%7Corders-aurora-pg15`.

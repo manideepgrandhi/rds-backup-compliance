@@ -29,7 +29,7 @@ rowt() { jq -e --arg i "$2" ".rows[] | select(.identifier == \$i) | $3" "$OUT/$1
 ncalls() { wc -l <"$MOCK_LOG" 2>/dev/null | tr -d ' ' || echo 0; }
 
 echo "== CLI"
-t version 0 fleet --version; has version out '1\.4\.0'
+t version 0 fleet --version; has version out '1\.4\.1'
 t help 0 fleet --help; has help out 'list-recovery-points-by-backup-vault'; has help out 'weekly-days'
 t badopt 1 fleet --nope
 t multifmt 1 fleet -P prod -r us-east-1 -F csv,html
@@ -347,6 +347,10 @@ if git -C "$HERE/.." cat-file -e b2f6c70 2>/dev/null; then   # v1.2.1 save-data 
 fi
 t mergedir 0 fleet --merge "$M" -o "$OUT/all accounts.html"
 chk "merge -o FILE.html written" test -s "$OUT/all accounts.html"
+# v1.4.1: same identifiers in a second account (one resource with no backups at all) for the cross-tab link checks
+sed 's/111111111111/444444444444/g' "$M/prod.json" | jq '.resources[0].snapshots = []' >"$OUT/dup444.json"
+t mergedup 0 fleet --merge "$M/prod.json" "$OUT/dup444.json" -o "$OUT/dup ids.html"
+chk "merge with duplicate identifiers written" test -s "$OUT/dup ids.html"
 chk "merged html lists 3 accounts in title" grep -q '<title>RDS backup compliance - 111111111111, 222222222222, 333333333333</title>' "$OUT/all accounts.html"
 t mergecsv 0 fleet --merge "$M" -F csv,html -o "$OUT/mc"
 chk "merged orphaned csv: 5 rows" test "$(tail -n +2 "$OUT"/mc/*_orphaned_snapshots.csv | grep -c .)" == 5
@@ -364,12 +368,19 @@ chk "CRLF jq: html written" grep -q 'orders-aurora-pg15' "$OUT/cr.html"
 
 echo "== browser"
 if command -v node >/dev/null && [[ -x "${CHROME:-/usr/bin/google-chrome}" ]] && node -e 'require("puppeteer-core")' 2>/dev/null; then
-    for h in "$HTML" "$OUT/all accounts.html"; do
+    LH=("$HTML" "$OUT/all accounts.html" "$OUT/dup ids.html"); i=0
+    for h in "${LH[@]:0:2}"; do
         cmp=""; [[ "$h" == "$HTML" ]] && cmp="$CSV"
         res="$(CSV_CMP="$cmp" node "$HERE/browser_check.js" "$h" ${SHOTS:+"$SHOTS"} 2>&1)"; rc=$?
         [[ -n "$cmp" && $rc -eq 0 ]] && { grep -q '"checks":[0-9]' <<<"$res" && ok "browser: HTML CSV export compared with $(basename "$CSV")"; }
         if [[ $rc -eq 0 ]]; then ok "browser: $(basename "$h") $res"; else bad "browser: $(basename "$h") $res"; fi
         SHOTS="${SHOTS:+$SHOTS/merged}"
+    done
+    SHOTS="${SHOTS%%/merged*}"
+    for h in "${LH[@]}"; do   # v1.4.1 cross-tab links, Back button, deep links, duplicate identifiers, empty state
+        sd=""; [[ -n "$SHOTS" ]] && sd="$SHOTS/links_$i"; i=$((i + 1))
+        res="$(node "$HERE/link_check.js" "$h" ${sd:+"$sd"} 2>&1)"; rc=$?
+        if [[ $rc -eq 0 ]]; then ok "links: $(basename "$h") $res"; else bad "links: $(basename "$h") $res"; fi
     done
 else echo "  skip browser check (node + puppeteer-core + Chrome not found)"; fi
 
