@@ -80,6 +80,36 @@ Output (4 files):
 ```
 2026-10-24 Sat  35   weekly    COMPLETED  true   weekly: counts for Sat 24 Oct, retention 35d in weekly window 25-40d
 2026-10-21 Wed  2555 mismatch  COMPLETED  false  retention 2555d outside weekly window 25-40d and monthly window 300-400d
+(v1.4.0 words these differently, see below)
 ```
 
 The same table is in the HTML report: click a row to open it. CSV columns per check (`weekly_found`, `weekly_expected`, `weekly_missing`, ...) are plain numbers or `YYYY-MM-DD Day` text that Excel keeps as text.
+
+## v1.4.0
+
+```bash
+# Strict retention is on by default (weekly 30d, monthly 365d, daily 7, ±1d). Your weekly plan keeps 35 days on purpose:
+./rds_backup_compliance_report.sh -A --weekly-retention-days 35
+# or in the conf file
+#   WEEKLY_RETENTION_DAYS=35
+#   MONTHLY_RETENTION_DAYS=365
+#   RET_TOLERANCE_DAYS=1
+
+# Which resources have the wrong retention, too many backups, or old automated backups?
+./rds_backup_compliance_report.sh -A -F json \
+  | jq -r '.rows[] | select(.retention_mismatch != "" or .excess != "" or .over_retention != "")
+           | [.identifier, .retention_mismatch, .excess, .over_retention] | @tsv'
+
+# Compliance percentage (not-yet-due resources are not counted)
+./rds_backup_compliance_report.sh -A -F json | jq '.totals.compliance'
+```
+
+```
+reports-pg      weekly point has 35d, expected 30d (x9)  weekly 9 (expected 4-5)
+legacy-mysql    weekly point has 35d, expected 30d (x5)                           holds 7 automated backups for 7d retention; 2 older than 7d, oldest rds:legacy-mysql-2026-10-23-01-00 (9d)
+{"compliant": 2, "of": 6, "not_yet_due": 2, "pct": 33}
+```
+
+Recovery-point reasons now read `weekly: counts for Sat 24 Oct, but weekly point has 35d, expected 30d` (or `..., retention 30d as expected`).
+In the HTML: Compliance tab -> Show "Retention mismatch" / "Excess backups" / "Holds more than retention", or type in Search; Backups tab -> Account and Search work for one resource too, and Reset clears everything.
+

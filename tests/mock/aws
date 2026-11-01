@@ -64,14 +64,14 @@ if svc == "ec2" and op == "describe-regions":
 # (region, id, kind, engine, version, age_days, retention, daily_n, last_h, weekly, monthly, yearly, global, writer, manual_ages[, opts])
 # weekly / monthly: "all" = a point on every scheduled day (Saturday / first Sunday, newest first), or a list of the
 # indexes that have one (0 = the most recent scheduled day that has passed). yearly: points in "Default" with 2555 d /
-# no expiry (a retention that fits no class when yearly=0). opts: wshift {index: hours later}, extra_ret [days], ids_only.
+# no expiry (a retention that fits no class when yearly=0). opts: wshift {index: hours later}, extra_ret [days], ids_only, dupw N (N extra weekly points).
 FLEET = {
     "111111111111": [
         ("us-east-1", "orders-aurora-pg15", "cluster", "aurora-postgresql", "15.8", 1000, 7, 7, 5, "all", "all", 2, "orders-global", True, [20, 100, 250, 400]),
         ("us-east-1", "billing-aurora-mysql", "cluster", "aurora-mysql", "8.0.mysql_aurora.3.08.0", 800, 7, 7, 5, [0, 2, 3, 4, 5], "all", 0, None, None, [45]),
         ("us-east-1", "new-aurora-pg16", "cluster", "aurora-postgresql", "16.4", 20, 7, 30, 3, "all", "all", 0, None, None, []),
         ("us-east-1", "fresh-pg", "instance", "postgres", "16.4", 5, 7, 30, 3, "all", "all", 0, None, None, []),
-        ("us-east-1", "reports-pg", "instance", "postgres", "16.3", 900, 3, 3, 4, "all", "all", 0, None, None, [10]),
+        ("us-east-1", "reports-pg", "instance", "postgres", "16.3", 900, 3, 3, 4, "all", "all", 0, None, None, [10], {"dupw": 4}),
         ("us-east-1", "legacy-mysql", "instance", "mysql", "8.0.39", 700, 7, 7, 74, "all", "all", 0, None, None, [200, 600]),
         ("us-west-2", "orders-dr-pg15", "cluster", "aurora-postgresql", "15.8", 600, 7, 7, 6, [], [], 0, "orders-global", False, []),
         ("us-west-2", "shop-dr-mysql", "cluster", "aurora-mysql", "8.0.mysql_aurora.3.08.0", 500, 1, 1, 6, [], [], 0, "shop-global", False, []),
@@ -274,6 +274,9 @@ if svc == "backup" and op == "list-recovery-points-by-backup-vault":
             for k, t in enumerate(first_sundays(13)):
                 if picked(r[10], k) and t > created(r) and t + timedelta(days=365) > NOW:
                     pts.append(rp(r, t, 365, vault, "monthly-first-sun"))
+            for k, t in enumerate(saturdays(6)[:opts(r).get("dupw", 0)]):   # v1.4.0: a second weekly plan -> excess backups
+                if t > created(r) and t < NOW and t + timedelta(days=35) > NOW:
+                    pts.append(rp(r, t + timedelta(hours=1), 35, vault, "weekly-sat"))
             for days in opts(r).get("extra_ret", []):   # a retention that fits no class: warning only
                 pts.append(rp(r, NOW - timedelta(days=2), days, vault))
         else:

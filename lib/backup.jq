@@ -30,6 +30,15 @@ def rp_class: rp_ret as $d
     elif ($cfg.yearly // 0) > 0 and ($d == null or $d > $cfg.monthly_max_days) then "yearly"
     else "mismatch" end;
 
+# v1.4.0 strict retention: the windows above decide the class (so a 35d point still counts as weekly); the expected
+# retention per class (daily = RDS BackupRetentionPeriod) is checked separately and a difference is a yellow highlight only.
+def rtol: ($cfg.ret_tolerance_days // 1);
+def exp_ret($cl): if $cl == "weekly" then ($cfg.weekly_retention_days // 30) elif $cl == "monthly" then ($cfg.monthly_retention_days // 365) else null end;
+def rmis_note($cl; $ret): exp_ret($cl) as $e
+  | if $e != null and $ret != null and (($ret - $e) | fabs) > rtol then "\($cl) point has \($ret)d, expected \($e)d" else null end;
+def dret: ($cfg.daily_retention_days // $cfg.daily);
+def over_cut($ret): $now - ((($ret // 0) + rtol) * 86400);
+
 # schedule check. $cand: candidate scheduled day numbers, newest first. $pts: epochs. $tol: days either side.
 # A day whose tolerance window has not closed yet and has no point is pending (not expected yet).
 # $n: number of days expected (null = all candidates above $low). Days on or before $cday (creation day) are never expected.
@@ -99,8 +108,8 @@ def evaluate:
   | ([ $daily.st, ($wmy[] | .st | select(. != "OFF")) ]) as $sts
   # per recovery point: why it was / wasn't counted (v1.3.1; shown in the HTML row detail)
   | ($cfg.monthly_min_days // ($cfg.weekly_max_days + 1)) as $mmin
-  | def wtxt: "weekly window \($cfg.weekly_min_days)-\($cfg.weekly_max_days)d";
-  def mtxt2: "monthly window \($mmin)-\($cfg.monthly_max_days)d";
+  | def wtxt: "the weekly range \($cfg.weekly_min_days)-\($cfg.weekly_max_days)d (expected \(exp_ret("weekly"))d)";
+  def mtxt2: "the monthly range \($mmin)-\($cfg.monthly_max_days)d (expected \(exp_ret("monthly"))d)";
   def hitday($k): . as $p | [ ($wmy[$k]._days // [])[] | select($p >= (. - $tol) * 86400 and $p < (. + 1 + $tol) * 86400) ] | first;
   ([ $r.snapshots[]? | select(.kind == "backup") ] | sort_by(-(.created_epoch // 0)) | map(
       . as $p | rp_ret as $ret | rp_class as $cl
@@ -110,15 +119,39 @@ def evaluate:
          elif $wmy.weekly.st == "N/A" then {counted: false, reason: "not evaluated: global secondary / replica (daily only)"}
          elif $wmy.weekly.st == "UNKNOWN" then {counted: false, reason: "not evaluated: recovery points unreadable"}
          elif $cl == "mismatch" then {counted: false, reason: (if $ret == null then "no expiry (never expires): not weekly or monthly" + (if ($cfg.yearly // 0) > 0 then "" else "; yearly check is off" end)
-                                                             else "retention \($ret)d outside \(wtxt) and \(mtxt2)" end)}
+                                                             else "retention \($ret)d is outside \(wtxt) and \(mtxt2)" end)}
          elif $cl == "yearly" then {counted: true, reason: "yearly (\(.created_epoch | year)), retention \(if $ret == null then "never expires" else "\($ret)d" end)"}
          else (.created_epoch | hitday($cl)) as $h
            | (if $cl == "weekly" then wtxt else mtxt2 end) as $win
-           | if $h != null then {counted: true, reason: "\($cl): counts for \(if $cl == "monthly" then ($h | dshort) + " (first \(wdname($md)))" else $h | dshort end), retention \($ret)d in \($win)"}
+           | rmis_note($cl; $ret) as $rn
+           | if $h != null then {counted: true, ret_mismatch: ($rn != null), reason: ("\($cl): counts for \(if $cl == "monthly" then ($h | dshort) + " (first \(wdname($md)))" else $h | dshort end), "
+                 + (if $rn != null then "but \($rn)" else "retention \($ret)d as expected" end))}
              else {counted: false, reason: ("retention \($ret)d = \($cl), but \(.created_epoch | day | dshort) is not within ±\($tol)d of a checked \(if $cl == "weekly" then wdname($wd) else "first " + wdname($md) end)"
                      + (if ($wmy[$cl]._days // []) | length > 0 then " (" + ([ $wmy[$cl]._days[] | dshort ] | join(", ")) + ")" else "" end))} end end)
       | {id: $p.id, c: $p.created_epoch, date: (if $p.created_epoch == null then "" else ($p.created_epoch | day | dwk) end),
          ret: $ret, class: $cl, status: ($p.status // ""), vault: ($p.vault // "")} + .)) as $diag
+  # v1.4.0: retention mismatch (counted, highlighted), excess backups and over-retention (warnings, never a failure)
+  | ([ (if ($r.retention // 0) > dret and $r.snap_ok != false then "daily retention \($r.retention)d, expected \(dret)d" else empty end),
+       ($diag[] | select(.ret_mismatch == true) | rmis_note(.class; .ret)) ]
+     | group_by(.) | map(if length > 1 then "\(.[0]) (x\(length))" else .[0] end)) as $rmt
+  | (([ $diag[] | select(.ret_mismatch == true) ] | length) + (if ($r.retention // 0) > dret and $r.snap_ok != false then 1 else 0 end)) as $rmn
+  | (if $r.snap_ok == false then null
+     else ([ $auto[] | select(.created_epoch != null and .created_epoch >= $now - $cfg.daily * 86400) ] | length) as $n
+       | {n: $n, max: ($cfg.daily + 1), exp: "\($cfg.daily)"} end) as $exd
+  | (if $wmy.weekly.st == "N/A" or $wmy.weekly.st == "UNKNOWN" then null
+     else ([ $rps[] | select(.class == "weekly" and .created_epoch >= ($today - $cfg.weekly_window_days - $tol) * 86400) ] | length) as $n
+       | (if $wn == null then [($cfg.weekly_window_days / 7 | floor), ($cfg.weekly_window_days / 7 | ceil)] else [$wn, $wn] end) as $lh
+       | {n: (if $wn == null then $n else ([ $rps[] | select(.class == "weekly" and .created_epoch >= ($lastw - 7 * ($wn - 1) - $tol) * 86400) ] | length) end),
+          max: $lh[1], exp: (if $lh[0] == $lh[1] then "\($lh[0])" else "\($lh[0])-\($lh[1])" end)} end) as $exw
+  | (if $wmy.monthly.st == "N/A" or $wmy.monthly.st == "UNKNOWN" then null
+     else ([ range(0; $cfg.monthly + 2) | firstdow($mi - .; $md) | select(. <= $today) ][$cfg.monthly - 1]) as $old
+       | {n: ([ $rps[] | select(.class == "monthly" and .created_epoch >= (($old // 0) - $tol) * 86400) ] | length), max: $cfg.monthly, exp: "\($cfg.monthly)"} end) as $exm
+  | ({daily: $exd, weekly: $exw, monthly: $exm}) as $ex
+  | ([ $ex | to_entries[] | select(.value != null and .value.n > .value.max) | "\(.key) \(.value.n) (expected \(.value.exp))" ] | join("; ")) as $ext
+  | ([ $auto[] | select(.created_epoch != null and .created_epoch < over_cut($r.retention)) ] | sort_by(.created_epoch)) as $old
+  | (if ($old | length) == 0 and ($auto | length) <= ($r.retention // 0) + 1 + rtol then ""
+     else "holds \($auto | length) automated backup\(if ($auto | length) == 1 then "" else "s" end) for \($r.retention // 0)d retention"
+          + (if ($old | length) > 0 then "; \($old | length) older than \($r.retention // 0)d, oldest \($old[0].id) (\(($now - $old[0].created_epoch) / 86400 | floor)d)" else "" end) end) as $ort
   | def rset($k): [ $rps[] | select(.class == $k) | .ret ] | unique | map("\(.)d") | join(", ");
   { account_id: $r.account_id, region: $r.region, identifier: $r.id, type: $r.type, engine: $r.engine,
       engine_version: $r.engine_version, global_cluster: ($r.global_cluster // ""), global_role: ($r.global_role // "none"),
@@ -138,7 +171,10 @@ def evaluate:
                  plans: ([ $rps[] | select(.plan != null or .rule != null) | "\(.plan // "?") / \(.rule // "?")" ] | unique | join(", ")),
                  schedules: ([ $rps[] | select(.cron != null) | .cron + (if .rtz then " (\(.rtz))" else "" end) ] | unique | join(", "))},
       manual: ([ $r.snapshots[]? | select(.kind == "manual") ] | length), automated: ($auto | length), backup_points: ($rps | length),
-      recovery_points: $diag };
+      retention_mismatch: ($rmt | join("; ")), retention_mismatch_count: $rmn,
+      excess: $ext, excess_counts: ($ex | map_values(if . == null then null elif .n > .max then .n - .max else 0 end)),
+      over_retention: $ort, over_retention_count: ($old | length),
+      recovery_points: [ $diag[] | del(.ret_mismatch) + (if .ret_mismatch == true then {retention_mismatch: rmis_note(.class; .ret)} else {} end) ] };
 
 def cell($c): if $c.st == "N/A" then "N/A" elif $c.st == "UNKNOWN" then "?" elif $c.st == "OFF" then ""
   else (if ($c.target // $c.need) > $c.need then "\($c.have)/\($c.need) so far (target \($c.target))" else "\($c.have)/\($c.need)" end)
@@ -155,6 +191,9 @@ def gsum: . as $r
           else "\($k) \(.have)/\(.need)" end),
       (if $r.weekly.st == "UNKNOWN" or $r.daily.st == "UNKNOWN" then "unreadable" else empty end),
       (if $r.warnings != "" then "retention warning" else empty end),
+      (if ($r.retention_mismatch // "") != "" then "retention mismatch" else empty end),
+      (if ($r.excess // "") != "" then "excess backups" else empty end),
+      (if ($r.over_retention // "") != "" then "holds more than retention" else empty end),
       (if $r.not_yet_due != "" then "not yet due" else empty end) ] | join(" · ");
 def yon: ($cfg.yearly // 0) > 0;
 def ycols($a): if yon then $a else [] end;
@@ -164,13 +203,17 @@ def PER: ["daily","weekly","monthly"] + ycols(["yearly"]);
 def chead: ["account_id","region","identifier","type","engine","engine_version","global_cluster","global_role","retention_days",
       "created_utc","age_days","backup_window","copy_tags_to_snapshot","last_automated_utc","last_automated_" + ($cfg.tz_label | ascii_downcase)]
     + [ PER[] as $k | "\($k)_status", "\($k)_found", "\($k)_expected", "\($k)_target", "\($k)_missing", "\($k)_full_on" ]
-    + ["status","not_yet_due","gaps","warnings","weekly_retention","monthly_retention","backup_plans"];
+    + ["status","not_yet_due","gaps","warnings","weekly_retention","monthly_retention","backup_plans",
+       "retention_mismatch_count","retention_mismatch","excess_daily","excess_weekly","excess_monthly","excess",
+       "over_retention_count","over_retention","counted_in_compliance_pct"];
 def pcols($c): if $c.st == "N/A" or $c.st == "UNKNOWN" or $c.st == "OFF" or $c.have == null then [$c.st, null, null, null, "", ""]
   else [$c.st, $c.have, $c.need, ($c.target // $c.need), ([ ($c.missing // [])[] | dwk ] | join("; ")), ($c.full_on_iso // "")] end;
 def crow: . as $r | [.account_id, .region, .identifier, .type, .engine, .engine_version, .global_cluster, .global_role, .retention_days,
              .created, .age_days, .settings.backup_window, .settings.copy_tags, .last_automated_utc, .last_automated_local]
            + [ PER[] as $k | $r[$k] | pcols(.)[] ]
-           + [.status, .not_yet_due, .gaps, .warnings, .settings.weekly_retention, .settings.monthly_retention, .settings.plans];
+           + [.status, .not_yet_due, .gaps, .warnings, .settings.weekly_retention, .settings.monthly_retention, .settings.plans,
+              .retention_mismatch_count, .retention_mismatch, .excess_counts.daily, .excess_counts.weekly, .excess_counts.monthly, .excess,
+              .over_retention_count, .over_retention, (if .status == "NOT YET DUE" then "no" else "yes" end)];
 def cstr: map(if . == null then "" else tostring end);
 def csvrow: map(if . == null then "" else tostring end
                 | if test("^[=+@-]") then "'" + . else . end) | @csv;   # formula-injection guard
@@ -179,13 +222,18 @@ def totals($rs): {resources: ($rs | length),
   compliant: ([ $rs[] | select(.status == "COMPLIANT") ] | length),
   non_compliant: ([ $rs[] | select(.status == "NON-COMPLIANT") ] | length),
   not_yet_due: ([ $rs[] | select(.status == "NOT YET DUE") ] | length),
-  unknown: ([ $rs[] | select(.status == "UNKNOWN") ] | length)};
+  unknown: ([ $rs[] | select(.status == "UNKNOWN") ] | length)}
+  | . + {compliance: ((.resources - .not_yet_due) as $d | {compliant: .compliant, of: $d, not_yet_due: .not_yet_due,
+                       pct: (if $d == 0 then null else (100 * .compliant / $d | round) end)})};
+def comptxt($t): if $t.compliance.pct == null then "Compliance: - (nothing due yet)"
+  else "Compliance: \($t.compliance.pct)% (\($t.compliance.compliant) of \($t.compliance.of))" end
+  + (if $t.not_yet_due > 0 then ", \($t.not_yet_due) not yet due not counted" else "" end);
 def ruletxt: "daily: each of the last \($cfg.daily) days (RDS automated, last <= \($cfg.daily_max_age_h)h)"
   + " · weekly every \(wdname($cfg.weekly_weekday // 6)) " + (if $cfg.weekly == "auto" or $cfg.weekly == null then "in the last \($cfg.weekly_window_days // 30) days" else "x\($cfg.weekly)" end)
-  + " (retention \($cfg.weekly_min_days)-\($cfg.weekly_max_days)d)"
-  + " · monthly first \(wdname($cfg.monthly_weekday // 0)) x\($cfg.monthly) (retention \($cfg.monthly_min_days // ($cfg.weekly_max_days + 1))-\($cfg.monthly_max_days)d)"
+  + " (retention \($cfg.weekly_retention_days // 30)d, counted \($cfg.weekly_min_days)-\($cfg.weekly_max_days)d)"
+  + " · monthly first \(wdname($cfg.monthly_weekday // 0)) x\($cfg.monthly) (retention \($cfg.monthly_retention_days // 365)d, counted \($cfg.monthly_min_days // ($cfg.weekly_max_days + 1))-\($cfg.monthly_max_days)d)"
   + (if yon then " · yearly x\($cfg.yearly)" else "" end)
-  + " · ±\($cfg.tolerance_days // 1)d, UTC dates · global secondaries: daily only";
+  + " · daily retention \(dret)d · retention ±\(rtol)d · schedule ±\($cfg.tolerance_days // 1)d, UTC dates · global secondaries: daily only";
 def accounts_label: [ .accounts[].account ] | join(", ");
 
 # orphaned manual snapshots (data .orphans, absent in v1.0/v1.1 files). Source status of one entry:
@@ -258,11 +306,15 @@ def osumtxt($t): "\($t.orphaned) orphaned snapshot\(if $t.orphaned == 1 then "" 
       "Generated \($now | utc) / \($now | loc)",
       "Rule: \(ruletxt)",
       "Orphaned manual snapshots: \(osumtxt($OT)) at $\(price)/GB-month - rough upper estimate, snapshot billing is incremental",
+      comptxt($t),
       "Resources \($t.resources): compliant \($t.compliant), non-compliant \($t.non_compliant), not yet due \($t.not_yet_due), unknown \($t.unknown)",
       "",
       ([ "ACCOUNT", "REGION", "IDENTIFIER", "TYPE", "ROLE", "AGE_DAYS", "DAILY", "WEEKLY", "MONTHLY" ] + ycols(["YEARLY"]) + [ "STATUS", "GAPS", "WARNINGS" ] | join("\t")),
       ($R[] | [ .account_id, .region, .identifier, .type, .global_role, (.age_days // "" | tostring), cell(.daily), cell(.weekly), cell(.monthly) ] + ycols([cell(.yearly)])
-              + [ .status, ([.gaps, .not_yet_due] | map(select(. != "")) | join("; ")), .warnings ] | join("\t")),
+              + [ .status, ([.gaps, .not_yet_due] | map(select(. != "")) | join("; ")),
+                 ([ .warnings, (.retention_mismatch // "" | if . != "" then "retention mismatch: " + . else . end),
+                    (.excess // "" | if . != "" then "excess backups: " + . else . end),
+                    (.over_retention // "" | if . != "" then "holds more than retention: " + . else . end) ] | map(select(. != "")) | join("; ")) ] | join("\t")),
       (if any($D.regions[]; .status == "error") then "", "Region errors:", ($D.regions[] | select(.status == "error") | "  \(.account) \(.region): \(.errors | join("; "))") else empty end)
   elif $mode == "html" then
     {generated_utc: ($now | utc), generated_local: ($now | loc), tz_label: $cfg.tz_label, tz_offset: $cfg.tz_offset, now: $now,
@@ -276,8 +328,10 @@ def osumtxt($t): "\($t.orphaned) orphaned snapshot\(if $t.orphaned == 1 then "" 
      rows: [ $R[] | . + {cells: {daily: cell(.daily), weekly: cell(.weekly), monthly: cell(.monthly), yearly: cell(.yearly)},
                          cc: {daily: ccell(.daily), weekly: ccell(.weekly), monthly: ccell(.monthly), yearly: ccell(.yearly)},
                          gsum: gsum, csv: (crow | cstr)} ],
-     snaps: [ $D.resources[] | {k: "\(.account_id)|\(.region)|\(.id)",
-               s: [ .snapshots[] | {kind, id, c: .created_epoch, st: .status, gb: .size_gb, x: .expires_epoch, v: (.vault // ""),
+     snaps: [ $D.resources[] | .retention as $rr | {k: "\(.account_id)|\(.region)|\(.id)",
+               s: [ .snapshots[] | {fl: (if .kind == "backup" and rp_live then rmis_note(rp_class; rp_ret)
+                                         elif .kind == "automated" and .created_epoch != null and .created_epoch < over_cut($rr) then "older than the \($rr // 0)d retention"
+                                         else null end), kind, id, c: .created_epoch, st: .status, gb: .size_gb, x: .expires_epoch, v: (.vault // ""),
                                     cl: (if .kind == "backup" then rp_class else "" end), rd: (if .kind == "backup" then rp_ret else null end),
                                     pl: (.plan // ""), ru: (.rule // "")} ]} ]}
     | tojson | gsub("</"; "<\\/") as $json
@@ -293,7 +347,7 @@ td.gaps{white-space:normal}.tw{overflow-x:auto;-webkit-overflow-scrolling:touch;
 #main{table-layout:fixed;width:100%;min-width:1180px}#main th,#main td{white-space:normal;overflow-wrap:break-word;vertical-align:top;padding:5px 5px}#main tr.res{cursor:pointer}#main tr.res:hover td{filter:brightness(.97)}
 .car{display:inline-block;width:14px;color:#1f5fa8;font-size:11px;user-select:none}tr.open .car{transform:rotate(90deg)}.miss{display:inline-block;background:#b3261e;color:#fff;border-radius:3px;font-size:10px;padding:0 4px;margin-left:3px;white-space:nowrap}
 tr.det>td{background:#fafbfd;padding:6px 10px}tr.det table{margin:4px 0;table-layout:auto}tr.det td,tr.det th{white-space:normal;font-size:12px}.det .dl{margin:2px 0}.cnt-y{color:#137333}.cnt-n{color:#b3261e}
-@media(max-width:700px){body{margin:8px;font-size:12px}.filters label{flex:1 1 45%}}.warn{background:#fff6dc;color:#7a5200;padding:1px 4px;border-radius:3px;margin-top:2px}.kv th{width:230px}.osum{background:#fff6dc;border:1px solid #f0d58c;border-radius:4px;padding:5px 9px;margin:6px 0}tr.orph td{background:#fff3f0}td.src-ORPHANED{color:#b3261e;font-weight:600}td.src-SHARED{color:#1f5fa8}h2{font-size:15px;margin:14px 0 4px}.muted{color:#777}
+@media(max-width:700px){body{margin:8px;font-size:12px}.filters label{flex:1 1 45%}}.ytag{display:inline-block;background:#fff3c4;color:#7a5200;border:1px solid #f0d58c;border-radius:3px;padding:0 4px;margin:2px 0 0 4px;font-size:11px;white-space:nowrap}tr.yl td{background:#fffbe6}.card.pct .v{color:#1f5fa8}#f-q,#b-q{min-width:220px}.warn{background:#fff6dc;color:#7a5200;padding:1px 4px;border-radius:3px;margin-top:2px}.kv th{width:230px}.osum{background:#fff6dc;border:1px solid #f0d58c;border-radius:4px;padding:5px 9px;margin:6px 0}tr.orph td{background:#fff3f0}td.src-ORPHANED{color:#b3261e;font-weight:600}td.src-SHARED{color:#1f5fa8}h2{font-size:15px;margin:14px 0 4px}.muted{color:#777}
 </style></head><body>
 <h1>RDS backup compliance - account \($D | accounts_label)</h1>
 <div class=\"sub\">Generated \($now | utc) / \($now | loc) &middot; \(ruletxt | @html)</div>

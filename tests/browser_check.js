@@ -43,7 +43,7 @@ const sleep = ms => new Promise(x => setTimeout(x, ms));
   await shot('not_yet_due_filter');
   await sel('f-show', 'warn'); s = await st();
   ok(s.rows === DD.rows.filter(r => r.warnings).length, 'Show: Retention warnings');
-  ok(await g.evaluate(() => [...document.querySelectorAll('#main .warn')].every(w => /retention doesn't match/.test(w.textContent))), 'yellow retention warning text');
+  ok(await g.evaluate(() => [...document.querySelectorAll('#main .warn:not([class*="yl-"])')].every(w => /retention doesn't match/.test(w.textContent))), 'yellow retention warning text');
   await g.click('#f-reset'); await sleep(50);
   await sel('f-show', 'nyd'); await g.click('#f-csv'); await sleep(200);
   const ncsv = await g.evaluate(() => window.__csv[window.__csv.length - 1]).then(t => t.replace(/^\ufeff/, '').trim().split('\r\n').map((l, i) => i ? l : l.replace(/"/g, '')));
@@ -85,6 +85,43 @@ const sleep = ms => new Promise(x => setTimeout(x, ms));
   if (shots) await g.screenshot({path: path.join(shots, 'compliance_secondary_filter.png'), fullPage: true});
   await g.click('#f-reset'); await sleep(50); s = await st(); ok(s.rows === all, 'reset');
   ok(/All regions/.test(s.foot), 'per-region footer');
+  // v1.4.0: compliance % card (not yet due left out), per-region table right under the filters, search, new Show options, yellow tags
+  const pc = () => g.evaluate(() => { const c = document.querySelector('.card[data-k="compliance"]'); return c ? c.textContent : ''; });
+  const pcx = rs => { const due = rs.filter(r => !(r.status === 'NOT YET DUE' || r.not_yet_due)), c = rs.filter(r => r.status === 'COMPLIANT').length;
+    return (due.length ? Math.round(100 * c / due.length) + '%' : '-') + 'compliant (' + c + ' of ' + due.length + ')'; };
+  let pct = await pc(); ok(pct.startsWith(pcx(DD.rows)) && /not yet due, not counted/.test(pct), 'compliance card (' + pct + ')');
+  ok(await g.evaluate(() => { const f = document.querySelector('#comp .filters'), r = document.getElementById('regions'), m = document.getElementById('main');
+    return !!(f.compareDocumentPosition(r) & 4) && !!(r.compareDocumentPosition(m) & 4) && document.querySelector('.card[data-k="compliance"]') === document.querySelector('#cards .card'); }), 'per-region table between filters and main table; % card first');
+  const rhead = await g.evaluate(() => [...document.querySelectorAll('#regions thead th')].map(t => t.textContent));
+  ok(rhead[rhead.length - 1] === '% compliant', 'per-region % compliant column');
+  const acct0 = DD.rows[0].account_id; await sel('f-acct', acct0);
+  pct = await pc(); ok(pct.startsWith(pcx(DD.rows.filter(r => r.account_id === acct0))), 'compliance card follows filters (' + pct + ')');
+  ok(await g.evaluate(a => [...document.querySelectorAll('#regions tbody tr')].every(t => t.dataset.k.startsWith(a + '|')), acct0), 'per-region table follows filters');
+  await g.click('#f-reset'); await sleep(50);
+  const qn = async q => { await g.$eval('#f-q', (e, v) => { e.value = v; e.dispatchEvent(new Event('input')); }, q); await sleep(50); return (await st()).rows; };
+  ok(await qn('ORDERS-AURORA') >= 1, 'search identifier (case-insensitive)');
+  ok(await qn('postgres') === DD.rows.filter(r => /postgres/.test(r.engine)).length, 'search engine');
+  ok(await qn('us-west-2') === DD.rows.filter(r => r.region === 'us-west-2').length, 'search region');
+  ok(await qn(acct0) === DD.rows.filter(r => r.account_id === acct0).length, 'search account');
+  const vlt = (DD.rows.flatMap(r => (r.recovery_points || []).map(p => p.vault)).filter(Boolean))[0];
+  if (vlt) ok(await qn(vlt) === DD.rows.filter(r => (r.recovery_points || []).some(p => p.vault === vlt)).length, 'search vault (' + vlt + ')');
+  ok(await qn('weekly-sat') > 0, 'search plan / rule');
+  ok(await qn('no-such-thing-xyz') === 0, 'search no match');
+  await g.click('#f-reset'); await sleep(50); ok((await st()).rows === all && await g.$eval('#f-q', e => e.value) === '', 'Compliance Reset clears search');
+  for (const [v, f] of [['retmis', 'retention_mismatch'], ['excess', 'excess'], ['overret', 'over_retention']]) {
+    await sel('f-show', v); const n2 = (await st()).rows, want = DD.rows.filter(r => r[f]).length;
+    ok(n2 === want && n2 > 0, 'Show: ' + v + ' (' + n2 + ' = ' + want + ')');
+    ok(await g.evaluate(() => [...document.querySelectorAll('#main tr.res')].every(tr => tr.querySelector('.ytag'))), 'Show ' + v + ': yellow tag in every row'); }
+  await sel('f-show', 'excess');
+  ok(await g.evaluate(() => /weekly \d+ \(expected 4-5\)/.test(document.querySelector('#main tr.det').textContent)), 'excess detail "weekly N (expected 4-5)"');
+  await g.click('#main tr.res td.gaps'); await sleep(80);
+  ok(await g.evaluate(() => { const d = document.querySelector('#main tr.det'); return d.querySelectorAll('table.rpd tr.yl').length > 0 && /expected 30d/.test(d.querySelector('tr.yl').title); }), 'mismatched recovery points highlighted yellow with title');
+  await shot('excess_filter');
+  await sel('f-show', 'overret');
+  ok(await g.evaluate(() => /Holds more than retention:.*oldest/.test(document.querySelector('#main tr.det').textContent) && /Likely causes/.test(document.querySelector('#main tr.det').textContent)), 'over-retention detail names oldest backup + likely causes');
+  await g.click('#main tr.res td.gaps'); await sleep(80); await shot('over_retention_filter');
+  await g.click('#main tr.res td.gaps'); await sleep(50);
+  await g.click('#f-reset'); await sleep(50);
   // Backups tab via identifier link
   const has = await g.evaluate(() => !!document.querySelector('#main tr[data-k$="|orders-aurora-pg15"] a.go'));
   if (has) {
@@ -105,13 +142,30 @@ const sleep = ms => new Promise(x => setTimeout(x, ms));
       ok(/\//.test(setv['Backup plan / rule']) || setv['Backup plan / rule'] === '-', 'settings: plan / rule'); }
     if (shots) { await g.evaluate(() => document.getElementById('b-settings').scrollIntoView()); await shot('resource_retention'); }
     if (shots) await g.screenshot({path: path.join(shots, 'backups_tab_12m.png'), fullPage: true});
-    // Backups Reset: clears type / age / account / region / engine / source filters and the "older than" order
-    await sel('b-kind', 'manual'); await sel('b-period', 'o90');
+    // v1.4.0: yellow rows for wrong-retention points / automated backups kept past retention, with the reason as title
+    ok(await g.evaluate(() => [...document.querySelectorAll('#b-out table[data-sec="backup"] tr.yl')].some(t => /weekly point has 35d, expected 30d/.test(t.title))), 'single view: wrong-retention points yellow');
+    // v1.4.0: Account works in single view (narrows the Resource list; a resource in another account switches to All)
+    const rk = await g.$eval('#b-res', e => e.value), ra0 = rk.split('|')[0];
+    ok(await g.evaluate(() => document.getElementById('b-acct').closest('label').style.display !== 'none'), 'Account dropdown visible in single view');
+    const others = DD.rows.map(r => r.account_id).filter(a => a !== ra0);
+    if (others.length) { await sel('b-acct', others[0]);
+      const ax = await g.evaluate(() => ({res: document.getElementById('b-res').value, vis: [...document.querySelectorAll('#b-res option')].filter(o => !o.disabled && o.value !== '*all*').map(o => o.value.split('|')[0])}));
+      ok(ax.res === '*all*' && ax.vis.length > 0 && ax.vis.every(a => a === others[0]), 'Account in single view: other account -> All, list narrowed');
+      await sel('b-acct', ''); await sel('b-res', rk); }
+    await sel('b-acct', ra0); ok(await g.$eval('#b-res', e => e.value) === rk, 'Account in single view: same account keeps the resource'); await sel('b-acct', '');
+    // v1.4.0: Backups search (single view: snapshot id / vault; resource fields match everything)
+    const bqs = async q => { await g.$eval('#b-q', (e, v) => { e.value = v; e.dispatchEvent(new Event('input')); }, q); await sleep(50); };
+    await bqs('job-orders'); let bqv = await bt(); ok(!bqv.sec.manual && !bqv.sec.automated && bqv.sec.backup > 0, 'Backups search by recovery point id (single view)');
+    await bqs('orders-aurora-pg15'); bqv = await bt(); ok(bqv.sec.manual === b12.sec.manual, 'Backups search by resource identifier');
+    await bqs('');
+    // Backups Reset: every dropdown (Resource -> All), the search and the order
+    await sel('b-kind', 'manual'); await sel('b-period', 'o90'); await sel('b-acct', ra0); await bqs('zz');
     await g.click('#b-reset'); await sleep(50);
-    const rv = await g.evaluate(() => ['b-kind', 'b-period', 'b-acct', 'b-region', 'b-engine', 'b-src'].map(i => document.getElementById(i).value).join());
-    ok(rv === ',12,,,,', 'Backups Reset clears filters (' + rv + ')');
-    let br = await bt(); ok(br.sec.manual === b12.sec.manual && br.sec.automated === b12.sec.automated, 'Backups Reset restores the default view');
+    const rv = await g.evaluate(() => ['b-res', 'b-kind', 'b-period', 'b-acct', 'b-region', 'b-engine', 'b-src', 'b-q'].map(i => document.getElementById(i).value).join());
+    ok(rv === '*all*,,12,,,,,', 'Backups Reset clears every dropdown + search (' + rv + ')');
+    ok(await g.evaluate(() => { const r = [...document.querySelectorAll('#b-out table[data-sec="all"] tbody tr')].map(t => t.children[8].textContent * 1); return r.length > 0 && r.every((v, i) => !i || r[i - 1] <= v); }), 'Backups Reset: newest first');
     await shot('backups_reset');
+    await sel('b-res', rk); let br = await bt(); ok(br.sec.manual === b12.sec.manual && br.sec.automated === b12.sec.automated, 'after Reset the resource view is unchanged');
     await sel('b-period', '6'); let b6 = await bt(); ok(b6.sec.manual === 2, 'manual 6m = 2 (' + b6.sec.manual + ')');
     await sel('b-period', '3'); let b3 = await bt(); ok(b3.sec.manual === 1, 'manual 3m = 1 (' + b3.sec.manual + ')');
     ok(b3.sec.backup < b12.sec.backup, 'AWS Backup points shrink with period (' + b3.sec.backup + ' < ' + b12.sec.backup + ')');
@@ -143,7 +197,11 @@ const sleep = ms => new Promise(x => setTimeout(x, ms));
     ok(a12.rows.filter(r => r.kind === 'AWS Backup').every(r => /^(weekly|monthly|yearly|mismatch)$/.test(r.rule)) && a12.rows.some(r => r.rule === 'monthly'), 'AWS Backup rule classified');
     ok(a12.rows.filter(r => r.kind === 'Automated').every(r => r.rule === 'daily'), 'automated rule = daily');
     ok(new RegExp('^' + a12.rows.length + ' backup\\(s\\), [0-9.]+ GB').test(a12.sum), 'count + GB summary (' + a12.sum + ')');
-    ok(a12.filt.length === 4 && a12.filt.every(Boolean), 'account/region/engine/source filters visible in all mode');
+    ok(a12.filt.length === 3 && a12.filt.every(Boolean), 'region/engine/source filters visible in all mode');
+    ok(await g.evaluate(() => [...document.querySelectorAll('#b-out table[data-sec="all"] tr.yl')].some(t => /older than the 7d retention|expected 30d/.test(t.title))), 'all mode: yellow rows with reason');
+    await g.$eval('#b-q', e => { e.value = 'us-west-2'; e.dispatchEvent(new Event('input')); }); await sleep(50);
+    let aq = await av(); ok(aq.rows.length > 0 && aq.rows.every(r => r.region === 'us-west-2'), 'all mode search by region');
+    await g.$eval('#b-q', e => { e.value = ''; e.dispatchEvent(new Event('input')); }); await sleep(50);
     await sel('b-kind', 'manual'); let m12 = await av(); ok(m12.rows.length > 0 && m12.rows.every(r => /^Manual/.test(r.kind)), 'all mode type filter manual');
     await sel('b-period', '3'); let m3 = await av(); ok(m3.rows.length < m12.rows.length, 'all mode 3m < 12m');
     await sel('b-period', 'all'); let mall = await av(); ok(mall.rows.length > m12.rows.length && mall.rows.some(r => r.age > 365), 'manual snapshots older than 12 months are kept (' + mall.rows.length + ')');
@@ -181,6 +239,7 @@ const sleep = ms => new Promise(x => setTimeout(x, ms));
     ok(['manual', 'automated', 'backup'].every(k => k in back.sec), 'resource link in all mode opens single view');
     const hid = await g.evaluate(() => [...document.querySelectorAll('.ballf')].every(l => l.style.display === 'none'));
     ok(hid, 'all-mode filters hidden in single view');
+    ok(await g.evaluate(() => document.getElementById('b-acct').offsetParent !== null && document.getElementById('b-q').offsetParent !== null), 'Account + search stay visible in single view');
     // orphaned manual snapshots (source cluster / instance not in the same account + region)
     const os = await g.evaluate(() => [document.getElementById('osum').textContent, document.getElementById('b-orph').textContent, JSON.parse(document.getElementById('data').textContent).osum]);
     ok(/^Orphaned manual snapshots: \d+ orphaned snapshots?, [0-9.]+ (GB|TB), ~\$[0-9.]+\/month \(estimate\)/.test(os[0]) && /rough upper estimate/.test(os[0]), 'compliance tab orphan summary (' + os[0].slice(0, 90) + ')');

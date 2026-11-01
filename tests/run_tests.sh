@@ -29,7 +29,7 @@ rowt() { jq -e --arg i "$2" ".rows[] | select(.identifier == \$i) | $3" "$OUT/$1
 ncalls() { wc -l <"$MOCK_LOG" 2>/dev/null | tr -d ' ' || echo 0; }
 
 echo "== CLI"
-t version 0 fleet --version; has version out '1\.3\.1'
+t version 0 fleet --version; has version out '1\.4\.0'
 t help 0 fleet --help; has help out 'list-recovery-points-by-backup-vault'; has help out 'weekly-days'
 t badopt 1 fleet --nope
 t multifmt 1 fleet -P prod -r us-east-1 -F csv,html
@@ -71,7 +71,7 @@ rowt fleet orders-dr-pg15 '.status == "COMPLIANT" and .global_role == "secondary
 rowt fleet shop-dr-mysql '.status == "NON-COMPLIANT" and .global_cluster == "shop-global" and (.gaps | test("^daily"))'
 jqt fleet '[.rows[].identifier] | index("docs-cluster") == null' "$OUT/fleet.out"
 jqt fleet '[.rows[].identifier] | map(select(test("-1$"))) | length == 0' "$OUT/fleet.out"
-jqt fleet '.totals == {resources: 8, compliant: 2, non_compliant: 4, not_yet_due: 2, unknown: 0}' "$OUT/fleet.out"
+jqt fleet '.totals == {resources: 8, compliant: 2, non_compliant: 4, not_yet_due: 2, unknown: 0, compliance: {compliant: 2, of: 6, not_yet_due: 2, pct: 33}}' "$OUT/fleet.out"
 jqt fleet '.thresholds | .weekly_min_days == 25 and .weekly_max_days == 40 and .monthly_min_days == 300 and .monthly_max_days == 400 and .weekly == "auto" and .monthly == 12 and .yearly == 0 and .weekly_weekday == 6 and .monthly_weekday == 0 and .tolerance_days == 1' "$OUT/fleet.out"
 has fleet err '^.*\[1/2\] us-east-1: 3 clusters, 3 instances, [0-9]+ snapshots, [0-9]+ recovery points, 4 without source \([0-9]+s\)$'
 has fleet err '\[2/2\] us-west-2: 2 clusters, 0 instances, [0-9]+ snapshots, 0 recovery points'
@@ -103,11 +103,22 @@ HTML="$(ls "$OUT"/o/*.html | head -1)"; JSON="$(ls "$OUT"/o/rds_backup_complianc
 HDR='"account_id","region","identifier","type","engine","engine_version","global_cluster","global_role","retention_days","created_utc","age_days","backup_window","copy_tags_to_snapshot","last_automated_utc","last_automated_ist"'
 for k in daily weekly monthly; do HDR+=",\"${k}_status\",\"${k}_found\",\"${k}_expected\",\"${k}_target\",\"${k}_missing\",\"${k}_full_on\""; done
 HDR+=',"status","not_yet_due","gaps","warnings","weekly_retention","monthly_retention","backup_plans"'
+HDR+=',"retention_mismatch_count","retention_mismatch","excess_daily","excess_weekly","excess_monthly","excess","over_retention_count","over_retention","counted_in_compliance_pct"'
 chk "csv header" grep -qxF "$HDR" "$CSV"
+# v1.4.0 strict retention / excess / over-retention / compliance %
+rowt fleet orders-aurora-pg15 '.retention_mismatch == "weekly point has 35d, expected 30d (x5)" and .retention_mismatch_count == 5 and .status == "COMPLIANT" and .weekly.have == 5'
+rowt fleet orders-aurora-pg15 '[.recovery_points[] | select(.ret == 365 and .counted)] | length > 0 and all(.retention_mismatch == null and (.reason | test("retention 365d as expected$")))'
+rowt fleet reports-pg '.excess == "weekly 9 (expected 4-5)" and .excess_counts == {daily: 0, weekly: 4, monthly: 0} and .weekly.st == "OK"'
+rowt fleet legacy-mysql '(.over_retention | test("^holds 7 automated backups for 7d retention; 2 older than 7d, oldest rds:legacy-mysql-")) and .over_retention_count == 2'
+rowt fleet new-aurora-pg16 '.over_retention_count == 13 and .status == "NOT YET DUE"'
+rowt fleet orders-dr-pg15 '.excess_counts.weekly == null and .excess == "" and .over_retention == "" and .retention_mismatch == ""'
+has fleettxt out '^Compliance: 25% \(1 of 4\), 2 not yet due not counted$'
 chk "csv has 8 rows + header" test "$(wc -l <"$CSV")" -eq 9
 chk "csv: no yearly column at yearly=0" bash -c "! head -1 '$CSV' | grep -q yearly"
 chk "csv: not_yet_due + full on" bash -c "grep '\"fresh-pg\"' '$CSV' | grep -q 'daily full on'"
 csvq() { python3 -c 'import csv,sys; rows=list(csv.DictReader(open(sys.argv[1], encoding="utf-8"))); sys.exit(0 if eval(sys.argv[2]) else 1)' "$@"; }
+csvq "$CSV" 'all(r["counted_in_compliance_pct"] == ("no" if r["status"] == "NOT YET DUE" else "yes") for r in rows) and [r["excess_weekly"] for r in rows if r["identifier"] == "reports-pg"] == ["4"] and [r["excess_weekly"] for r in rows if r["identifier"] == "orders-dr-pg15"] == [""]' && ok "csv: excess / compliance columns" || bad "csv: excess / compliance columns"
+csvq "$CSV" 'all(all(not __import__("re").match(r"^\d{1,4}[-/]\d{1,2}([-/]\d{1,4})?$", r[k]) for k in ("retention_mismatch_count","excess_daily","excess_weekly","excess_monthly","over_retention_count")) for r in rows)' && ok "csv: new count columns are plain numbers (no Excel dates)" || bad "csv: new count columns are plain numbers (no Excel dates)"
 chk "csv: weekly numeric found/expected/target + missing Saturday ISO" csvq "$CSV" 'any(r["identifier"]=="billing-aurora-mysql" and r["weekly_status"]=="FAIL" and r["weekly_found"] in ("3","4") and int(r["weekly_expected"])==int(r["weekly_found"])+1 and r["weekly_target"]==r["weekly_expected"] and __import__("re").fullmatch(r"20\d\d-\d\d-\d\d Sat", r["weekly_missing"]) for r in rows)'
 chk "csv: building up = found/expected < target 7, full_on ISO" csvq "$CSV" 'any(r["identifier"]=="fresh-pg" and r["daily_found"]==r["daily_expected"] and r["daily_expected"] in ("4","5") and r["daily_target"]=="7" and __import__("re").fullmatch(r"20\d\d-\d\d-\d\d [A-Z][a-z]{2}", r["daily_full_on"]) for r in rows)'
 chk "csv: count columns are plain integers (or empty for N/A)" csvq "$CSV" 'all(__import__("re").fullmatch(r"\d*", r[k+"_"+c]) for r in rows for k in ("daily","weekly","monthly") for c in ("found","expected","target"))'
@@ -132,7 +143,7 @@ t rpq 0 rpquirks -P prod -r us-east-1 -i orders-* -F json
 rowt rpq orders-aurora-pg15 '.weekly.have == .weekly.need and .weekly.need >= 4 and .weekly.st == "OK"'
 rowt rpq orders-aurora-pg15 '.weekly.have as $h | [.recovery_points[] | select(.class == "weekly" and .counted and .status == "AVAILABLE" and .ret == 35)] | length == $h'
 rowt rpq orders-aurora-pg15 '[.recovery_points[] | select(.reason | test("^continuous backup")) | select(.counted | not)] | length == 1'
-rowt fleet orders-aurora-pg15 '[.recovery_points[] | select(.ret == 35)] | all(.counted and (.reason | test("^weekly: counts for Sat [0-9]{2} [A-Z][a-z]{2}, retention 35d in weekly window 25-40d$")))'
+rowt fleet orders-aurora-pg15 '[.recovery_points[] | select(.ret == 35)] | all(.counted and (.reason | test("^weekly: counts for Sat [0-9]{2} [A-Z][a-z]{2}, but weekly point has 35d, expected 30d$")) and .retention_mismatch == "weekly point has 35d, expected 30d")'
 rowt fleet orders-aurora-pg15 '.recovery_points | all(has("date") and has("ret") and has("class") and has("counted") and has("reason")) and (.[0].date | test("^20[0-9]{2}-[0-9]{2}-[0-9]{2} [A-Z][a-z]{2}$"))'
 chk "output block: no // or ./ in paths" bash -c "! sed -n '/^Output/,\$p' '$OUT/files.err' | grep -qE '//|/\\./|~'"
 mkdir -p "$OUT/o2/sub"; ( cd "$OUT/o2" && t relout 0 fleet -P prod -r us-east-1 -F csv -o ./sub//../sub/ )
@@ -218,13 +229,22 @@ M2="$(jq -rn '[now | gmtime | .[0] * 12 + .[1] | range(0; 14) as $k | (. - $k) a
 rowt tol1 payroll-sqlserver ".gaps == \"monthly 10/12 missing $M2\""
 t tol0 0 fleet -P nonprod -r ap-south-1 -F json --tolerance-days 0; rowt tol0 hr-aurora-pg '.status == "NON-COMPLIANT" and (.gaps | test("^weekly [34]/[45] missing Sat "))'
 t wdsun 0 fleet -P nonprod -r ap-south-1 -F json --weekly-weekday sun --tolerance-days 0; rowt wdsun hr-aurora-pg '.weekly.have <= 1'
-rowt wd40 orders-aurora-pg15 '[.recovery_points[] | select(.ret == 35) | .reason] | length > 0 and all(test("^retention 35d outside weekly window 40-60d and monthly window"))'
+rowt wd40 orders-aurora-pg15 '[.recovery_points[] | select(.ret == 35) | .reason] | length > 0 and all(test("^retention 35d is outside the weekly range 40-60d \\(expected 30d\\) and the monthly range"))'
 rowt wdsun hr-aurora-pg '[.recovery_points[] | select(.class == "weekly" and (.counted | not)) | .reason] | all(test("not within ±0d of a checked Sunday"))'
 t daily14 0 fleet -P nonprod -r ap-south-1 --daily 14 -F json; rowt daily14 hr-aurora-pg '.daily.st == "OK"'; rowt daily14 payroll-sqlserver '.daily.st == "FAIL"'
 t age 0 fleet -P prod -r us-east-1 -i legacy-* --daily-max-age 80 -F json; rowt age legacy-mysql '(.gaps | test("last automated") | not)'
 printf 'weekly = 6\r\n# comment\r\nregion=us-east-1\r\nidentifier = orders-*\r\nformat=json\r\n' >"$OUT/my conf.conf"
 t conf 0 fleet -P prod --config "$OUT/my conf.conf"; rowt conf orders-aurora-pg15 '.weekly.need == 6'
 t confcli 0 fleet -P prod --config "$OUT/my conf.conf" --weekly 4; rowt confcli orders-aurora-pg15 '.weekly.need == 4'
+# v1.4.0 strict retention settings (CLI + config, both key spellings)
+t wret 0 fleet -P prod -r us-east-1 -i orders-* --weekly-retention-days 35 -F json; rowt wret orders-aurora-pg15 '.retention_mismatch == "" and .weekly.have == 5'
+t wtol 0 fleet -P prod -r us-east-1 -i orders-* --retention-tolerance-days 5 -F json; rowt wtol orders-aurora-pg15 '.retention_mismatch == ""'
+t mret 0 fleet -P prod -r us-east-1 -i orders-* --monthly-retention-days 400 -F json
+rowt mret orders-aurora-pg15 '(.retention_mismatch | test("monthly point has 365d, expected 400d \\(x12\\)")) and .monthly.have == 12 and .status == "COMPLIANT"'
+t dret 0 fleet -P prod -r us-east-1 -i reports-pg --daily-retention-days 2 -F json; rowt dret reports-pg '.retention_mismatch | test("^daily retention 3d, expected 2d")'
+printf 'WEEKLY_RETENTION_DAYS=35\nmonthly_retention_days=365\nretention-tolerance-days=1\nregion=us-east-1\nidentifier=orders-*\nformat=json\n' >"$OUT/ret.conf"
+t retconf 0 fleet -P prod --config "$OUT/ret.conf"; rowt retconf orders-aurora-pg15 '.retention_mismatch == ""'
+t badret 1 fleet -P prod --weekly-retention-days x
 printf 'bogus=1\n' >"$OUT/bad.conf"; t badconf 1 fleet --config "$OUT/bad.conf"
 t tz 0 fleet -P prod -r us-east-1 --tz UTC -F csv; has tz out 'last_automated_utc"'
 chk "jq: +05:30 timestamps parse to UTC" test "$(jq -n --slurpfile x /dev/null 'include "collect" {search: "'"$HERE"'/../lib"}; 1' 2>/dev/null; jq -rn '"2026-10-01T08:30:00.123000+05:30" | capture("^(?<d>[0-9-]+T[0-9:]+)") | .d + "Z" | fromdateiso8601 - 19800 | todate')" == "2026-10-01T03:00:00Z"

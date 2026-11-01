@@ -5,8 +5,10 @@
 #
 # Rules (schedule based; defaults, all configurable):
 #   daily   RDS automated backups: retention >= 7 days, one backup on each of the last 7 UTC days, the latest <= 26 h old
-#   weekly  AWS Backup point (retention 25-40 days) for every Saturday of the last 30 days (+/- 1 day tolerance)
-#   monthly AWS Backup point (retention 300-400 days) for the first Sunday of each of the last 12 months (+/- 1 day)
+#   weekly  AWS Backup point (retention 25-40 days counted) for every Saturday of the last 30 days (+/- 1 day tolerance)
+#   monthly AWS Backup point (retention 300-400 days counted) for the first Sunday of each of the last 12 months (+/- 1 day)
+#   strict  expected retention daily 7 d (RDS), weekly 30 d, monthly 365 d (+/- 1 d): a counted point with another
+#           retention is highlighted, not failed. Excess backups and automated backups kept past retention: warnings.
 #   yearly  off by default (yearly=0); yearly=N checks N points with retention over the monthly range
 #   Dates before the resource was created are never expected. Points whose retention fits no class: warning only.
 #   Aurora global database secondaries and read replicas: daily only (weekly / monthly / yearly N/A).
@@ -19,7 +21,7 @@ set -Eeuo pipefail
 umask 077
 
 readonly SCRIPT_NAME="${0##*/}"
-readonly SCRIPT_VERSION="1.3.1"
+readonly SCRIPT_VERSION="1.4.0"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_DIR
 LIBDIR="${RDS_BCR_LIB:-$SCRIPT_DIR/lib}"
@@ -34,6 +36,7 @@ OUTPUT_DIR=""; OUT_FILE=""; MANUAL_OLDER=""; SNAP_PRICE="0.021"; PREFIX="rds_bac
 DAILY=7; DAILY_MAX_AGE_H=26; WEEKLY=auto; MONTHLY=12; YEARLY=0
 WEEKLY_MIN_DAYS=25; WEEKLY_MAX_DAYS=40; MONTHLY_MIN_DAYS=300; MONTHLY_MAX_DAYS=400
 WEEKLY_WEEKDAY=sat; MONTHLY_RULE=first-sun; TOLERANCE_DAYS=1; WEEKLY_WINDOW_DAYS=30; PARALLEL=4
+DAILY_RETENTION_DAYS=""; WEEKLY_RETENTION_DAYS=30; MONTHLY_RETENTION_DAYS=365; RET_TOLERANCE_DAYS=1
 NC_ONLY=0; FAIL_ON_NC=0; LOG_FILE=""; CONFIG_FILE=""; AWS_TIMEOUT=30; MAX_ATTEMPTS=5
 BG_PIDS=(); SCAN_PAR=0; HAVE_WAIT_N=0
 KEEP_WORKDIR=0; DRY_RUN=0; VERBOSE=0; SAVE_DATA=0; SAVE_DATA_FILE=""; MERGE=0
@@ -74,6 +77,10 @@ Compliance (defaults in brackets):
       --weekly-days MIN-MAX Retention (days) that classifies a recovery point as weekly         [25-40]
       --monthly-days MIN-MAX Retention (days) that classifies a recovery point as monthly       [300-400]
       --monthly-max-days N  Same as the MAX of --monthly-days (kept for older configs)
+      --daily-retention-days N    Expected RDS BackupRetentionPeriod; more is highlighted [= --daily]
+      --weekly-retention-days N   Expected retention of a weekly point (highlight if not)       [30]
+      --monthly-retention-days N  Expected retention of a monthly point (highlight if not)      [365]
+      --retention-tolerance-days N  Allowed difference from the expected retention              [1]
       --non-compliant-only  Show only NON-COMPLIANT rows (totals still count everything)
       --fail-on-noncompliant  Exit 5 when a NON-COMPLIANT resource is found
 
@@ -133,6 +140,10 @@ set_opt() {   # set_opt key value  (shared by CLI and --config)
         weekly-weekday|weekly_weekday) dow_ok --weekly-weekday "$v"; WEEKLY_WEEKDAY="${v,,}" ;;
         monthly-rule|monthly_rule) [[ "${v,,}" =~ ^first-(sun|mon|tue|wed|thu|fri|sat)$ ]] || die 1 "--monthly-rule must be first-sun .. first-sat (got '$v')"; MONTHLY_RULE="${v,,}" ;;
         parallel) int_ok --parallel "$v"; (( v >= 1 && v <= 32 )) || die 1 "--parallel must be 1-32 (got '$v')"; PARALLEL="$v" ;;
+        daily-retention-days|daily_retention_days|DAILY_RETENTION_DAYS) int_ok --daily-retention-days "$v"; DAILY_RETENTION_DAYS="$v" ;;
+        weekly-retention-days|weekly_retention_days|WEEKLY_RETENTION_DAYS) int_ok --weekly-retention-days "$v"; WEEKLY_RETENTION_DAYS="$v" ;;
+        monthly-retention-days|monthly_retention_days|MONTHLY_RETENTION_DAYS) int_ok --monthly-retention-days "$v"; MONTHLY_RETENTION_DAYS="$v" ;;
+        retention-tolerance-days|retention_tolerance_days|RET_TOLERANCE_DAYS) int_ok --retention-tolerance-days "$v"; RET_TOLERANCE_DAYS="$v" ;;
         tolerance-days|tolerance_days) int_ok --tolerance-days "$v"; (( v <= 3 )) || die 1 "--tolerance-days must be 0-3 (got '$v')"; TOLERANCE_DAYS="$v" ;;
         weekly-window-days|weekly_window_days) int_ok --weekly-window-days "$v"; (( v >= 7 )) || die 1 "--weekly-window-days must be at least 7"; WEEKLY_WINDOW_DAYS="$v" ;;
         format) add_list FORMATS "$v" ;; output-dir|output_dir) OUTPUT_DIR="$v" ;; prefix) PREFIX="$v" ;; tz) DISPLAY_TZ="$v" ;;
@@ -179,7 +190,7 @@ parse_args() {
             --keep-workdir) KEEP_WORKDIR=1 ;; --dry-run) DRY_RUN=1 ;; -v|--verbose) VERBOSE=1 ;;
             --save-data) SAVE_DATA=1; if [[ $# -ge 2 && "$2" != -* ]]; then SAVE_DATA_FILE="$2"; shift; fi ;;
             --merge) MERGE=1; while [[ $# -ge 2 && "$2" != -* ]]; do MERGE_ARGS+=("$2"); shift; done ;;
-            --daily|--daily-max-age|--weekly|--monthly|--yearly|--weekly-days|--monthly-max-days|--monthly-days|--weekly-weekday|--monthly-rule|--tolerance-days|--parallel|--weekly-window-days|--prefix|--tz|--aws-timeout|--max-attempts|--manual-older-than|--snapshot-price-per-gb)
+            --daily|--daily-max-age|--weekly|--monthly|--yearly|--weekly-days|--monthly-max-days|--monthly-days|--daily-retention-days|--weekly-retention-days|--monthly-retention-days|--retention-tolerance-days|--weekly-weekday|--monthly-rule|--tolerance-days|--parallel|--weekly-window-days|--prefix|--tz|--aws-timeout|--max-attempts|--manual-older-than|--snapshot-price-per-gb)
                 need_arg "$1" $#; set_opt "${1#--}" "$2"; shift ;;
             --*=*) set_opt "${1%%=*}" "${1#*=}" 2>/dev/null || die 1 "Unknown option: $1"; ;;
             *) die 1 "Unknown option: $1 (see --help)" ;;
@@ -216,9 +227,11 @@ cfg_json() {
     jq -cn --argjson d "$DAILY" --argjson h "$DAILY_MAX_AGE_H" --argjson w "$w" --argjson m "$MONTHLY" --argjson y "$YEARLY" \
         --argjson wmin "$WEEKLY_MIN_DAYS" --argjson wmax "$WEEKLY_MAX_DAYS" --argjson mmin "$MONTHLY_MIN_DAYS" --argjson mmax "$MONTHLY_MAX_DAYS" \
         --argjson wd "$(dow_num "$WEEKLY_WEEKDAY")" --argjson md "$(dow_num "${MONTHLY_RULE#first-}")" --argjson tol "$TOLERANCE_DAYS" --argjson ww "$WEEKLY_WINDOW_DAYS" \
+        --argjson dr "${DAILY_RETENTION_DAYS:-$DAILY}" --argjson wr "$WEEKLY_RETENTION_DAYS" --argjson mr "$MONTHLY_RETENTION_DAYS" --argjson rt "$RET_TOLERANCE_DAYS" \
         --argjson off "$TZ_OFFSET" --arg lab "$TZ_LABEL" --argjson mo "${MANUAL_OLDER:-null}" --argjson sp "$SNAP_PRICE" \
         '{manual_older_than: $mo, snapshot_price_per_gb: $sp, daily: $d, daily_max_age_h: $h, weekly: $w, monthly: $m, yearly: $y, weekly_min_days: $wmin, weekly_max_days: $wmax,
           monthly_min_days: $mmin, monthly_max_days: $mmax, weekly_weekday: $wd, monthly_weekday: $md, tolerance_days: $tol, weekly_window_days: $ww,
+          daily_retention_days: $dr, weekly_retention_days: $wr, monthly_retention_days: $mr, ret_tolerance_days: $rt,
           tz_offset: $off, tz_label: $lab}' | tr -d '\r'
 }
 

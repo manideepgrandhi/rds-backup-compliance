@@ -36,6 +36,24 @@ AWS Backup recovery points are classified by their retention, which is CreationD
 | Over 400 days, or never expires | Yearly, only when `yearly` > 0 |
 | Anything else | Mismatch: not counted, and the resource gets a yellow warning such as `retention doesn't match: 2 recovery points (2555d, never expires) not counted` |
 
+### Strict retention (v1.4.0)
+
+The ranges above decide whether a point **counts**. On top of that, each counted point is compared with the retention the schedule expects:
+
+| Backup | Expected retention | Option / conf key |
+|---|---|---|
+| Daily (RDS) | `BackupRetentionPeriod` = 7 (the `daily` value) | `--daily-retention-days N` / `DAILY_RETENTION_DAYS` |
+| Weekly (AWS Backup) | 30 days | `--weekly-retention-days N` / `WEEKLY_RETENTION_DAYS` |
+| Monthly (AWS Backup) | 365 days | `--monthly-retention-days N` / `MONTHLY_RETENTION_DAYS` |
+| Allowed difference | ±1 day | `--retention-tolerance-days N` / `RET_TOLERANCE_DAYS` |
+
+A point with another retention (say a 35-day weekly point) **still counts**, so the status does not change, but it is highlighted in yellow: `retention mismatch: weekly point has 35d, expected 30d (x5)`. A daily retention above 7 is flagged the same way (below 7 is already a gap). The diagnostics reason says so too: `weekly: counts for Sat 24 Oct, but weekly point has 35d, expected 30d`.
+
+Two more yellow warnings, also without changing the status:
+
+- **Excess backups:** more points than the schedule makes, for example `weekly 9 (expected 4-5)`. The expected count is daily 7 (+1 for the backup in progress), weekly 4–5 (the Saturdays that fit in 30 days) and monthly 12. Likely causes: two backup plans or rules select the resource, or an on-demand job ran.
+- **Holds more than retention:** more automated RDS backups than the retention allows, for example `holds 21 automated backups for 7d retention; 13 older than 7d, oldest rds:db-2026-10-12-00-00 (20d)`. Likely causes: backups stopped so old ones are not replaced, the retention was lowered recently, the instance is stopped, or a snapshot is in use (copy, export or restore).
+
 You can change these with `--weekly-days MIN-MAX`, `--monthly-days MIN-MAX`, `--weekly-weekday sat`, `--monthly-rule first-sun`, `--tolerance-days N` (0–3) and `--weekly-window-days N`.
 
 How the role of each resource is decided:
@@ -60,26 +78,31 @@ All outputs show the account number, and every time is shown in UTC and IST (`--
 
 | Format | What you get |
 |---|---|
-| text | Console summary. |
-| csv | Compliance CSV with numeric columns per check: `<check>_status`, `_found`, `_expected`, `_target`, `_missing` (`2026-10-24 Sat; ...`) and `_full_on`. No cell is a value Excel turns into a date. With `-o`, you also get `<name>_backups.csv`, which lists every manual snapshot, automated backup and AWS Backup recovery point. |
+| text | Console summary, with a `Compliance: 33% (2 of 6), 2 not yet due not counted` line and the yellow warnings in the WARNINGS column. |
+| csv | Compliance CSV with numeric columns per check: `<check>_status`, `_found`, `_expected`, `_target`, `_missing` (`2026-10-24 Sat; ...`) and `_full_on`, then (v1.4.0) `retention_mismatch_count`, `retention_mismatch`, `excess_daily`, `excess_weekly`, `excess_monthly` (number over the expected maximum, blank when the check is N/A), `excess`, `over_retention_count`, `over_retention` and `counted_in_compliance_pct` (`yes`, or `no` for not yet due). No cell is a value Excel turns into a date. With `-o`, you also get `<name>_backups.csv`, which lists every manual snapshot, automated backup and AWS Backup recovery point. |
 | json | Rows and raw backups. |
 | html | Two tabs, described below. |
 
 The HTML report has two tabs:
 
 - **Compliance tab:**
-  - Total cards.
-  - Filters for account, region, type, engine, role, global cluster, status and identifier, plus **Show: Not yet due / Retention warnings**.
+  - Cards: **NN% compliant (x of y)** first (not-yet-due resources are left out of the denominator and shown under it), then the totals. Cards follow the filters.
+  - Filters for account, region, type, engine, role, global cluster and status, a **Search** box (identifier, engine, region, account, AWS Backup vault or plan), and **Show:** Not yet due / Points not counted (retention) / Retention mismatch / Excess backups / Holds more than retention.
+  - The **Per region** table (with a % compliant column and an "All regions" total) sits right under the filters and follows them.
+  - Yellow tags in the Gaps cell for retention mismatch, excess backups and holds more than retention; the detail row gives the full text and likely causes, and mismatched recovery points are yellow rows.
   - A Created column (date and age in days). Yearly shows only when `yearly` > 0.
   - Compact count cells (`4/5` with a red `1 missing` tag; hover for the dates) and a one-line Gaps summary. Fixed column widths that wrap; on a phone the table scrolls sideways.
   - Click a row (or its ▶ caret, or Enter on it) to open its detail row: full gaps, not-yet-due and warnings, a per-check table, and every AWS Backup recovery point with created date, retention, class, status, whether it counted and why.
   - Export CSV, which exports the filtered rows with exactly the same columns and quoting as the script's CSV.
-  - A per-region table with an "All regions" total, and the region errors.
+  - Region errors, if any.
 - **Backups tab:**
   - **Resource:** "All clusters and instances" (the first option) or one cluster or instance.
   - **Backup type:** All types, Manual, Automated or AWS Backup.
   - **Age:** Last 3, 6 or 12 months (newest first); Older than 30, 90, 180 or 365 days (oldest first); or Any age.
-  - **Reset** puts the type, age and filters back to their defaults (newest first) and keeps the selected resource.
+  - **Account** works in every mode: in single view it narrows the Resource list (a resource in another account switches to All).
+  - **Search:** resource identifier, engine, region, account, AWS Backup vault or plan, or snapshot / recovery point id.
+  - Yellow rows: AWS Backup points with an unexpected retention and automated backups older than the retention (hover for the reason).
+  - **Reset** puts every dropdown back (Resource to All clusters and instances), clears the search and restores newest-first order.
   - **Single resource:** a Retention settings section, then three sections (manual, RDS automated, AWS Backup with class, retention, expiry and vault). Backup type shows only the chosen section.
   - **All clusters and instances:** one combined table with Account, Region, Resource, Resource type, Backup type, Created (UTC and IST), Age (days), Status, Size GB, Rule (daily for automated; weekly, monthly, mismatch, or yearly when it is on, for AWS Backup), Retention and Vault. The Account, Region and Engine filters narrow it.
   - A count and total GB of the matching rows, and **Export CSV** of exactly what is shown (all filters applied).
@@ -176,6 +199,15 @@ tests/validate_cli.py            # checks that every field read exists in the bu
 ```
 
 ## Changelog
+
+- **1.4.0**
+  - Strict retention: daily `BackupRetentionPeriod` 7, weekly points 30 days, monthly points 365 days (±1 day). New options and conf keys `--daily-retention-days` / `DAILY_RETENTION_DAYS`, `--weekly-retention-days` / `WEEKLY_RETENTION_DAYS=30`, `--monthly-retention-days` / `MONTHLY_RETENTION_DAYS=365`, `--retention-tolerance-days` / `RET_TOLERANCE_DAYS=1`. A point with another retention still counts (a 35-day point is still weekly) and is highlighted yellow: `weekly point has 35d, expected 30d`. Diagnostics reasons say so.
+  - New yellow warnings (status unchanged): **excess backups** (`weekly 9 (expected 4-5)`) and **holds more than retention** (names the oldest automated backup; likely causes in the detail).
+  - Compliance card `NN% compliant (x of y)`, with not-yet-due resources left out and shown separately; it follows the filters. Also in the console (`Compliance: ...`), the JSON totals (`totals.compliance`) and the per-region table (% compliant).
+  - Compliance tab: search box (identifier, engine, region, account, vault, plan), Show options for the new warnings, per-region table moved under the filters.
+  - Backups tab: Account dropdown in every mode, search box, yellow rows, and Reset now resets every dropdown (Resource to All), the search and the order.
+  - CSV: `retention_mismatch_count`, `retention_mismatch`, `excess_daily`, `excess_weekly`, `excess_monthly`, `excess`, `over_retention_count`, `over_retention`, `counted_in_compliance_pct`. Counts are plain numbers.
+  - No new AWS calls or permissions. Saved data from v1.2.1 and v1.3.x still merges and gets the new checks.
 
 - **1.3.1**
   - CSV: the `x/y` text cells are replaced by numeric columns per check (`daily_status`, `daily_found`, `daily_expected`, `daily_target`, `daily_missing`, `daily_full_on`, then weekly, monthly, and yearly when on). Dates are written as `2026-10-24 Sat`, so Excel never turns a cell into a date. The HTML Export CSV produces the identical file.

@@ -14,9 +14,17 @@ weekly-window-days=30
 monthly=12
 monthly-rule=first-sun
 yearly=0
+# retention range that makes an AWS Backup point weekly / monthly (counted)
 weekly-days=25-40
 monthly-days=300-400
 tolerance-days=1
+# strict retention (v1.4.0): a counted point whose retention differs from these by more than
+# retention-tolerance-days is highlighted yellow ("weekly point has 35d, expected 30d"); never a failure.
+# daily-retention-days defaults to daily (RDS BackupRetentionPeriod should be exactly 7).
+# daily-retention-days=7
+weekly-retention-days=30
+monthly-retention-days=365
+retention-tolerance-days=1
 # regions of one account scanned at the same time (1 = one by one)
 parallel=4
 # snapshot-price-per-gb=0.021
