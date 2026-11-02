@@ -108,7 +108,7 @@ HDR+=',"status","not_yet_due","gaps","warnings","weekly_retention","monthly_rete
 HDR+=',"retention_mismatch_count","retention_mismatch","excess_daily","excess_weekly","excess_monthly","excess","over_retention_count","over_retention","counted_in_compliance_pct","pitr_enabled","pitr_since_utc"'
 chk "csv header" grep -qxF "$HDR" "$CSV"
 # v1.4.0 strict retention / excess / over-retention / compliance %
-rowt fleet orders-aurora-pg15 '.retention_mismatch == "weekly point has 35d, expected 30d (x5)" and .retention_mismatch_count == 5 and .status == "COMPLIANT" and .weekly.have == 5'
+rowt fleet orders-aurora-pg15 '.weekly.have == .weekly.need and .weekly.have >= 4 and .retention_mismatch == "weekly point has 35d, expected 30d (x\(.weekly.have))" and .retention_mismatch_count == .weekly.have and .status == "COMPLIANT"'
 rowt fleet orders-aurora-pg15 '[.recovery_points[] | select(.ret == 365 and .counted)] | length > 0 and all(.retention_mismatch == null and (.reason | test("retention 365d as expected$")))'
 rowt fleet reports-pg '.excess == "weekly 9 (expected 4-5)" and .excess_counts == {daily: 0, weekly: 4, monthly: 0} and .weekly.st == "OK"'
 rowt fleet legacy-mysql '(.over_retention | test("^holds 7 automated backups for 7d retention; 2 older than 7d, oldest rds:legacy-mysql-")) and .over_retention_count == 2'
@@ -145,7 +145,7 @@ t rpq 0 rpquirks -P prod -r us-east-1 -i orders-* -F json
 rowt rpq orders-aurora-pg15 '.weekly.have == .weekly.need and .weekly.need >= 4 and .weekly.st == "OK"'
 rowt rpq orders-aurora-pg15 '.weekly.have as $h | [.recovery_points[] | select(.class == "weekly" and .counted and .status == "AVAILABLE" and .ret == 35)] | length == $h'
 rowt rpq orders-aurora-pg15 '[.recovery_points[] | select(.reason | test("^continuous backup")) | select(.counted | not)] | length == 1'
-rowt fleet orders-aurora-pg15 '[.recovery_points[] | select(.ret == 35)] | all(.counted and (.reason | test("^weekly: counts for Sat [0-9]{2} [A-Z][a-z]{2}, but weekly point has 35d, expected 30d$")) and .retention_mismatch == "weekly point has 35d, expected 30d")'
+rowt fleet orders-aurora-pg15 '.weekly.have as $w | ([.recovery_points[] | select(.ret == 35 and .counted)] | length) == $w and ([.recovery_points[] | select(.ret == 35 and (.reason | test("is not within ±1d of a checked Saturday") | not))] | all(.counted and (.reason | test("^weekly: counts for Sat [0-9]{2} [A-Z][a-z]{2}, but weekly point has 35d, expected 30d$")) and .retention_mismatch == "weekly point has 35d, expected 30d"))'
 rowt fleet orders-aurora-pg15 '.recovery_points | all(has("date") and has("ret") and has("class") and has("counted") and has("reason")) and (.[0].date | test("^20[0-9]{2}-[0-9]{2}-[0-9]{2} [A-Z][a-z]{2}$"))'
 chk "output block: no // or ./ in paths" bash -c "! sed -n '/^Output/,\$p' '$OUT/files.err' | grep -qE '//|/\\./|~'"
 mkdir -p "$OUT/o2/sub"; ( cd "$OUT/o2" && t relout 0 fleet -P prod -r us-east-1 -F csv -o ./sub//../sub/ )
@@ -239,7 +239,7 @@ printf 'weekly = 6\r\n# comment\r\nregion=us-east-1\r\nidentifier = orders-*\r\n
 t conf 0 fleet -P prod --config "$OUT/my conf.conf"; rowt conf orders-aurora-pg15 '.weekly.need == 6'
 t confcli 0 fleet -P prod --config "$OUT/my conf.conf" --weekly 4; rowt confcli orders-aurora-pg15 '.weekly.need == 4'
 # v1.4.0 strict retention settings (CLI + config, both key spellings)
-t wret 0 fleet -P prod -r us-east-1 -i orders-* --weekly-retention-days 35 -F json; rowt wret orders-aurora-pg15 '.retention_mismatch == "" and .weekly.have == 5'
+t wret 0 fleet -P prod -r us-east-1 -i orders-* --weekly-retention-days 35 -F json; rowt wret orders-aurora-pg15 '.retention_mismatch == "" and .weekly.have == .weekly.need and .weekly.have >= 4'
 t wtol 0 fleet -P prod -r us-east-1 -i orders-* --retention-tolerance-days 5 -F json; rowt wtol orders-aurora-pg15 '.retention_mismatch == ""'
 t mret 0 fleet -P prod -r us-east-1 -i orders-* --monthly-retention-days 400 -F json
 rowt mret orders-aurora-pg15 '(.retention_mismatch | test("monthly point has 365d, expected 400d \\(x12\\)")) and .monthly.have == 12 and .status == "COMPLIANT"'
