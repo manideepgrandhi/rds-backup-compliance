@@ -82,6 +82,7 @@ FLEET = {
     ],
     "333333333333": [
         ("eu-west-1", "dev-aurora-mysql", "cluster", "aurora-mysql", "8.0.mysql_aurora.3.08.0", 400, 7, 7, 4, "all", "all", 0, None, None, [], {"extra_ret": [14]}),
+        ("eu-west-1", "erp-oracle", "instance", "oracle-ee", "19.0.0.0.ru-2024-01.rur-2024-01.r1", 900, 7, 7, 5, "all", "all", 0, None, None, [], {"pitr": True}),
     ],
 }
 rows = [] if SCEN == "empty" else [r for r in FLEET[acct] if r[0] == region]
@@ -277,6 +278,10 @@ if svc == "backup" and op == "list-recovery-points-by-backup-vault":
             for k, t in enumerate(saturdays(6)[:opts(r).get("dupw", 0)]):   # v1.4.0: a second weekly plan -> excess backups
                 if t > created(r) and t < NOW and t + timedelta(days=35) > NOW:
                     pts.append(rp(r, t + timedelta(hours=1), 35, vault, "weekly-sat"))
+            if opts(r).get("pitr"):   # v1.5.0: continuous (PITR) recovery point, never counted
+                pts.append({"RecoveryPointArn": "arn:aws:backup:%s:%s:recovery-point:continuous:%s-9c1d" % (r[0], acct, r[1]), "BackupVaultName": vault,
+                            "ResourceArn": arn(r), "ResourceType": "RDS", "CreationDate": iso(NOW - timedelta(days=60), ist=True), "Status": "COMPLETED",
+                            "Lifecycle": {"DeleteAfterDays": 35}})
             for days in opts(r).get("extra_ret", []):   # a retention that fits no class: warning only
                 pts.append(rp(r, NOW - timedelta(days=2), days, vault))
         else:

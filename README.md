@@ -1,6 +1,6 @@
 # rds-backup-compliance
 
-`rds_backup_compliance_report.sh` v1.4.1 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
+`rds_backup_compliance_report.sh` v1.5.0 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
 
 ## Install (CloudShell)
 
@@ -200,6 +200,13 @@ tests/validate_cli.py            # checks that every field read exists in the bu
 
 ## Changelog
 
+- **1.5.0**
+  - PITR: a `PITR` badge on Backups-tab continuous recovery points and a PITR column (with "since" date) on Compliance. The compliance CSV gains `pitr_enabled`, `pitr_since_utc`, and the backups CSV gains `backup_type` (pitr / aws_backup / automated / manual) and `schedule` (daily / weekly / monthly / yearly / not_counted). The new columns are added at the end.
+  - Backups tab: new Backup type options (PITR, automated, manual, AWS Backup), a Schedule filter, and "More filters" (account, region, engine, source) with a count of active hidden filters.
+  - Compliance tab: the main row is Status, Issue (was "Show") and Engine. Account, Region, Type, Aurora global DB (All / All global databases / None / each name) and Global role (Primary / Secondary) are under More filters. The global filters appear only when a global cluster exists, and non-Aurora engines are never counted as global.
+  - Status cards filter by status when clicked. ⓘ tips explain each filter using the configured thresholds.
+  - CSV export from the page opens a column picker, and the chosen columns are remembered per tab. Filters are remembered in localStorage, and a `#view=` deep link still wins.
+  - Every baseline value in `rds_backup_compliance_report.conf.example` is now commented out, so the example leaves the script defaults unchanged.
 - **1.4.1**
   - Cross-tab links. On the Backups tab, a resource identifier opens the Compliance tab showing only that resource (account and region filters set, other filters cleared, a `× clear` chip), with its row expanded, highlighted and scrolled into view. On the Compliance tab, each row has a small `backups` link (the identifier still works too) that opens the Backups tab on that resource. Snapshots whose source is gone (`(deleted) ...`) keep opening their own snapshot list.
   - Links are keyed by account + region + identifier, so merged reports with the same identifier in several accounts or regions go to the right row. A resource with no backups shows a "No backups found" message.

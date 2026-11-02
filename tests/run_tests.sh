@@ -29,7 +29,7 @@ rowt() { jq -e --arg i "$2" ".rows[] | select(.identifier == \$i) | $3" "$OUT/$1
 ncalls() { wc -l <"$MOCK_LOG" 2>/dev/null | tr -d ' ' || echo 0; }
 
 echo "== CLI"
-t version 0 fleet --version; has version out '1\.4\.1'
+t version 0 fleet --version; has version out '1\.5\.0'
 t help 0 fleet --help; has help out 'list-recovery-points-by-backup-vault'; has help out 'weekly-days'
 t badopt 1 fleet --nope
 t multifmt 1 fleet -P prod -r us-east-1 -F csv,html
@@ -44,6 +44,8 @@ t noregion 2 fleet -P prod
 
 echo "== fleet (prod, two regions)"
 t fleet 0 fleet -P prod -r us-east-1,us-west-2 -F json
+t confex 0 fleet -P prod -r us-east-1,us-west-2 -F json --config "$(dirname "$SCRIPT")/rds_backup_compliance_report.conf.example"
+chk "conf example: every baseline commented, defaults unchanged" bash -c "! grep -qE '^[a-z-]+=' '$(dirname "$SCRIPT")/rds_backup_compliance_report.conf.example' && diff <(jq -S '{thresholds,totals,rows:[.rows[]|{identifier,status}]}' '$OUT/fleet.out') <(jq -S '{thresholds,totals,rows:[.rows[]|{identifier,status}]}' '$OUT/confex.out')"
 rowt fleet orders-aurora-pg15 '.status == "COMPLIANT" and .global_role == "primary" and .global_cluster == "orders-global"'
 rowt fleet orders-aurora-pg15 '.daily.have == 7 and .weekly.have == .weekly.need and (.weekly.need | . == 4 or . == 5) and .monthly.have == 12 and .monthly.need == 12 and .yearly.st == "OFF"'
 rowt fleet orders-aurora-pg15 '.warnings == "retention doesn'"'"'t match: 2 recovery points (2555d, never expires) not counted" and .gaps == ""'
@@ -103,7 +105,7 @@ HTML="$(ls "$OUT"/o/*.html | head -1)"; JSON="$(ls "$OUT"/o/rds_backup_complianc
 HDR='"account_id","region","identifier","type","engine","engine_version","global_cluster","global_role","retention_days","created_utc","age_days","backup_window","copy_tags_to_snapshot","last_automated_utc","last_automated_ist"'
 for k in daily weekly monthly; do HDR+=",\"${k}_status\",\"${k}_found\",\"${k}_expected\",\"${k}_target\",\"${k}_missing\",\"${k}_full_on\""; done
 HDR+=',"status","not_yet_due","gaps","warnings","weekly_retention","monthly_retention","backup_plans"'
-HDR+=',"retention_mismatch_count","retention_mismatch","excess_daily","excess_weekly","excess_monthly","excess","over_retention_count","over_retention","counted_in_compliance_pct"'
+HDR+=',"retention_mismatch_count","retention_mismatch","excess_daily","excess_weekly","excess_monthly","excess","over_retention_count","over_retention","counted_in_compliance_pct","pitr_enabled","pitr_since_utc"'
 chk "csv header" grep -qxF "$HDR" "$CSV"
 # v1.4.0 strict retention / excess / over-retention / compliance %
 rowt fleet orders-aurora-pg15 '.retention_mismatch == "weekly point has 35d, expected 30d (x5)" and .retention_mismatch_count == 5 and .status == "COMPLIANT" and .weekly.have == 5'
@@ -152,7 +154,7 @@ has relout err "^  $OUT/o2/sub/rds_backup_compliance_111111111111_[0-9_]+_backup
 chk "csv has every status" bash -c "grep -q '\"COMPLIANT\"' '$CSV' && grep -q '\"NON-COMPLIANT\"' '$CSV' && grep -q '\"NOT YET DUE\"' '$CSV'"
 chk "backups csv has manual, automated, backup kinds" bash -c "grep -q ',\"manual\",' '$BCSV' && grep -q ',\"automated\",' '$BCSV' && grep -q ',\"backup\",' '$BCSV'"
 chk "backups csv has IST column and classes" bash -c "head -1 '$BCSV' | grep -q created_ist && grep -q '\"weekly\"' '$BCSV' && grep -q '\"monthly\"' '$BCSV' && grep -q '\"mismatch\"' '$BCSV'"
-chk "backups csv header = in-page export order" bash -c "head -1 '$BCSV' | tr -d '\"\r' | grep -qx 'account_id,region,identifier,type,kind,snapshot_or_recovery_point,created_utc,created_ist,age_days,status,size_gb,rule,retention_days,expires_utc,vault,source_status'"
+chk "backups csv header = in-page export order" bash -c "head -1 '$BCSV' | tr -d '\"\r' | grep -qx 'account_id,region,identifier,type,kind,snapshot_or_recovery_point,created_utc,created_ist,age_days,status,size_gb,rule,retention_days,expires_utc,vault,source_status,backup_type,schedule'"
 chk "backups csv: automated rule daily, manual rule empty, age_days numeric" bash -c "grep ',\"automated\",' '$BCSV' | head -1 | grep -q ',\"daily\",' && grep ',\"manual\",' '$BCSV' | head -1 | grep -qE ',\"[0-9]+\",\"available\",\"100\",\"\",\"\",'"
 chk "backups csv: no EC2 recovery point" bash -c "! grep -q ami-0abc '$BCSV'"
 chk "html: no empty region (ap-south-1)" bash -c "! grep -qE 'ap-south-1' '$HTML'"
@@ -170,7 +172,7 @@ chk "orphaned csv: deleted source row has size, estimate, kms" bash -c "grep -q 
 chk "orphaned csv: no shared / copy / awsbackup / automated / docdb" bash -c "! grep -qE 'vendor|eu-app|dr-copy|gone-db|docs-final' '$OCSV'"
 jqt filesjson '.orphan_totals.summary == "4 orphaned snapshots, 1.8 TB, ~$38/month (estimate)" and .orphan_totals.shared == 2 and .orphan_totals.unverified == 1' "$JSON"
 jqt filesjson '[.orphaned_snapshots[] | {key: .id, value: .source_status}] | from_entries | .["vendor-share-1"] == "SHARED" and .["vendor-copy"] == "SHARED" and .["orders-aurora-pg15-dr-copy"] == "EXISTING" and .["eu-app-copy"] == "UNVERIFIED" and .["analytics-aurora-final"] == "ORPHANED"' "$JSON"
-chk "backups csv: orphaned flag rows" bash -c "grep -q '\"crm-mysql\",\"instance\",\"manual\",\"crm-mysql-before-delete\",.*\"ORPHANED\"$' '$BCSV' && grep -q '\"vendor-share-1\",.*\"SHARED\"$' '$BCSV'"
+chk "backups csv: orphaned flag rows" bash -c "grep -q '\"crm-mysql\",\"instance\",\"manual\",\"crm-mysql-before-delete\",.*\"ORPHANED\",\"manual\",\"not_counted\"$' '$BCSV' && grep -q '\"vendor-share-1\",.*\"SHARED\",\"manual\",\"not_counted\"$' '$BCSV'"
 chk "describe-db-*-snapshots called with --include-shared" bash -c "grep 'describe-db-snapshots' '$MOCK_LOG' | tail -1 | grep -q include-shared"
 chk "snapshots read in a region without databases (ca-central-1)" bash -c "grep 'describe-db-cluster-snapshots' '$MOCK_LOG' | grep -q ca-central-1"
 has files err '4 orphaned snapshots, 1.8 TB, ~\$38/month \(estimate\)'
@@ -295,7 +297,9 @@ n0="$(ncalls)"
 t merge 0 fleet --merge "$M/prod.json" "$M/nonprod.json" "$M/dev.json" "$OUT/prod_old.json" -F json
 chk "merge made zero AWS calls" test "$(ncalls)" == "$n0"
 jqt merge '[.accounts[].account] | sort == ["111111111111", "222222222222", "333333333333"]' "$OUT/merge.out"
-jqt merge '.rows | length == 11' "$OUT/merge.out"
+jqt merge '.rows | length == 12' "$OUT/merge.out"
+rowt merge erp-oracle '.pitr.on == true and (.pitr.since | test("^20[0-9]{2}-")) and .global_role == "none"'
+rowt merge payroll-sqlserver '.pitr.on == false'
 jqt merge '.orphan_totals.orphaned == 5 and .orphan_totals.summary == "5 orphaned snapshots, 1.6 TB, ~$34/month (estimate)"' "$OUT/merge.out"
 jqt merge '[.orphaned_snapshots[] | select(.source_status == "ORPHANED") | .account_id] | unique == ["111111111111", "222222222222", "333333333333"]' "$OUT/merge.out"
 jqt merge '[.orphaned_snapshots[] | select(.id == "orders-aurora-pg15-dr-copy")][0].source_status == "EXISTING"' "$OUT/merge.out"
@@ -362,7 +366,7 @@ echo 'not json' >"$OUT/garbage.json"; t mergegarbage 3 fleet --merge "$OUT/garba
 CR="$OUT/crjq"; mkdir -p "$CR"; REALJQ="$(command -v jq)"
 printf '#!/usr/bin/env bash\n"%s" "$@" | sed "s/$/\\r/"\nexit "${PIPESTATUS[0]}"\n' "$REALJQ" >"$CR/jq"; chmod +x "$CR/jq"
 PATH="$CR:$PATH" t crlf 0 fleet --merge "$M" -F json
-jqt crlf '.rows | length == 11' <(tr -d '\r' <"$OUT/crlf.out")
+jqt crlf '.rows | length == 12' <(tr -d '\r' <"$OUT/crlf.out")
 PATH="$CR:$PATH" t crlfhtml 0 fleet --merge "$M" -o "$OUT/cr.html"
 chk "CRLF jq: html written" grep -q 'orders-aurora-pg15' "$OUT/cr.html"
 

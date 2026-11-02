@@ -29,6 +29,10 @@ def rp_class: rp_ret as $d
     elif $d != null and $d >= ($cfg.monthly_min_days // ($cfg.weekly_max_days + 1)) and $d <= $cfg.monthly_max_days then "monthly"
     elif ($cfg.yearly // 0) > 0 and ($d == null or $d > $cfg.monthly_max_days) then "yearly"
     else "mismatch" end;
+# v1.5.0: backup type and schedule of one snapshot / recovery point (Backups tab filters, CSV)
+def btype: if .kind == "backup" then (if .continuous then "pitr" else "aws_backup" end) else .kind end;
+def bsched: if .kind == "automated" then "daily" elif .kind == "backup" and rp_live
+  then (rp_class | if . == "mismatch" then "not_counted" else . end) else "not_counted" end;
 
 # v1.4.0 strict retention: the windows above decide the class (so a 35d point still counts as weekly); the expected
 # retention per class (daily = RDS BackupRetentionPeriod) is checked separately and a difference is a yellow highlight only.
@@ -174,6 +178,8 @@ def evaluate:
       retention_mismatch: ($rmt | join("; ")), retention_mismatch_count: $rmn,
       excess: $ext, excess_counts: ($ex | map_values(if . == null then null elif .n > .max then .n - .max else 0 end)),
       over_retention: $ort, over_retention_count: ($old | length),
+      pitr: ([ $r.snapshots[]? | select(.kind == "backup" and .continuous == true and .created_epoch != null) | .created_epoch ]
+             | if length > 0 then {on: true, since: (min | utc)} else {on: false, since: ""} end),
       recovery_points: [ $diag[] | del(.ret_mismatch) + (if .ret_mismatch == true then {retention_mismatch: rmis_note(.class; .ret)} else {} end) ] };
 
 def cell($c): if $c.st == "N/A" then "N/A" elif $c.st == "UNKNOWN" then "?" elif $c.st == "OFF" then ""
@@ -205,7 +211,7 @@ def chead: ["account_id","region","identifier","type","engine","engine_version",
     + [ PER[] as $k | "\($k)_status", "\($k)_found", "\($k)_expected", "\($k)_target", "\($k)_missing", "\($k)_full_on" ]
     + ["status","not_yet_due","gaps","warnings","weekly_retention","monthly_retention","backup_plans",
        "retention_mismatch_count","retention_mismatch","excess_daily","excess_weekly","excess_monthly","excess",
-       "over_retention_count","over_retention","counted_in_compliance_pct"];
+       "over_retention_count","over_retention","counted_in_compliance_pct","pitr_enabled","pitr_since_utc"];
 def pcols($c): if $c.st == "N/A" or $c.st == "UNKNOWN" or $c.st == "OFF" or $c.have == null then [$c.st, null, null, null, "", ""]
   else [$c.st, $c.have, $c.need, ($c.target // $c.need), ([ ($c.missing // [])[] | dwk ] | join("; ")), ($c.full_on_iso // "")] end;
 def crow: . as $r | [.account_id, .region, .identifier, .type, .engine, .engine_version, .global_cluster, .global_role, .retention_days,
@@ -213,7 +219,8 @@ def crow: . as $r | [.account_id, .region, .identifier, .type, .engine, .engine_
            + [ PER[] as $k | $r[$k] | pcols(.)[] ]
            + [.status, .not_yet_due, .gaps, .warnings, .settings.weekly_retention, .settings.monthly_retention, .settings.plans,
               .retention_mismatch_count, .retention_mismatch, .excess_counts.daily, .excess_counts.weekly, .excess_counts.monthly, .excess,
-              .over_retention_count, .over_retention, (if .status == "NOT YET DUE" then "no" else "yes" end)];
+              .over_retention_count, .over_retention, (if .status == "NOT YET DUE" then "no" else "yes" end),
+              (if .pitr.on then "yes" else "no" end), .pitr.since];
 def cstr: map(if . == null then "" else tostring end);
 def csvrow: map(if . == null then "" else tostring end
                 | if test("^[=+@-]") then "'" + . else . end) | @csv;   # formula-injection guard
@@ -281,16 +288,16 @@ def osumtxt($t): "\($t.orphaned) orphaned snapshot\(if $t.orphaned == 1 then "" 
     (chead | csvrow), ($R[] | crow | csvrow)
   elif $mode == "bcsv" then   # same columns and order as the HTML Backups tab "Export CSV"
     (["account_id","region","identifier","type","kind","snapshot_or_recovery_point","created_utc","created_" + ($cfg.tz_label | ascii_downcase),
-      "age_days","status","size_gb","rule","retention_days","expires_utc","vault","source_status"] | csvrow),
+      "age_days","status","size_gb","rule","retention_days","expires_utc","vault","source_status","backup_type","schedule"] | csvrow),
     ($D.resources | sort_by(.account_id, .region, .id)[] as $r
      | $r.snapshots | sort_by(-.created_epoch)[]
      | [$r.account_id, $r.region, $r.id, $r.type, .kind, .id, (.created_epoch | utc), (.created_epoch | loc),
         (if .created_epoch == null then null else (($now - .created_epoch) / 86400 | floor) end), .status, .size_gb,
         (if .kind == "backup" then rp_class elif .kind == "automated" then "daily" else "" end),
-        (if .kind == "backup" then rp_ret else null end), (.expires_epoch | utc), (.vault // ""), "EXISTING"] | csvrow),
+        (if .kind == "backup" then rp_ret else null end), (.expires_epoch | utc), (.vault // ""), "EXISTING", btype, bsched] | csvrow),
     ($O | sort_by(.account_id, .region, .source_id, -.created_epoch)[]
      | [.account_id, .region, .source_id, .type, "manual", .id, (.created_epoch | utc), (.created_epoch | loc), .age_days, .status, .size_gb,
-        "", null, "", "", .source_status] | csvrow)
+        "", null, "", "", .source_status, "manual", "not_counted"] | csvrow)
   elif $mode == "mcsv" then
     (["account_id","region","identifier","type","engine","snapshot","created_utc","created_" + ($cfg.tz_label | ascii_downcase),"age_days","status","size_gb","source_status"] | csvrow),
     ([ $D.resources[] as $r | $r.snapshots[]? | select(.kind == "manual" and .created_epoch != null
@@ -333,7 +340,7 @@ def osumtxt($t): "\($t.orphaned) orphaned snapshot\(if $t.orphaned == 1 then "" 
                                          elif .kind == "automated" and .created_epoch != null and .created_epoch < over_cut($rr) then "older than the \($rr // 0)d retention"
                                          else null end), kind, id, c: .created_epoch, st: .status, gb: .size_gb, x: .expires_epoch, v: (.vault // ""),
                                     cl: (if .kind == "backup" then rp_class else "" end), rd: (if .kind == "backup" then rp_ret else null end),
-                                    pl: (.plan // ""), ru: (.rule // "")} ]} ]}
+                                    pl: (.plan // ""), ru: (.rule // ""), bt: btype, sc: bsched} ]} ]}
     | tojson | gsub("</"; "<\\/") as $json
     | "<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><title>RDS backup compliance - \($D | accounts_label)</title>\n<style>
 body{font-family:Segoe UI,Arial,sans-serif;margin:16px;color:#222;font-size:13px}h1{font-size:18px;margin:0 0 4px}.sub{color:#666;margin-bottom:10px}
@@ -348,6 +355,9 @@ td.gaps{white-space:normal}.tw{overflow-x:auto;-webkit-overflow-scrolling:touch;
 .car{display:inline-block;width:14px;color:#1f5fa8;font-size:11px;user-select:none}tr.open .car{transform:rotate(90deg)}tr.hl>td{background:#fff4c2!important;box-shadow:inset 0 2px 0 #e0a800,inset 0 -2px 0 #e0a800}a.bkl{font-size:11px;margin-left:4px;white-space:nowrap}.pin{background:#e8f0fb;border:1px solid #9bb8e0;border-radius:3px;padding:2px 6px;font-size:12px}.pin button{font-size:11px;padding:0 4px;margin-left:4px}.blink{margin:6px 0}.empty{background:#fff4c2;border:1px solid #e0a800;padding:8px;margin:8px 0}a:focus-visible{outline:2px solid #1f5fa8;outline-offset:1px}.miss{display:inline-block;background:#b3261e;color:#fff;border-radius:3px;font-size:10px;padding:0 4px;margin-left:3px;white-space:nowrap}
 tr.det>td{background:#fafbfd;padding:6px 10px}tr.det table{margin:4px 0;table-layout:auto}tr.det td,tr.det th{white-space:normal;font-size:12px}.det .dl{margin:2px 0}.cnt-y{color:#137333}.cnt-n{color:#b3261e}
 @media(max-width:700px){body{margin:8px;font-size:12px}.filters label{flex:1 1 45%}}.ytag{display:inline-block;background:#fff3c4;color:#7a5200;border:1px solid #f0d58c;border-radius:3px;padding:0 4px;margin:2px 0 0 4px;font-size:11px;white-space:nowrap}tr.yl td{background:#fffbe6}.card.pct .v{color:#1f5fa8}#f-q,#b-q{min-width:220px}.warn{background:#fff6dc;color:#7a5200;padding:1px 4px;border-radius:3px;margin-top:2px}.kv th{width:230px}.osum{background:#fff6dc;border:1px solid #f0d58c;border-radius:4px;padding:5px 9px;margin:6px 0}tr.orph td{background:#fff3f0}td.src-ORPHANED{color:#b3261e;font-weight:600}td.src-SHARED{color:#1f5fa8}h2{font-size:15px;margin:14px 0 4px}.muted{color:#777}
+.pitr{display:inline-block;background:#e8f0fb;color:#1f5fa8;border:1px solid #9bb8e0;border-radius:3px;padding:0 4px;font-size:11px}.card.cl{cursor:pointer}.card.on{border-color:#1f5fa8;box-shadow:0 0 0 2px #9bb8e0}
+.ti{cursor:help;color:#1f5fa8;position:relative}.ti.open::after{content:attr(title);position:absolute;left:0;top:16px;background:#333;color:#fff;padding:4px 6px;border-radius:3px;font-size:11px;white-space:pre;z-index:5;font-weight:normal}
+details.more summary{cursor:pointer;color:#1f5fa8}details.more>.filters{margin:4px 0}.cp{position:fixed;top:60px;right:16px;background:#fff;border:1px solid #999;border-radius:4px;padding:8px;z-index:9;max-height:75vh;overflow:auto;box-shadow:0 2px 8px rgba(0,0,0,.2)}.cpl{margin:6px 0}.cpl label{display:block;white-space:nowrap}
 </style></head><body>
 <h1>RDS backup compliance - account \($D | accounts_label)</h1>
 <div class=\"sub\">Generated \($now | utc) / \($now | loc) &middot; \(ruletxt | @html)</div>
