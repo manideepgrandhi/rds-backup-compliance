@@ -29,7 +29,7 @@ rowt() { jq -e --arg i "$2" ".rows[] | select(.identifier == \$i) | $3" "$OUT/$1
 ncalls() { wc -l <"$MOCK_LOG" 2>/dev/null | tr -d ' ' || echo 0; }
 
 echo "== CLI"
-t version 0 fleet --version; has version out '1\.5\.0'
+t version 0 fleet --version; has version out '1\.5\.1'
 t help 0 fleet --help; has help out 'list-recovery-points-by-backup-vault'; has help out 'weekly-days'
 t badopt 1 fleet --nope
 t multifmt 1 fleet -P prod -r us-east-1 -F csv,html
@@ -221,7 +221,8 @@ t mdays 0 fleet -P prod -r us-east-1 -i orders-* --monthly-days 360-370 -F json;
 t yearly1 0 fleet -P prod -r us-east-1 -i orders-* --yearly 1 -F csv; has yearly1 out '"monthly_full_on","yearly_status","yearly_found","yearly_expected","yearly_target","yearly_missing","yearly_full_on","status"'
 t yearly1j 0 fleet -P prod -r us-east-1 -i orders-* --yearly 1 -F json; rowt yearly1j orders-aurora-pg15 '.yearly.have == 2 and .yearly.st == "OK" and .warnings == ""'
 t yearly1t 0 fleet -P prod -r us-east-1 -i orders-* --yearly 1; has yearly1t out 'MONTHLY	YEARLY	STATUS'
-t yearly1h 0 fleet -P prod -r us-east-1 -i orders-* --yearly 1 -F html -o "$OUT/y1"; chk "html: Yearly shown at yearly=1" bash -c "grep -q 'yearly x1' \"$OUT\"/y1/*.html"
+t yearly1h 0 fleet -P prod -r us-east-1 -i orders-* --yearly 1 -F html -o "$OUT/y1"; chk "html: Yearly shown at yearly=1" bash -c "grep -q 'Yearly: last 1<' \"$OUT\"/y1/*.html"
+t hdrcfg 0 fleet -P prod -r us-east-1 --daily 9 --weekly 3 --weekly-retention-days 33 --monthly 6 --monthly-rule first-mon -F html -o "$OUT/hc"; chk "html header bullets follow a changed config" bash -c "f=\$(ls \"$OUT\"/hc/*.html); grep -q \">Daily: last 9 days, newest within [0-9]*h, retention [0-9]*d<\" \"\$f\" && grep -q \">Weekly: every Saturday, last 3, retention 33d \" \"\$f\" && grep -q \">Monthly: first Monday, last 6 months, retention \" \"\$f\" && ! grep -q h-yearly \"\$f\""
 # Saturday / first-Sunday matching with tolerance (hr-aurora-pg's 2nd weekly point ran on Sunday 07:00 UTC)
 t tol1 0 fleet -P nonprod -r ap-south-1 -F json; rowt tol1 hr-aurora-pg '.status == "COMPLIANT" and .weekly.st == "OK"'
 rowt tol1 payroll-sqlserver '.status == "NON-COMPLIANT" and (.gaps | test("^monthly 10/12 missing [A-Z][a-z]{2} 20[0-9]{2}, [A-Z][a-z]{2} 20[0-9]{2}$"))'

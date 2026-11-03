@@ -1,6 +1,6 @@
 # rds-backup-compliance
 
-`rds_backup_compliance_report.sh` v1.5.0 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
+`rds_backup_compliance_report.sh` v1.5.1 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
 
 ## Install (CloudShell)
 
@@ -106,7 +106,7 @@ The HTML report has two tabs:
   - **Single resource:** a Retention settings section, then three sections (manual, RDS automated, AWS Backup with class, retention, expiry and vault). Backup type shows only the chosen section.
   - **All clusters and instances:** one combined table with Account, Region, Resource, Resource type, Backup type, Created (UTC and IST), Age (days), Status, Size GB, Rule (daily for automated; weekly, monthly, mismatch, or yearly when it is on, for AWS Backup), Retention and Vault. The Account, Region and Engine filters narrow it.
   - A count and total GB of the matching rows, and **Export CSV** of exactly what is shown (all filters applied).
-  - **Old manual snapshots (> 90 days)** sets All + Manual + Older than 90 days in one click, for auditing leftover manual snapshots.
+  - To audit leftover manual snapshots, set Backup type = Snapshot: manual and Age = Older than 90 days.
   - Manual snapshots of any age are kept in the data (nothing is trimmed to 12 months).
 
 ### Manual snapshot audit CSV
@@ -127,7 +127,7 @@ A manual snapshot is **orphaned** when its source cluster or instance no longer 
 AWS Backup recovery points, automated snapshots, `awsbackup:` snapshots and DocumentDB/Neptune snapshots are not part of the orphan logic.
 
 - **Summary**, in the Compliance header and the Backups tab: e.g. `4 orphaned snapshots, 1.8 TB, ~$38/month (estimate)`. The estimate is size GB × `--snapshot-price-per-gb` (default 0.021, or `snapshot_price_per_gb` in the config file). It is a **rough upper estimate**: snapshot storage is billed incrementally, so the real cost is usually lower.
-- **Backups tab, All clusters and instances:** a Source status filter (All, Existing, Orphaned, Shared, Unverified when present), Source and Est. $/month columns, an **Orphaned snapshots** button, and `(deleted) <id>` entries in the Resource dropdown.
+- **Backups tab, All clusters and instances:** a Source status filter (All, Existing, Orphaned, Shared, Unverified when present), Source and Est. $/month columns, a clickable orphaned count in the orphan summary line, and `(deleted) <id>` entries in the Resource dropdown.
 - **CSV:** with `csv` in `-F`, `<prefix>_<account>_<stamp>_orphaned_snapshots.csv` (oldest first: account_id, region, snapshot_id, type, source_id, engine, engine_version, created_utc, created_ist, age_days, size_gb, est_monthly_usd, encrypted, kms_key), for live scans and `--merge`. `_backups.csv` and the in-page export gain a `source_status` column.
 - Data saved by v1.0.0 and v1.1.0 still merges; those accounts simply have no orphan data.
 
@@ -200,6 +200,12 @@ tests/validate_cli.py            # checks that every field read exists in the bu
 
 ## Changelog
 
+- **1.5.1**
+  - No "More filters" toggle: every filter is on one row that wraps on narrow screens. The Backups order is Account, Region, Resource, Engine, Backup type, Schedule, Age, Source status. The Compliance order is Account, Region, Type, Engine, Aurora global DB, Global role (only when a global cluster exists), Status, Issue.
+  - Resource is a type-to-filter box. It matches identifier, engine, account or region, offers "All clusters and instances", and supports arrows + Enter. Cross-tab links and deep links still select the right resource.
+  - CSV column picker: Download, Cancel, All and None sit in a sticky header, and the column list scrolls under it.
+  - The "Old manual snapshots (> 90 days)" and "Orphaned snapshots" buttons are removed. The orphaned count in the orphan summary line now opens Source status = Orphaned (all resources, any age).
+  - Header: "RDS backup compliance · N accounts" (account ids in the tooltip), then bullets built from the config: Generated, Daily, Weekly, Monthly, Yearly (only when on) and Global secondaries (only when present). Tolerances, counted ranges and the UTC note are in ⓘ tips.
 - **1.5.0**
   - PITR: a `PITR` badge on Backups-tab continuous recovery points and a PITR column (with "since" date) on Compliance. The compliance CSV gains `pitr_enabled`, `pitr_since_utc`, and the backups CSV gains `backup_type` (pitr / aws_backup / automated / manual) and `schedule` (daily / weekly / monthly / yearly / not_counted). The new columns are added at the end.
   - Backups tab: new Backup type options (PITR, automated, manual, AWS Backup), a Schedule filter, and "More filters" (account, region, engine, source) with a count of active hidden filters.

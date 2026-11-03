@@ -242,6 +242,22 @@ def ruletxt: "daily: each of the last \($cfg.daily) days (RDS automated, last <=
   + (if yon then " · yearly x\($cfg.yearly)" else "" end)
   + " · daily retention \(dret)d · retention ±\(rtol)d · schedule ±\($cfg.tolerance_days // 1)d, UTC dates · global secondaries: daily only";
 def accounts_label: [ .accounts[].account ] | join(", ");
+# v1.5.1 page header: one bullet per rule, every value from $cfg; tolerances / counted ranges in ⓘ tips
+def htip($t): " <span class=\"ti\" tabindex=\"0\" title=\"\($t | @html)\">&#9432;</span>";
+def hdrhtml($R):
+  ($cfg.monthly_min_days // ($cfg.weekly_max_days + 1)) as $mmin
+  | "<ul class=\"hdr\" id=\"hdr\">"
+  + "<li>Generated \($now | loc) (\($now | utc))</li>"
+  + "<li id=\"h-daily\">Daily: last \($cfg.daily) days, newest within \($cfg.daily_max_age_h)h, retention \(dret)d</li>"
+  + "<li id=\"h-weekly\">Weekly: every \(wdname($cfg.weekly_weekday // 6)), "
+    + (if $cfg.weekly == "auto" or $cfg.weekly == null then "last \($cfg.weekly_window_days // 30) days" else "last \($cfg.weekly)" end)
+    + ", retention \($cfg.weekly_retention_days // 30)d"
+    + htip("Counted when retention is \($cfg.weekly_min_days)-\($cfg.weekly_max_days)d; retention ±\(rtol)d; schedule ±\($cfg.tolerance_days // 1)d; dates in UTC") + "</li>"
+  + "<li id=\"h-monthly\">Monthly: first \(wdname($cfg.monthly_weekday // 0)), last \($cfg.monthly) months, retention \($cfg.monthly_retention_days // 365)d"
+    + htip("Counted when retention is \($mmin)-\($cfg.monthly_max_days)d; retention ±\(rtol)d; schedule ±\($cfg.tolerance_days // 1)d; dates in UTC") + "</li>"
+  + (if yon then "<li id=\"h-yearly\">Yearly: last \($cfg.yearly)</li>" else "" end)
+  + (if [$R[] | select(.global_role == "secondary" or .global_role == "replica")] | length > 0 then "<li id=\"h-global\">Global secondaries: daily only</li>" else "" end)
+  + "</ul>";
 
 # orphaned manual snapshots (data .orphans, absent in v1.0/v1.1 files). Source status of one entry:
 # SHARED     shared to this account, or copied from a snapshot in another account
@@ -357,10 +373,10 @@ tr.det>td{background:#fafbfd;padding:6px 10px}tr.det table{margin:4px 0;table-la
 @media(max-width:700px){body{margin:8px;font-size:12px}.filters label{flex:1 1 45%}}.ytag{display:inline-block;background:#fff3c4;color:#7a5200;border:1px solid #f0d58c;border-radius:3px;padding:0 4px;margin:2px 0 0 4px;font-size:11px;white-space:nowrap}tr.yl td{background:#fffbe6}.card.pct .v{color:#1f5fa8}#f-q,#b-q{min-width:220px}.warn{background:#fff6dc;color:#7a5200;padding:1px 4px;border-radius:3px;margin-top:2px}.kv th{width:230px}.osum{background:#fff6dc;border:1px solid #f0d58c;border-radius:4px;padding:5px 9px;margin:6px 0}tr.orph td{background:#fff3f0}td.src-ORPHANED{color:#b3261e;font-weight:600}td.src-SHARED{color:#1f5fa8}h2{font-size:15px;margin:14px 0 4px}.muted{color:#777}
 .pitr{display:inline-block;background:#e8f0fb;color:#1f5fa8;border:1px solid #9bb8e0;border-radius:3px;padding:0 4px;font-size:11px}.card.cl{cursor:pointer}.card.on{border-color:#1f5fa8;box-shadow:0 0 0 2px #9bb8e0}
 .ti{cursor:help;color:#1f5fa8;position:relative}.ti.open::after{content:attr(title);position:absolute;left:0;top:16px;background:#333;color:#fff;padding:4px 6px;border-radius:3px;font-size:11px;white-space:pre;z-index:5;font-weight:normal}
-details.more summary{cursor:pointer;color:#1f5fa8}details.more>.filters{margin:4px 0}.cp{position:fixed;top:60px;right:16px;background:#fff;border:1px solid #999;border-radius:4px;padding:8px;z-index:9;max-height:75vh;overflow:auto;box-shadow:0 2px 8px rgba(0,0,0,.2)}.cpl{margin:6px 0}.cpl label{display:block;white-space:nowrap}
+ul.hdr{margin:2px 0 8px;padding-left:18px;color:#444;font-size:12px}ul.hdr li{margin:1px 0}.filters{flex-wrap:wrap}.cp{position:fixed;top:60px;right:16px;background:#fff;border:1px solid #999;border-radius:4px;z-index:9;box-shadow:0 2px 8px rgba(0,0,0,.2)}.cph{position:sticky;top:0;background:#f4f6f9;border-bottom:1px solid #ccc;padding:6px 8px}.cph button{margin-right:4px}.cpl{max-height:55vh;overflow:auto;padding:6px 8px}a.osum-n{color:#b3261e;font-weight:600}.rsel{position:relative}#b-rq{min-width:260px}.rl{position:absolute;left:0;top:100%;z-index:8;background:#fff;border:1px solid #999;list-style:none;margin:0;padding:0;max-height:300px;overflow:auto;min-width:340px;box-shadow:0 2px 6px rgba(0,0,0,.2)}.rl li{padding:3px 6px;cursor:pointer;white-space:nowrap}.rl li.on,.rl li:hover{background:#e8f0fb}.cpl label{display:block;white-space:nowrap}
 </style></head><body>
-<h1>RDS backup compliance - account \($D | accounts_label)</h1>
-<div class=\"sub\">Generated \($now | utc) / \($now | loc) &middot; \(ruletxt | @html)</div>
+<h1 title=\"\($D | accounts_label | @html)\">RDS backup compliance · \($D | [.accounts[].account] | unique | length) account\(if ($D | [.accounts[].account] | unique | length) == 1 then "" else "s" end)</h1>
+\(hdrhtml($R))
 <div class=\"tabs\"><button data-t=\"comp\" class=\"on\">Compliance</button><button data-t=\"bk\">Backups</button></div>
 <div id=\"comp\" class=\"tab on\"></div><div id=\"bk\" class=\"tab\"></div>
 <script id=\"data\" type=\"application/json\">\($json)</script>
