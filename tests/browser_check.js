@@ -90,6 +90,23 @@ const sleep = ms => new Promise(x => setTimeout(x, ms));
   const cord = await g.evaluate(() => [...document.querySelectorAll('#comp .filters label')].map(l => (l.querySelector('select,input') || {}).id).filter(Boolean).join());
   const gx = await g.evaluate(() => !!document.querySelector('#comp label #f-global'));
   ok(!(await g.$('details.more')) && cord === ['f-acct', 'f-region', 'f-type', 'f-engine'].concat(gx ? ['f-global', 'f-role'] : [], ['f-status', 'f-show']).join(), 'compliance filters in order (' + cord + ')');
+  // v1.5.3: Account filter / per-region / backups columns show name (number); value stays the id
+  const anamed = DD.accounts.filter(a => a.name);
+  ok(await g.evaluate(() => [...document.querySelectorAll('#f-acct option')].filter(o => o.value).every(o => {
+    const a = JSON.parse(document.getElementById('data').textContent).accounts.find(x => x.account === o.value);
+    const want = a && a.name ? a.name + ' (' + a.account + ')' : (a && a.profile ? a.account + ' (' + a.profile + ')' : o.value);
+    return o.value && o.textContent === want;
+  })), 'f-acct labels are name (number) / number (profile)');
+  if (anamed.length) {
+    ok(await g.evaluate(id => { const o = [...document.querySelectorAll('#f-acct option')].find(x => x.value === id);
+      return o && o.textContent.includes('(' + id + ')') && o.textContent !== id; }, anamed[0].account), 'f-acct named account shows name (number)');
+    ok(await g.evaluate(lab => [...document.querySelectorAll('#regions tbody tr td:first-child')].some(t => t.textContent === lab),
+      anamed[0].name + ' (' + anamed[0].account + ')'), 'per-region Account column shows name (number)');
+  }
+  ok(await g.evaluate(() => { const n = JSON.parse(document.getElementById('data').textContent).rows.find(r => r.account_name);
+    if (!n) return true; document.getElementById('f-q').value = n.account_name; document.getElementById('f-q').dispatchEvent(new Event('input'));
+    return [...document.querySelectorAll('#main tbody tr.res')].length > 0; }), 'search matches account_name');
+  await g.click('#f-reset'); await sleep(50);
   const hd = await g.evaluate(() => ['h-daily', 'h-weekly', 'h-monthly'].map(i => (document.getElementById(i) || {}).textContent || '').concat(document.querySelector('h1').textContent, document.querySelector('h1').title));
   ok(hd[0].startsWith('Daily: last ' + DD.cfg.daily + ' days, newest within ' + DD.cfg.daily_max_age_h + 'h') && new RegExp('retention ' + DD.cfg.weekly_retention_days + 'd').test(hd[1]) && new RegExp('last ' + DD.cfg.monthly + ' months, retention ' + DD.cfg.monthly_retention_days + 'd').test(hd[2]), 'header bullets from config');
   ok(/^RDS backup compliance · \d+ accounts?$/.test(hd[3]) && DD.accounts.every(a => hd[4].includes(a.account)) && !!(await g.$('#h-yearly')) === (DD.cfg.yearly > 0), 'title: N accounts, ids in tooltip, yearly bullet only when on');
@@ -243,6 +260,11 @@ const sleep = ms => new Promise(x => setTimeout(x, ms));
     ok(!(await g.$('#b-audit')) && !(await g.$('#b-orphb')), 'old-manual / orphaned buttons removed');
     const bord = await g.evaluate(() => [...document.querySelectorAll('#bk .filters label')].map(l => (l.querySelector('select,input') || {}).id).join());
     ok(bord === 'b-acct,b-region,b-rq,b-engine,b-kind,b-sched,b-period,b-src', 'backups filters in order (' + bord + ')');
+    ok(await g.evaluate(() => [...document.querySelectorAll('#b-acct option')].filter(o => o.value).every(o => {
+      const a = JSON.parse(document.getElementById('data').textContent).accounts.find(x => x.account === o.value);
+      const want = a && a.name ? a.name + ' (' + a.account + ')' : (a && a.profile ? a.account + ' (' + a.profile + ')' : o.value);
+      return o.textContent === want;
+    })), 'b-acct labels are name (number) / number (profile)');
     // resource search: type narrows the list, Enter selects
     const tgtR = await g.evaluate(() => { const o = [...document.getElementById('b-res').options].filter(x => x.value !== '*all*')[1]; return [o.value, o.textContent.split(' (')[0]]; });
     await g.click('#b-rq'); await sleep(30); const nAll = await g.evaluate(() => document.querySelectorAll('#b-rl li[data-v]').length);
@@ -265,7 +287,12 @@ const sleep = ms => new Promise(x => setTimeout(x, ms));
     ok(/^account_id,region,identifier,type,kind,snapshot_or_recovery_point,created_utc,created_ist,age_days,/.test(ac[0]) && ac.length === ar.rows.length + 1 && ac.slice(1).every(l => l.includes(',manual,')), 'all mode csv = filtered table (' + ac.length + ')');
     ok(ac.every(l => l.split(',').length === 18), 'csv keeps all 18 columns in manual-only view');
     await sel('b-region', ''); const accts = [...new Set(o90.rows.map(r => r.acct))];
-    await sel('b-acct', accts[0]); let aa = await av(); ok(aa.rows.every(r => r.acct === accts[0]), 'all mode account filter');
+    await sel('b-acct', accts[0]); let aa = await av();
+    ok(aa.rows.every(r => r.acct === accts[0] || r.acct.includes('(' + accts[0] + ')')), 'all mode account filter');
+    ok(await g.evaluate(id => { const a = JSON.parse(document.getElementById('data').textContent).accounts.find(x => x.account === id);
+      if (!a || !a.name) return true;
+      return [...document.querySelectorAll('#b-out table[data-sec="all"] tbody tr td:first-child')].every(t => t.textContent === a.name + ' (' + id + ')');
+    }, accts[0]), 'backups Account column shows name (number)');
     await sel('b-acct', '');
     if (shots) await g.screenshot({path: path.join(shots, 'backups_all_old_manual.png'), fullPage: true});
     await sel('b-kind', ''); await sel('b-period', '12');

@@ -1,6 +1,6 @@
 # rds-backup-compliance
 
-`rds_backup_compliance_report.sh` v1.5.2 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
+`rds_backup_compliance_report.sh` v1.5.3 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
 
 ## Install (CloudShell)
 
@@ -202,6 +202,10 @@ tests/validate_cli.py            # checks that every field read exists in the bu
 
 ## Changelog
 
+- **1.5.3**
+  - HTML Account filter (`f-acct` / `b-acct`): option labels show `name (number)` from the report's accounts (fallback `number (profile)` when no name, else the number). The filter **value** stays the account id, so filtering is unchanged.
+  - Per-region table Account column and Backups-tab Account column use the same `name (number)` label.
+  - Compliance search also matches `account_name`.
 - **1.5.2**
   - `replica-exempt-engines` (conf / `--replica-exempt-engines`): comma-separated engine globs. Role=`replica` or Role=`secondary` matching those engines is always COMPLIANT (daily/weekly/monthly/yearly all N/A). Empty = today's daily-only for those roles. Example: `oracle-*,aurora-*`.
   - Account names on reports: config `123456789012 = friendly-name` (wins), else IAM account alias (`iam:ListAccountAliases`), else the number. Shown as `name (number)` in the header, TXT, HTML; CSV gains an `account_name` column at the end. No name set = number only. Optional permission; AccessDenied is silent.

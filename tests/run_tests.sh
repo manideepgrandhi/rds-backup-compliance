@@ -29,7 +29,7 @@ rowt() { jq -e --arg i "$2" ".rows[] | select(.identifier == \$i) | $3" "$OUT/$1
 ncalls() { wc -l <"$MOCK_LOG" 2>/dev/null | tr -d ' ' || echo 0; }
 
 echo "== CLI"
-t version 0 fleet --version; has version out '1\.5\.2'
+t version 0 fleet --version; has version out '1\.5\.3'
 t help 0 fleet --help; has help out 'list-recovery-points-by-backup-vault'; has help out 'weekly-days'
 t badopt 1 fleet --nope
 t multifmt 1 fleet -P prod -r us-east-1 -F csv,html
@@ -410,8 +410,19 @@ hasnt an_deny err 'AccessDenied|list-account-aliases'
 # save-data carries name
 jqt savedata '.accounts[0].name == "prod-core"' "$SD"
 
+echo "== v1.5.3: HTML account filter / per-region / backups labels"
+# Ensure embedded page JS builds name (number) labels (static string + runtime via browser_check when Chrome is present)
+chk "page js: alabel helper present" grep -qF 'var alabel = function' "$HERE/../lib/backup_page.js"
+chk "page js: f-acct uses alabel" grep -qE "opt\('f-acct', 'Account'.*alabel" "$HERE/../lib/backup_page.js"
+chk "page js: b-acct uses alabel" grep -qE "bopt\('b-acct', 'Account'.*alabel" "$HERE/../lib/backup_page.js"
+chk "page js: hay includes account_name" grep -qF 'r.account_name, ST(r).plans' "$HERE/../lib/backup_page.js"
+chk "page js: per-region uses alabel" grep -qF 'line(esc(alabel(p[0]))' "$HERE/../lib/backup_page.js"
+chk "page js: backups Account column uses alab" grep -qF 'esc(alab(x.r))' "$HERE/../lib/backup_page.js"
+chk "version is 1.5.3" grep -qF 'SCRIPT_VERSION="1.5.3"' "$SCRIPT"
+
 echo "== browser"
 if command -v node >/dev/null && [[ -x "${CHROME:-/usr/bin/google-chrome}" ]] && node -e 'require("puppeteer-core")' 2>/dev/null; then
+
     LH=("$HTML" "$OUT/all accounts.html" "$OUT/dup ids.html"); i=0
     for h in "${LH[@]:0:2}"; do
         cmp=""; [[ "$h" == "$HTML" ]] && cmp="$CSV"
