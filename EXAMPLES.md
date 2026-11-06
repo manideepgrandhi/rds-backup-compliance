@@ -118,6 +118,15 @@ In the HTML: Compliance tab -> Show "Retention mismatch" / "Excess backups" / "H
 
 Cross-tab links: click a resource on the Backups tab to open its Compliance row (expanded and highlighted), or click `backups` on a Compliance row to see its backups. Browser Back returns to where you were. Bookmarkable: `report.html#view=comp&id=111111111111%7Cus-east-1%7Corders-aurora-pg15`.
 
+## v1.5.4
+
+`oracle-*` (or any non-Aurora glob) no longer blanks daily counts on Aurora global secondaries. Global DB members list together in every format (primary then secondary).
+
+```bash
+# Oracle replicas only: Aurora secondaries still show daily have/need
+./rds_backup_compliance_report.sh -A --replica-exempt-engines oracle-* -F html,csv -o ./out
+```
+
 ## v1.5.3
 
 HTML Account filters and the Per-region / Backups Account columns show `name (number)` when an account name is set (same as the main table and TXT header). Search also matches the account name. No new conf keys.

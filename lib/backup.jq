@@ -43,12 +43,12 @@ def rmis_note($cl; $ret): exp_ret($cl) as $e
 def dret: ($cfg.daily_retention_days // $cfg.daily);
 def over_cut($ret): $now - ((($ret // 0) + rtol) * 86400);
 
-# v1.5.2: Role=replica/secondary engines matching replica-exempt-engines -> all schedules N/A (always COMPLIANT)
+# v1.5.2/1.5.4: Role=replica/secondary engines matching replica-exempt-engines -> all schedules N/A (always COMPLIANT).
+# v1.5.4: eng_exempt compares the engine against each glob (not against itself).
 def glob2re: "^" + (gsub("\\*"; "`") | gsub("\\."; "\\.") | gsub("`"; ".*")) + "$";
 def eng_exempt($eng):
   (($eng // "") | ascii_downcase) as $e
-  | (($cfg.replica_exempt_engines // []) | length) > 0
-    and any($cfg.replica_exempt_engines[]?; ($e | test(. | ascii_downcase | glob2re)));
+  | [ ($cfg.replica_exempt_engines // [])[]? | (ascii_downcase | glob2re) as $re | select($e | test($re)) ] | length > 0;
 def role_exempt($r): ($r.global_role == "secondary" or $r.global_role == "replica") and eng_exempt($r.engine);
 def alab($a): if ($a.name // "") != "" then "\($a.name) (\($a.account))" else "\($a.account)" end;
 def accounts_label: [ .accounts[] | alab(.) ] | join(", ");
@@ -237,7 +237,14 @@ def crow: . as $r | [.account_id, .region, .identifier, .type, .engine, .engine_
 def cstr: map(if . == null then "" else tostring end);
 def csvrow: map(if . == null then "" else tostring end
                 | if test("^[=+@-]") then "'" + . else . end) | @csv;   # formula-injection guard
-def rows: anmap as $an | [ .resources[] | evaluate | . + {account_name: ($an[.account_id] // "")} ] | sort_by(.account_id, .region, .identifier);
+def rows: anmap as $an | [ .resources[] | evaluate | . + {account_name: ($an[.account_id] // "")} ]
+  | sort_by(
+      .account_id,
+      (if (.global_cluster // "") != "" and .global_cluster != "unknown" then .global_cluster else .identifier end),
+      (if (.global_cluster // "") != "" and .global_cluster != "unknown" then (if .global_role == "primary" then 0 else 1 end) else 0 end),
+      .region,
+      .identifier
+    );
 def totals($rs): {resources: ($rs | length),
   compliant: ([ $rs[] | select(.status == "COMPLIANT") ] | length),
   non_compliant: ([ $rs[] | select(.status == "NON-COMPLIANT") ] | length),

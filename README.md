@@ -1,6 +1,6 @@
 # rds-backup-compliance
 
-`rds_backup_compliance_report.sh` v1.5.3 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
+`rds_backup_compliance_report.sh` v1.5.4 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
 
 ## Install (CloudShell)
 
@@ -202,6 +202,9 @@ tests/validate_cli.py            # checks that every field read exists in the bu
 
 ## Changelog
 
+- **1.5.4**
+  - Fix `replica-exempt-engines`: engine globs are matched against each configured pattern (v1.5.2 incorrectly treated every Role=replica/secondary as exempt whenever the list was non-empty). `oracle-*` now leaves Aurora secondaries on daily-only evaluation; `aurora-*` / `oracle-*,aurora-*` still exempt as documented.
+  - Sort: within an account, members of the same Aurora global database sit together (primary, then secondary), then region and identifier. Standalone resources keep alphabetical order among themselves.
 - **1.5.3**
   - HTML Account filter (`f-acct` / `b-acct`): option labels show `name (number)` from the report's accounts (fallback `number (profile)` when no name, else the number). The filter **value** stays the account id, so filtering is unchanged.
   - Per-region table Account column and Backups-tab Account column use the same `name (number)` label.
