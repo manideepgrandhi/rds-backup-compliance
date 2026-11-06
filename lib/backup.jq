@@ -43,6 +43,17 @@ def rmis_note($cl; $ret): exp_ret($cl) as $e
 def dret: ($cfg.daily_retention_days // $cfg.daily);
 def over_cut($ret): $now - ((($ret // 0) + rtol) * 86400);
 
+# v1.5.2: Role=replica/secondary engines matching replica-exempt-engines -> all schedules N/A (always COMPLIANT)
+def glob2re: "^" + (gsub("\\*"; "`") | gsub("\\."; "\\.") | gsub("`"; ".*")) + "$";
+def eng_exempt($eng):
+  (($eng // "") | ascii_downcase) as $e
+  | (($cfg.replica_exempt_engines // []) | length) > 0
+    and any($cfg.replica_exempt_engines[]?; ($e | test(. | ascii_downcase | glob2re)));
+def role_exempt($r): ($r.global_role == "secondary" or $r.global_role == "replica") and eng_exempt($r.engine);
+def alab($a): if ($a.name // "") != "" then "\($a.name) (\($a.account))" else "\($a.account)" end;
+def accounts_label: [ .accounts[] | alab(.) ] | join(", ");
+def anmap: (([.accounts[] | {key: .account, value: (.name // "")}] | from_entries) + ($acct_names // {}));
+
 # schedule check. $cand: candidate scheduled day numbers, newest first. $pts: epochs. $tol: days either side.
 # A day whose tolerance window has not closed yet and has no point is pending (not expected yet).
 # $n: number of days expected (null = all candidates above $low). Days on or before $cday (creation day) are never expected.
@@ -65,7 +76,8 @@ def evaluate:
   | ($auto | map(.created_epoch) | max) as $last_auto
   | ([ $r.snapshots[]? | select(.kind == "backup" and rp_live and (.expires_epoch == null or .expires_epoch > $now))
        | . + {class: rp_class, ret: rp_ret} ]) as $rps
-  | (if $r.snap_ok == false then {st: "UNKNOWN", have: null, need: $cfg.daily, gap: "snapshots unreadable", missing: []}
+  | (if role_exempt($r) then {st: "N/A", have: null, need: null, gap: "", missing: []}
+     elif $r.snap_ok == false then {st: "UNKNOWN", have: null, need: $cfg.daily, gap: "snapshots unreadable", missing: []}
      else sched([ range(0; $cfg.daily + 2) | $today - . ]; [ $auto[].created_epoch ]; 0; $cfg.daily; null; $cday) as $s
        | (if $last_auto == null then null else (($now - $last_auto) / 3600 | r1) end) as $h
        | [ (if ($r.retention // 0) < $cfg.daily then "daily: retention \($r.retention // 0)d < \($cfg.daily)d" else empty end),
@@ -120,6 +132,7 @@ def evaluate:
       | (if .continuous then {counted: false, reason: "continuous backup (point-in-time restore), not a snapshot: never counted"}
          elif (.status == "COMPLETED" or .status == "AVAILABLE") | not then {counted: false, reason: "status \(.status // "unknown"): only COMPLETED / AVAILABLE count"}
          elif .expires_epoch != null and .expires_epoch <= $now then {counted: false, reason: "expired"}
+         elif role_exempt($r) then {counted: false, reason: "not evaluated: replica/secondary exempt (replica-exempt-engines)"}
          elif $wmy.weekly.st == "N/A" then {counted: false, reason: "not evaluated: global secondary / replica (daily only)"}
          elif $wmy.weekly.st == "UNKNOWN" then {counted: false, reason: "not evaluated: recovery points unreadable"}
          elif $cl == "mismatch" then {counted: false, reason: (if $ret == null then "no expiry (never expires): not weekly or monthly" + (if ($cfg.yearly // 0) > 0 then "" else "; yearly check is off" end)
@@ -211,7 +224,7 @@ def chead: ["account_id","region","identifier","type","engine","engine_version",
     + [ PER[] as $k | "\($k)_status", "\($k)_found", "\($k)_expected", "\($k)_target", "\($k)_missing", "\($k)_full_on" ]
     + ["status","not_yet_due","gaps","warnings","weekly_retention","monthly_retention","backup_plans",
        "retention_mismatch_count","retention_mismatch","excess_daily","excess_weekly","excess_monthly","excess",
-       "over_retention_count","over_retention","counted_in_compliance_pct","pitr_enabled","pitr_since_utc"];
+       "over_retention_count","over_retention","counted_in_compliance_pct","pitr_enabled","pitr_since_utc","account_name"];
 def pcols($c): if $c.st == "N/A" or $c.st == "UNKNOWN" or $c.st == "OFF" or $c.have == null then [$c.st, null, null, null, "", ""]
   else [$c.st, $c.have, $c.need, ($c.target // $c.need), ([ ($c.missing // [])[] | dwk ] | join("; ")), ($c.full_on_iso // "")] end;
 def crow: . as $r | [.account_id, .region, .identifier, .type, .engine, .engine_version, .global_cluster, .global_role, .retention_days,
@@ -220,11 +233,11 @@ def crow: . as $r | [.account_id, .region, .identifier, .type, .engine, .engine_
            + [.status, .not_yet_due, .gaps, .warnings, .settings.weekly_retention, .settings.monthly_retention, .settings.plans,
               .retention_mismatch_count, .retention_mismatch, .excess_counts.daily, .excess_counts.weekly, .excess_counts.monthly, .excess,
               .over_retention_count, .over_retention, (if .status == "NOT YET DUE" then "no" else "yes" end),
-              (if .pitr.on then "yes" else "no" end), .pitr.since];
+              (if .pitr.on then "yes" else "no" end), .pitr.since, (.account_name // "")];
 def cstr: map(if . == null then "" else tostring end);
 def csvrow: map(if . == null then "" else tostring end
                 | if test("^[=+@-]") then "'" + . else . end) | @csv;   # formula-injection guard
-def rows: [ .resources[] | evaluate ] | sort_by(.account_id, .region, .identifier);
+def rows: anmap as $an | [ .resources[] | evaluate | . + {account_name: ($an[.account_id] // "")} ] | sort_by(.account_id, .region, .identifier);
 def totals($rs): {resources: ($rs | length),
   compliant: ([ $rs[] | select(.status == "COMPLIANT") ] | length),
   non_compliant: ([ $rs[] | select(.status == "NON-COMPLIANT") ] | length),
@@ -240,8 +253,7 @@ def ruletxt: "daily: each of the last \($cfg.daily) days (RDS automated, last <=
   + " (retention \($cfg.weekly_retention_days // 30)d, counted \($cfg.weekly_min_days)-\($cfg.weekly_max_days)d)"
   + " · monthly first \(wdname($cfg.monthly_weekday // 0)) x\($cfg.monthly) (retention \($cfg.monthly_retention_days // 365)d, counted \($cfg.monthly_min_days // ($cfg.weekly_max_days + 1))-\($cfg.monthly_max_days)d)"
   + (if yon then " · yearly x\($cfg.yearly)" else "" end)
-  + " · daily retention \(dret)d · retention ±\(rtol)d · schedule ±\($cfg.tolerance_days // 1)d, UTC dates · global secondaries: daily only";
-def accounts_label: [ .accounts[].account ] | join(", ");
+  + " · daily retention \(dret)d · retention ±\(rtol)d · schedule ±\($cfg.tolerance_days // 1)d, UTC dates · global secondaries: daily only" + (if ($cfg.replica_exempt_engines // []) | length > 0 then " · replica-exempt-engines \($cfg.replica_exempt_engines | join(",")): always COMPLIANT" else "" end);
 # v1.5.1 page header: one bullet per rule, every value from $cfg; tolerances / counted ranges in ⓘ tips
 def htip($t): " <span class=\"ti\" tabindex=\"0\" title=\"\($t | @html)\">&#9432;</span>";
 def hdrhtml($R):
@@ -256,6 +268,7 @@ def hdrhtml($R):
   + "<li id=\"h-monthly\">Monthly: first \(wdname($cfg.monthly_weekday // 0)), last \($cfg.monthly) months, retention \($cfg.monthly_retention_days // 365)d"
     + htip("Counted when retention is \($mmin)-\($cfg.monthly_max_days)d; retention ±\(rtol)d; schedule ±\($cfg.tolerance_days // 1)d; dates in UTC") + "</li>"
   + (if yon then "<li id=\"h-yearly\">Yearly: last \($cfg.yearly)</li>" else "" end)
+  + (if ($cfg.replica_exempt_engines // []) | length > 0 then "<li id=\"h-exempt\">Role=replica/secondary matching \($cfg.replica_exempt_engines | join(",")): always COMPLIANT</li>" else "" end)
   + (if [$R[] | select(.global_role == "secondary" or .global_role == "replica")] | length > 0 then "<li id=\"h-global\">Global secondaries: daily only</li>" else "" end)
   + "</ul>";
 
@@ -333,7 +346,7 @@ def osumtxt($t): "\($t.orphaned) orphaned snapshot\(if $t.orphaned == 1 then "" 
       "Resources \($t.resources): compliant \($t.compliant), non-compliant \($t.non_compliant), not yet due \($t.not_yet_due), unknown \($t.unknown)",
       "",
       ([ "ACCOUNT", "REGION", "IDENTIFIER", "TYPE", "ROLE", "AGE_DAYS", "DAILY", "WEEKLY", "MONTHLY" ] + ycols(["YEARLY"]) + [ "STATUS", "GAPS", "WARNINGS" ] | join("\t")),
-      ($R[] | [ .account_id, .region, .identifier, .type, .global_role, (.age_days // "" | tostring), cell(.daily), cell(.weekly), cell(.monthly) ] + ycols([cell(.yearly)])
+      ($R[] | [ (if (.account_name // "") != "" then "\(.account_name) (\(.account_id))" else .account_id end), .region, .identifier, .type, .global_role, (.age_days // "" | tostring), cell(.daily), cell(.weekly), cell(.monthly) ] + ycols([cell(.yearly)])
               + [ .status, ([.gaps, .not_yet_due] | map(select(. != "")) | join("; ")),
                  ([ .warnings, (.retention_mismatch // "" | if . != "" then "retention mismatch: " + . else . end),
                     (.excess // "" | if . != "" then "excess backups: " + . else . end),

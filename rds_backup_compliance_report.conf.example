@@ -34,3 +34,9 @@
 # tz=Asia/Kolkata
 # aws-timeout=30
 # max-attempts=5
+# Engines whose Role=replica or Role=secondary rows are always COMPLIANT (no backup checks).
+# Comma-separated globs. Empty = today's daily-only for those roles. Examples: oracle-* | aurora-* | oracle-*,aurora-*
+# replica-exempt-engines=oracle-*,aurora-*
+# Account names (v1.5.2; shown as "name (number)"; otherwise the IAM account alias, otherwise the number)
+# 111111111111 = prod-payments
+# 222222222222 = nonprod-shared

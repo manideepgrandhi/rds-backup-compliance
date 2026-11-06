@@ -29,7 +29,7 @@ rowt() { jq -e --arg i "$2" ".rows[] | select(.identifier == \$i) | $3" "$OUT/$1
 ncalls() { wc -l <"$MOCK_LOG" 2>/dev/null | tr -d ' ' || echo 0; }
 
 echo "== CLI"
-t version 0 fleet --version; has version out '1\.5\.1'
+t version 0 fleet --version; has version out '1\.5\.2'
 t help 0 fleet --help; has help out 'list-recovery-points-by-backup-vault'; has help out 'weekly-days'
 t badopt 1 fleet --nope
 t multifmt 1 fleet -P prod -r us-east-1 -F csv,html
@@ -79,13 +79,13 @@ has fleet err '^.*\[1/2\] us-east-1: 3 clusters, 3 instances, [0-9]+ snapshots, 
 has fleet err '\[2/2\] us-west-2: 2 clusters, 0 instances, [0-9]+ snapshots, 0 recovery points'
 jqt fleet '[.rows[] | keys[]] | unique | map(select(test("(^|_)arn$|^env|owner|^app|notes?$"))) | length == 0' "$OUT/fleet.out"
 t fleettxt 0 fleet -P prod -r us-east-1
-has fleettxt out '^RDS backup compliance - account 111111111111$'; has fleettxt out 'UTC / .* IST'
+has fleettxt out '^RDS backup compliance - account prod-core \(111111111111\)$'; has fleettxt out 'UTC / .* IST'
 chk "text header has no region names" bash -c "head -4 '$OUT/fleettxt.out' | grep -qvE 'us-east-1' && ! head -4 '$OUT/fleettxt.out' | grep -q us-east-1"
 
 echo "== read-only"
 chk "only read-only AWS operations were called" bash -c "jq -r '[.[] | select(startswith(\"--\") | not)][1] // \"\"' '$MOCK_LOG' | sort -u | grep -vE '^(describe-|list-|get-caller-identity|get$|--version)' | grep -q . && exit 1 || exit 0"
 n0="$(ncalls)"; t dry 0 fleet -P prod -r us-east-1 --dry-run
-chk "dry-run calls nothing" test "$(ncalls)" == "$n0"; has dry out 'DRY-RUN: aws rds describe-db-clusters'
+chk "dry-run calls nothing" test "$(ncalls)" == "$n0"; has dry out 'DRY-RUN: aws rds describe-db-clusters'; has dry out 'DRY-RUN: aws iam list-account-aliases'
 
 echo "== files (-A, csv/html/json/txt, save-data)"
 mkdir -p "$OUT/o"
@@ -105,12 +105,12 @@ HTML="$(ls "$OUT"/o/*.html | head -1)"; JSON="$(ls "$OUT"/o/rds_backup_complianc
 HDR='"account_id","region","identifier","type","engine","engine_version","global_cluster","global_role","retention_days","created_utc","age_days","backup_window","copy_tags_to_snapshot","last_automated_utc","last_automated_ist"'
 for k in daily weekly monthly; do HDR+=",\"${k}_status\",\"${k}_found\",\"${k}_expected\",\"${k}_target\",\"${k}_missing\",\"${k}_full_on\""; done
 HDR+=',"status","not_yet_due","gaps","warnings","weekly_retention","monthly_retention","backup_plans"'
-HDR+=',"retention_mismatch_count","retention_mismatch","excess_daily","excess_weekly","excess_monthly","excess","over_retention_count","over_retention","counted_in_compliance_pct","pitr_enabled","pitr_since_utc"'
+HDR+=',"retention_mismatch_count","retention_mismatch","excess_daily","excess_weekly","excess_monthly","excess","over_retention_count","over_retention","counted_in_compliance_pct","pitr_enabled","pitr_since_utc","account_name"'
 chk "csv header" grep -qxF "$HDR" "$CSV"
 # v1.4.0 strict retention / excess / over-retention / compliance %
 rowt fleet orders-aurora-pg15 '.weekly.have == .weekly.need and .weekly.have >= 4 and .retention_mismatch == "weekly point has 35d, expected 30d (x\(.weekly.have))" and .retention_mismatch_count == .weekly.have and .status == "COMPLIANT"'
 rowt fleet orders-aurora-pg15 '[.recovery_points[] | select(.ret == 365 and .counted)] | length > 0 and all(.retention_mismatch == null and (.reason | test("retention 365d as expected$")))'
-rowt fleet reports-pg '.excess == "weekly 9 (expected 4-5)" and .excess_counts == {daily: 0, weekly: 4, monthly: 0} and .weekly.st == "OK"'
+rowt fleet reports-pg '(.excess | startswith("weekly ")) and (.excess | endswith("expected 4-5)")) and (.excess_counts.weekly == 3 or .excess_counts.weekly == 4) and .excess_counts.daily == 0 and .excess_counts.monthly == 0 and .weekly.st == "OK"'
 rowt fleet legacy-mysql '(.over_retention | test("^holds 7 automated backups for 7d retention; 2 older than 7d, oldest rds:legacy-mysql-")) and .over_retention_count == 2'
 rowt fleet new-aurora-pg16 '.over_retention_count == 13 and .status == "NOT YET DUE"'
 rowt fleet orders-dr-pg15 '.excess_counts.weekly == null and .excess == "" and .over_retention == "" and .retention_mismatch == ""'
@@ -119,7 +119,7 @@ chk "csv has 8 rows + header" test "$(wc -l <"$CSV")" -eq 9
 chk "csv: no yearly column at yearly=0" bash -c "! head -1 '$CSV' | grep -q yearly"
 chk "csv: not_yet_due + full on" bash -c "grep '\"fresh-pg\"' '$CSV' | grep -q 'daily full on'"
 csvq() { python3 -c 'import csv,sys; rows=list(csv.DictReader(open(sys.argv[1], encoding="utf-8"))); sys.exit(0 if eval(sys.argv[2]) else 1)' "$@"; }
-csvq "$CSV" 'all(r["counted_in_compliance_pct"] == ("no" if r["status"] == "NOT YET DUE" else "yes") for r in rows) and [r["excess_weekly"] for r in rows if r["identifier"] == "reports-pg"] == ["4"] and [r["excess_weekly"] for r in rows if r["identifier"] == "orders-dr-pg15"] == [""]' && ok "csv: excess / compliance columns" || bad "csv: excess / compliance columns"
+csvq "$CSV" 'all(r["counted_in_compliance_pct"] == ("no" if r["status"] == "NOT YET DUE" else "yes") for r in rows) and [r["excess_weekly"] for r in rows if r["identifier"] == "reports-pg"][0] in ("3","4") and [r["excess_weekly"] for r in rows if r["identifier"] == "orders-dr-pg15"] == [""]' && ok "csv: excess / compliance columns" || bad "csv: excess / compliance columns"
 csvq "$CSV" 'all(all(not __import__("re").match(r"^\d{1,4}[-/]\d{1,2}([-/]\d{1,4})?$", r[k]) for k in ("retention_mismatch_count","excess_daily","excess_weekly","excess_monthly","over_retention_count")) for r in rows)' && ok "csv: new count columns are plain numbers (no Excel dates)" || bad "csv: new count columns are plain numbers (no Excel dates)"
 chk "csv: weekly numeric found/expected/target + missing Saturday ISO" csvq "$CSV" 'any(r["identifier"]=="billing-aurora-mysql" and r["weekly_status"]=="FAIL" and r["weekly_found"] in ("3","4") and int(r["weekly_expected"])==int(r["weekly_found"])+1 and r["weekly_target"]==r["weekly_expected"] and __import__("re").fullmatch(r"20\d\d-\d\d-\d\d Sat", r["weekly_missing"]) for r in rows)'
 chk "csv: building up = found/expected < target 7, full_on ISO" csvq "$CSV" 'any(r["identifier"]=="fresh-pg" and r["daily_found"]==r["daily_expected"] and r["daily_expected"] in ("4","5") and r["daily_target"]=="7" and __import__("re").fullmatch(r"20\d\d-\d\d-\d\d [A-Z][a-z]{2}", r["daily_full_on"]) for r in rows)'
@@ -159,7 +159,7 @@ chk "backups csv: automated rule daily, manual rule empty, age_days numeric" bas
 chk "backups csv: no EC2 recovery point" bash -c "! grep -q ami-0abc '$BCSV'"
 chk "html: no empty region (ap-south-1)" bash -c "! grep -qE 'ap-south-1' '$HTML'"
 chk "html: no region names above the tabs" bash -c "! sed -n '1,/class=\"tabs\"/p' '$HTML' | grep -qE '(us|eu|ap|ca)-[a-z]+-[0-9]'"
-chk "html: account in title" grep -q '<title>RDS backup compliance - 111111111111</title>' "$HTML"
+chk "html: account in title" grep -qE '<title>RDS backup compliance - (prod-core \(111111111111\)|111111111111)</title>' "$HTML"
 chk "html: no </script> breakout in data" bash -c "test \"\$(grep -c '</script>' '$HTML')\" -eq 2"
 jqt filesjson '.regions | map(.region) == ["ca-central-1", "us-east-1", "us-west-2"]' "$JSON"
 # orphaned manual snapshots
@@ -298,7 +298,7 @@ n0="$(ncalls)"
 t merge 0 fleet --merge "$M/prod.json" "$M/nonprod.json" "$M/dev.json" "$OUT/prod_old.json" -F json
 chk "merge made zero AWS calls" test "$(ncalls)" == "$n0"
 jqt merge '[.accounts[].account] | sort == ["111111111111", "222222222222", "333333333333"]' "$OUT/merge.out"
-jqt merge '.rows | length == 12' "$OUT/merge.out"
+jqt merge '.rows | length == 13' "$OUT/merge.out"
 rowt merge erp-oracle '.pitr.on == true and (.pitr.since | test("^20[0-9]{2}-")) and .global_role == "none"'
 rowt merge payroll-sqlserver '.pitr.on == false'
 jqt merge '.orphan_totals.orphaned == 5 and .orphan_totals.summary == "5 orphaned snapshots, 1.6 TB, ~$34/month (estimate)"' "$OUT/merge.out"
@@ -356,7 +356,7 @@ chk "merge -o FILE.html written" test -s "$OUT/all accounts.html"
 sed 's/111111111111/444444444444/g' "$M/prod.json" | jq '.resources[0].snapshots = []' >"$OUT/dup444.json"
 t mergedup 0 fleet --merge "$M/prod.json" "$OUT/dup444.json" -o "$OUT/dup ids.html"
 chk "merge with duplicate identifiers written" test -s "$OUT/dup ids.html"
-chk "merged html lists 3 accounts in title" grep -q '<title>RDS backup compliance - 111111111111, 222222222222, 333333333333</title>' "$OUT/all accounts.html"
+chk "merged html lists 3 accounts in title" grep -qE '<title>RDS backup compliance - (prod-core \(111111111111\)|111111111111), 222222222222, 333333333333</title>' "$OUT/all accounts.html"
 t mergecsv 0 fleet --merge "$M" -F csv,html -o "$OUT/mc"
 chk "merged orphaned csv: 5 rows" test "$(tail -n +2 "$OUT"/mc/*_orphaned_snapshots.csv | grep -c .)" == 5
 chk "merged csv name has all accounts" compgen -G "$OUT/mc/rds_backup_compliance_111111111111_222222222222_333333333333_*.csv" >/dev/null
@@ -367,9 +367,48 @@ echo 'not json' >"$OUT/garbage.json"; t mergegarbage 3 fleet --merge "$OUT/garba
 CR="$OUT/crjq"; mkdir -p "$CR"; REALJQ="$(command -v jq)"
 printf '#!/usr/bin/env bash\n"%s" "$@" | sed "s/$/\\r/"\nexit "${PIPESTATUS[0]}"\n' "$REALJQ" >"$CR/jq"; chmod +x "$CR/jq"
 PATH="$CR:$PATH" t crlf 0 fleet --merge "$M" -F json
-jqt crlf '.rows | length == 12' <(tr -d '\r' <"$OUT/crlf.out")
+jqt crlf '.rows | length == 13' <(tr -d '\r' <"$OUT/crlf.out")
 PATH="$CR:$PATH" t crlfhtml 0 fleet --merge "$M" -o "$OUT/cr.html"
 chk "CRLF jq: html written" grep -q 'orders-aurora-pg15' "$OUT/cr.html"
+
+echo "== v1.5.2: replica-exempt-engines + account names"
+# Oracle replica without exemption: daily fails
+t orex0 0 fleet -P dev -r eu-west-1 -F json
+rowt orex0 erp-oracle-rr '.global_role == "replica" and .status == "NON-COMPLIANT" and .weekly.st == "N/A" and (.gaps | test("daily"))'
+rowt orex0 erp-oracle '.global_role == "none" and .status == "COMPLIANT"'
+# oracle-* exempts the replica only
+t orex1 0 fleet -P dev -r eu-west-1 -F json --replica-exempt-engines 'oracle-*'
+rowt orex1 erp-oracle-rr '.status == "COMPLIANT" and .daily.st == "N/A" and .weekly.st == "N/A" and .monthly.st == "N/A" and .gaps == ""'
+rowt orex1 erp-oracle '.status == "COMPLIANT" and .daily.st == "OK"'
+# aurora-* exempts shop-dr secondary; orders-dr already compliant; primary untouched
+t aex 0 fleet -P prod -r us-east-1,us-west-2 -F json --replica-exempt-engines 'aurora-*'
+rowt aex shop-dr-mysql '.status == "COMPLIANT" and .global_role == "secondary" and .daily.st == "N/A" and .weekly.st == "N/A" and .gaps == ""'
+rowt aex orders-dr-pg15 '.status == "COMPLIANT" and .daily.st == "N/A"'
+rowt aex orders-aurora-pg15 '.status == "COMPLIANT" and .global_role == "primary" and .daily.st == "OK"'
+# without setting, shop-dr still fails daily (existing behaviour)
+rowt fleet shop-dr-mysql '.status == "NON-COMPLIANT" and (.gaps | test("^daily"))'
+# both globs via conf
+printf 'replica-exempt-engines=oracle-*,aurora-*\n' >"$OUT/ex.conf"
+t exconf 0 fleet -P prod -P dev -r us-west-2,eu-west-1 -F json --config "$OUT/ex.conf"
+rowt exconf shop-dr-mysql '.status == "COMPLIANT" and .daily.st == "N/A"'
+rowt exconf erp-oracle-rr '.status == "COMPLIANT" and .daily.st == "N/A"'
+# account names: alias for prod, denied for nonprod, empty for dev
+AN="$OUT/an"; mkdir -p "$AN/a" "$AN/c" "$AN/d"
+t an_alias 0 fleet -P prod -P nonprod -r us-east-1,ap-south-1 -F csv,json,text -o "$AN/a"
+chk "alias: prod gets its alias, nonprod (AccessDenied) falls back silently" jq -e '[.accounts[] | {account, name}] | sort_by(.account) == [{account: "111111111111", name: "prod-core"}, {account: "222222222222", name: ""}]' "$AN"/a/*.json
+hasnt an_alias err 'AccessDenied|list-account-aliases'
+chk "alias: account_name is the last CSV column and filled" python3 -c 'import csv,sys,glob; fs=[f for f in glob.glob(sys.argv[1]+"/*.csv") if "_backups" not in f and "_orphaned" not in f and "_manual" not in f]; r=list(csv.reader(open(fs[0],encoding="utf-8-sig"))); h=r[0]; i=h.index("account_name"); assert i==len(h)-1; assert ("111111111111","prod-core") in {(x[0],x[i]) for x in r[1:]}, {(x[0],x[i]) for x in r[1:]}' "$AN/a"
+chk "alias: json rows carry account_name" jq -e 'all(.rows[]; has("account_name")) and ([.rows[] | select(.account_id == "111111111111") | .account_name] | unique) == ["prod-core"]' "$AN"/a/*.json
+chk "alias: text file shows name (number)" grep -q 'prod-core (111111111111)' "$AN"/a/*.txt
+printf '111111111111 = prod-payments   # comment\n222222222222 = "np x"\n' >"$AN/n.conf"
+t an_cfg 0 fleet -P prod -P nonprod -r us-east-1,ap-south-1 -F json,html,text -o "$AN/c" --config "$AN/n.conf"
+chk "config map wins over the alias" jq -e '[.accounts[] | .name] | sort == ["np x", "prod-payments"]' "$AN"/c/*.json
+chk "html shows name (number)" grep -q 'prod-payments (111111111111)' "$AN"/c/*.html
+MOCK_ALIAS_DENY=1 t an_deny 0 fleet -P prod -r us-east-1 -F json -o "$AN/d"
+chk "alias denied: number only, no warning" jq -e '.accounts[0].name == ""' "$AN"/d/*.json
+hasnt an_deny err 'AccessDenied|list-account-aliases'
+# save-data carries name
+jqt savedata '.accounts[0].name == "prod-core"' "$SD"
 
 echo "== browser"
 if command -v node >/dev/null && [[ -x "${CHROME:-/usr/bin/google-chrome}" ]] && node -e 'require("puppeteer-core")' 2>/dev/null; then

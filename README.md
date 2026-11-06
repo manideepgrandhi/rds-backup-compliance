@@ -1,6 +1,6 @@
 # rds-backup-compliance
 
-`rds_backup_compliance_report.sh` v1.5.1 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
+`rds_backup_compliance_report.sh` v1.5.2 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
 
 ## Install (CloudShell)
 
@@ -60,6 +60,7 @@ How the role of each resource is decided:
 
 - **Global cluster roles** come from `describe-global-clusters`. The writer is `primary` and the other members are `secondary`. Secondaries are checked for daily backups only, and their weekly, monthly and yearly checks show N/A.
 - **Read replicas** (cross-region cluster replicas and instance read replicas) are checked for daily backups only.
+- **`replica-exempt-engines`** (v1.5.2): engines matching these globs with Role=`replica` or Role=`secondary` skip every backup check and are COMPLIANT. Use for Oracle replicas or Aurora global secondaries that keep no local backups on purpose.
 - **Aurora cluster member instances** are not listed separately.
 - **DocumentDB and Neptune** are excluded.
 
@@ -171,6 +172,7 @@ If one region fails, the other regions still finish. The failed region is listed
 ## Permissions (read-only)
 
 - `sts:GetCallerIdentity`
+- `iam:ListAccountAliases` (optional; for the account name on reports)
 - `ec2:DescribeRegions`
 - `rds:DescribeDBClusters`
 - `rds:DescribeDBInstances`
@@ -200,6 +202,9 @@ tests/validate_cli.py            # checks that every field read exists in the bu
 
 ## Changelog
 
+- **1.5.2**
+  - `replica-exempt-engines` (conf / `--replica-exempt-engines`): comma-separated engine globs. Role=`replica` or Role=`secondary` matching those engines is always COMPLIANT (daily/weekly/monthly/yearly all N/A). Empty = today's daily-only for those roles. Example: `oracle-*,aurora-*`.
+  - Account names on reports: config `123456789012 = friendly-name` (wins), else IAM account alias (`iam:ListAccountAliases`), else the number. Shown as `name (number)` in the header, TXT, HTML; CSV gains an `account_name` column at the end. No name set = number only. Optional permission; AccessDenied is silent.
 - **1.5.1**
   - No "More filters" toggle: every filter is on one row that wraps on narrow screens. The Backups order is Account, Region, Resource, Engine, Backup type, Schedule, Age, Source status. The Compliance order is Account, Region, Type, Engine, Aurora global DB, Global role (only when a global cluster exists), Status, Issue.
   - Resource is a type-to-filter box. It matches identifier, engine, account or region, offers "All clusters and instances", and supports arrows + Enter. Cross-tab links and deep links still select the right resource.

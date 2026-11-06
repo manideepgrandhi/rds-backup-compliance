@@ -10,6 +10,7 @@ MOCK_SCENARIO: fleet (default) | backupdeny (backup list-backup-vaults AccessDen
                | rpquirks (prod vault: weekly points without CalculatedLifecycle and Status AVAILABLE, plus a continuous point)
 MOCK_NOW: fixed epoch for "now".  MOCK_SLEEP: "region=seconds,..." delay per region (completion order in parallel tests).
 MOCK_LOG: append argv as JSONL.  MOCK_DEFAULT_REGION: answer for `aws configure get region`.
+MOCK_ALIAS / MOCK_ALIAS_DENY: override or deny iam list-account-aliases (v1.5.2 account names).
 """
 import json, os, sys
 from datetime import datetime, timedelta, timezone
@@ -56,6 +57,13 @@ if profile == "broken" or profile not in ACCT:
 acct = ACCT[profile]
 if svc == "sts":
     print(json.dumps({"UserId": "AIDAMOCK", "Account": acct, "Arn": "arn:aws:iam::%s:user/dba" % acct})); sys.exit(0)
+if svc == "iam" and op == "list-account-aliases":
+    # prod -> alias, nonprod -> AccessDenied, dev -> empty; MOCK_ALIAS overrides (JSON list); MOCK_ALIAS_DENY forces deny
+    if acct == "222222222222" or os.environ.get("MOCK_ALIAS_DENY"):
+        fail("AccessDenied", "ListAccountAliases", "User: arn:aws:iam::%s:user/dba is not authorized to perform: iam:ListAccountAliases" % acct)
+    if "MOCK_ALIAS" in os.environ:
+        print(json.dumps({"AccountAliases": json.loads(os.environ["MOCK_ALIAS"])})); sys.exit(0)
+    print(json.dumps({"AccountAliases": ["prod-core"] if acct == "111111111111" else []})); sys.exit(0)
 if svc == "ec2" and op == "describe-regions":
     print(json.dumps({"Regions": [{"RegionName": r, "Endpoint": "ec2.%s.amazonaws.com" % r, "OptInStatus": "opt-in-not-required"}
                                   for r in ["us-east-1", "us-west-2", "ap-south-1", "eu-west-1", "ca-central-1"]]})); sys.exit(0)
@@ -83,6 +91,8 @@ FLEET = {
     "333333333333": [
         ("eu-west-1", "dev-aurora-mysql", "cluster", "aurora-mysql", "8.0.mysql_aurora.3.08.0", 400, 7, 7, 4, "all", "all", 0, None, None, [], {"extra_ret": [14]}),
         ("eu-west-1", "erp-oracle", "instance", "oracle-ee", "19.0.0.0.ru-2024-01.rur-2024-01.r1", 900, 7, 7, 5, "all", "all", 0, None, None, [], {"pitr": True}),
+        # replica with no daily backups: NON-COMPLIANT unless replica-exempt-engines=oracle-*
+        ("eu-west-1", "erp-oracle-rr", "instance", "oracle-ee", "19.0.0.0.ru-2024-01.rur-2024-01.r1", 400, 0, 0, 999, [], [], 0, None, None, [], {"replica_of": "erp-oracle"}),
     ],
 }
 rows = [] if SCEN == "empty" else [r for r in FLEET[acct] if r[0] == region]
@@ -200,9 +210,12 @@ if svc == "rds" and op == "describe-db-instances":
             out.append({"DBInstanceIdentifier": r[1] + "-1", "DBInstanceArn": "arn:aws:rds:%s:%s:db:%s-1" % (r[0], acct, r[1]), "Engine": r[3],
                         "EngineVersion": r[4], "DBClusterIdentifier": r[1], "BackupRetentionPeriod": 1, "InstanceCreateTime": iso(created(r))})
         else:
-            out.append({"DBInstanceIdentifier": r[1], "DBInstanceArn": arn(r), "Engine": r[3], "EngineVersion": r[4],
-                        "BackupRetentionPeriod": r[6], "InstanceCreateTime": iso(created(r)), "DBInstanceStatus": "available",
-                        "PreferredBackupWindow": "04:00-04:30", "CopyTagsToSnapshot": r[1] != "legacy-mysql"})
+            d = {"DBInstanceIdentifier": r[1], "DBInstanceArn": arn(r), "Engine": r[3], "EngineVersion": r[4],
+                 "BackupRetentionPeriod": r[6], "InstanceCreateTime": iso(created(r)), "DBInstanceStatus": "available",
+                 "PreferredBackupWindow": "04:00-04:30", "CopyTagsToSnapshot": r[1] != "legacy-mysql"}
+            if opts(r).get("replica_of"):
+                d["ReadReplicaSourceDBInstanceIdentifier"] = opts(r)["replica_of"]
+            out.append(d)
     print(json.dumps({"DBInstances": out})); sys.exit(0)
 if svc == "rds" and op == "describe-global-clusters":
     if SCEN == "globaldeny":

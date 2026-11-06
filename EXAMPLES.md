@@ -117,3 +117,18 @@ In the HTML: Compliance tab -> Show "Retention mismatch" / "Excess backups" / "H
 ## v1.4.1
 
 Cross-tab links: click a resource on the Backups tab to open its Compliance row (expanded and highlighted), or click `backups` on a Compliance row to see its backups. Browser Back returns to where you were. Bookmarkable: `report.html#view=comp&id=111111111111%7Cus-east-1%7Corders-aurora-pg15`.
+
+## v1.5.2
+
+```bash
+# Oracle replicas and Aurora global secondaries: always COMPLIANT (no backup counts)
+./rds_backup_compliance_report.sh -A --replica-exempt-engines oracle-*,aurora-* -F html,csv -o ./out
+
+# Same via conf (also set friendly account names)
+# replica-exempt-engines=oracle-*,aurora-*
+# 111111111111 = prod-core
+# 222222222222 = nonprod-shared
+./rds_backup_compliance_report.sh --config my.conf -A -F html,csv -o ./out
+```
+
+Account names show as `name (number)` when set (config wins over the IAM alias). The compliance CSV ends with an `account_name` column.

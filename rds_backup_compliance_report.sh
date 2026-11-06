@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # rds_backup_compliance_report.sh - backup compliance of Aurora clusters and standalone RDS instances, per account
-# and region. READ-ONLY: rds describe-*, backup list-*, sts get-caller-identity, ec2 describe-regions.
+# and region. READ-ONLY: rds describe-*, backup list-*, sts get-caller-identity, iam list-account-aliases, ec2 describe-regions.
 #
 # Rules (schedule based; defaults, all configurable):
 #   daily   RDS automated backups: retention >= 7 days, one backup on each of the last 7 UTC days, the latest <= 26 h old
@@ -12,6 +12,7 @@
 #   yearly  off by default (yearly=0); yearly=N checks N points with retention over the monthly range
 #   Dates before the resource was created are never expected. Points whose retention fits no class: warning only.
 #   Aurora global database secondaries and read replicas: daily only (weekly / monthly / yearly N/A).
+#   replica-exempt-engines=oracle-*,aurora-*: those Role=replica/secondary engines are always COMPLIANT (all schedules N/A).
 # Status: COMPLIANT | NON-COMPLIANT (gaps column) | NOT YET DUE (resource too young) | UNKNOWN (a call failed).
 # Output: text | csv | json | html. Exit: 0 ok, 5 NON-COMPLIANT with --fail-on-noncompliant, 1 usage, 2 pre-check,
 #         3 bad --merge input, 4 output error, 130 interrupted. Logic and rendering live in lib/*.jq.
@@ -21,7 +22,7 @@ set -Eeuo pipefail
 umask 077
 
 readonly SCRIPT_NAME="${0##*/}"
-readonly SCRIPT_VERSION="1.5.1"
+readonly SCRIPT_VERSION="1.5.2"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_DIR
 LIBDIR="${RDS_BCR_LIB:-$SCRIPT_DIR/lib}"
@@ -31,7 +32,7 @@ if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) ))
     echo "$SCRIPT_NAME: bash 4.4+ required (found $BASH_VERSION)" >&2; exit 2
 fi
 
-PROFILES=(); REGIONS=(); ALL_REGIONS=0; ENGINES=(); IDENTIFIERS=(); FORMATS=(); MERGE_ARGS=()
+PROFILES=(); REGIONS=(); ALL_REGIONS=0; ENGINES=(); IDENTIFIERS=(); FORMATS=(); MERGE_ARGS=(); EXEMPT_ENGINES=()
 OUTPUT_DIR=""; OUT_FILE=""; MANUAL_OLDER=""; SNAP_PRICE="0.021"; PREFIX="rds_backup_compliance"; DISPLAY_TZ="Asia/Kolkata"
 DAILY=7; DAILY_MAX_AGE_H=26; WEEKLY=auto; MONTHLY=12; YEARLY=0
 WEEKLY_MIN_DAYS=25; WEEKLY_MAX_DAYS=40; MONTHLY_MIN_DAYS=300; MONTHLY_MAX_DAYS=400
@@ -42,6 +43,7 @@ BG_PIDS=(); SCAN_PAR=0; HAVE_WAIT_N=0
 KEEP_WORKDIR=0; DRY_RUN=0; VERBOSE=0; SAVE_DATA=0; SAVE_DATA_FILE=""; MERGE=0
 WORK=""; NOW=0; STAMP=""; AWS_CALLS=0; AWS_FAILS=0
 declare -a WRITTEN=() DATA_FILES=()
+declare -A ACCOUNT_NAMES=()   # config: 123456789012 = name (display only)
 
 _log() { local l; l="$(date '+%Y-%m-%d %H:%M:%S') [$1] ${*:2}"; printf '%s\n' "$l" >&2
          if [[ -n "$LOG_FILE" && "$DRY_RUN" -eq 0 ]]; then printf '%s\n' "$l" >>"$LOG_FILE" 2>/dev/null || true; fi; }
@@ -81,6 +83,8 @@ Compliance (defaults in brackets):
       --weekly-retention-days N   Expected retention of a weekly point (highlight if not)       [30]
       --monthly-retention-days N  Expected retention of a monthly point (highlight if not)      [365]
       --retention-tolerance-days N  Allowed difference from the expected retention              [1]
+      --replica-exempt-engines LIST  Engine globs (comma-separated). Role=replica/secondary matching
+                            these are always COMPLIANT (all schedules N/A). Empty = daily only  []
       --non-compliant-only  Show only NON-COMPLIANT rows (totals still count everything)
       --fail-on-noncompliant  Exit 5 when a NON-COMPLIANT resource is found
 
@@ -108,10 +112,12 @@ Behaviour:
   -v, --verbose             Print every region line (empty regions too) and debug logs
   -h, --help / -V, --version
 
-AWS calls (all read-only): sts get-caller-identity; ec2 describe-regions (-A); rds describe-db-clusters,
-describe-db-instances, describe-global-clusters (once per account), describe-db-cluster-snapshots and
-describe-db-snapshots (--include-shared, every region, for orphaned snapshots); backup list-backup-vaults, list-recovery-points-by-backup-vault (gives the retention
+AWS calls (all read-only): sts get-caller-identity; iam list-account-aliases (optional, for the account
+name); ec2 describe-regions (-A); rds describe-db-clusters, describe-db-instances, describe-global-clusters
+(once per account), describe-db-cluster-snapshots and describe-db-snapshots (--include-shared, every region,
+for orphaned snapshots); backup list-backup-vaults, list-recovery-points-by-backup-vault (gives the retention
 used to classify weekly / monthly / yearly; list-recovery-points-by-resource does not return it).
+Config may also set 123456789012 = friendly-name (shown as "name (number)"; else the IAM alias; else the number).
 USAGE
 }
 
@@ -123,6 +129,10 @@ dow_ok() { [[ "${2,,}" =~ ^(sun|mon|tue|wed|thu|fri|sat)$ ]] || die 1 "$1 must b
 dow_num() { case "$1" in sun) echo 0 ;; mon) echo 1 ;; tue) echo 2 ;; wed) echo 3 ;; thu) echo 4 ;; fri) echo 5 ;; *) echo 6 ;; esac; }
 int_ok() { [[ "$2" =~ ^[0-9]+$ ]] || die 1 "$1 must be a whole number (got '$2')"; }
 json_array() { if (( $# )); then printf '%s\n' "$@" | jq -R . | jq -cs . | tr -d '\r'; else printf '[]'; fi; }
+account_names_json() {   # config names as JSON object (wins over IAM aliases and saved names)
+    local k; { for k in "${!ACCOUNT_NAMES[@]}"; do printf '%s\t%s\n' "$k" "${ACCOUNT_NAMES[$k]}"; done; } \
+        | jq -Rcs 'split("\n") | map(select(. != "") | split("\t") | {key: .[0], value: (.[1:] | join(" "))}) | from_entries' | tr -d '\r'
+}
 jqv() { jq "$@" | tr -d '\r'; }       # jq.exe on Windows writes CRLF: strip for values and files
 
 set_opt() {   # set_opt key value  (shared by CLI and --config)
@@ -153,21 +163,30 @@ set_opt() {   # set_opt key value  (shared by CLI and --config)
         save-data|save_data) is_true "$v" && SAVE_DATA=1 ;;
         snapshot-price-per-gb|snapshot_price_per_gb) [[ "$v" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die 1 "--snapshot-price-per-gb must be a number like 0.021 (got '$v')"; SNAP_PRICE="$v" ;;
         manual-older-than|manual_older_than) int_ok --manual-older-than "$v"; MANUAL_OLDER="$v" ;;
+        replica-exempt-engines|replica_exempt_engines) add_list EXEMPT_ENGINES "$v" ;;
         *) return 1 ;;
     esac
     return 0
 }
 
 load_config() {
-    local f="$1" line n=0
+    local f="$1" line n=0 key val
     [[ -r "$f" ]] || die 1 "Config file not readable: $f"
     while IFS= read -r line || [[ -n "$line" ]]; do
         n=$((n + 1)); line="${line%$'\r'}"
         [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+        if [[ "$line" =~ ^[[:space:]]*([0-9]{12})[[:space:]]*=[[:space:]]*(.*)$ ]]; then   # account name (display only)
+            key="${BASH_REMATCH[1]}"; val="${BASH_REMATCH[2]}"
+            [[ "$val" =~ ^(.*[^[:space:]])?[[:space:]]+#.*$ ]] && val="${BASH_REMATCH[1]}"
+            val="${val%"${val##*[![:space:]]}"}"; val="${val//[$'\001'-$'\037']/}"
+            [[ "$val" =~ ^\"(.*)\"$ || "$val" =~ ^\'(.*)\'$ ]] && val="${BASH_REMATCH[1]}"
+            ACCOUNT_NAMES["$key"]="${val:0:64}"; continue
+        fi
         [[ "$line" =~ ^[[:space:]]*([A-Za-z_-]+)[[:space:]]*=[[:space:]]*(.*[^[:space:]])?[[:space:]]*$ ]] || die 1 "Config $f:$n: expected key=value"
         set_opt "${BASH_REMATCH[1],,}" "${BASH_REMATCH[2]:-}" || die 1 "Config $f:$n: unknown key '${BASH_REMATCH[1]}'"
     done <"$f"
 }
+
 
 parse_args() {
     local a; for ((a = 1; a <= $#; a++)); do if [[ "${!a}" == --config ]]; then local b=$((a + 1)); [[ $b -le $# ]] || die 1 "--config needs a file"; CONFIG_FILE="${!b}"; fi; done
@@ -190,7 +209,7 @@ parse_args() {
             --keep-workdir) KEEP_WORKDIR=1 ;; --dry-run) DRY_RUN=1 ;; -v|--verbose) VERBOSE=1 ;;
             --save-data) SAVE_DATA=1; if [[ $# -ge 2 && "$2" != -* ]]; then SAVE_DATA_FILE="$2"; shift; fi ;;
             --merge) MERGE=1; while [[ $# -ge 2 && "$2" != -* ]]; do MERGE_ARGS+=("$2"); shift; done ;;
-            --daily|--daily-max-age|--weekly|--monthly|--yearly|--weekly-days|--monthly-max-days|--monthly-days|--daily-retention-days|--weekly-retention-days|--monthly-retention-days|--retention-tolerance-days|--weekly-weekday|--monthly-rule|--tolerance-days|--parallel|--weekly-window-days|--prefix|--tz|--aws-timeout|--max-attempts|--manual-older-than|--snapshot-price-per-gb)
+            --daily|--daily-max-age|--weekly|--monthly|--yearly|--weekly-days|--monthly-max-days|--monthly-days|--daily-retention-days|--weekly-retention-days|--monthly-retention-days|--retention-tolerance-days|--weekly-weekday|--monthly-rule|--tolerance-days|--parallel|--weekly-window-days|--prefix|--tz|--aws-timeout|--max-attempts|--manual-older-than|--snapshot-price-per-gb|--replica-exempt-engines)
                 need_arg "$1" $#; set_opt "${1#--}" "$2"; shift ;;
             --*=*) set_opt "${1%%=*}" "${1#*=}" 2>/dev/null || die 1 "Unknown option: $1"; ;;
             *) die 1 "Unknown option: $1 (see --help)" ;;
@@ -229,11 +248,13 @@ cfg_json() {
         --argjson wd "$(dow_num "$WEEKLY_WEEKDAY")" --argjson md "$(dow_num "${MONTHLY_RULE#first-}")" --argjson tol "$TOLERANCE_DAYS" --argjson ww "$WEEKLY_WINDOW_DAYS" \
         --argjson dr "${DAILY_RETENTION_DAYS:-$DAILY}" --argjson wr "$WEEKLY_RETENTION_DAYS" --argjson mr "$MONTHLY_RETENTION_DAYS" --argjson rt "$RET_TOLERANCE_DAYS" \
         --argjson off "$TZ_OFFSET" --arg lab "$TZ_LABEL" --argjson mo "${MANUAL_OLDER:-null}" --argjson sp "$SNAP_PRICE" \
+        --argjson ex "$(json_array "${EXEMPT_ENGINES[@]}")" \
         '{manual_older_than: $mo, snapshot_price_per_gb: $sp, daily: $d, daily_max_age_h: $h, weekly: $w, monthly: $m, yearly: $y, weekly_min_days: $wmin, weekly_max_days: $wmax,
           monthly_min_days: $mmin, monthly_max_days: $mmax, weekly_weekday: $wd, monthly_weekday: $md, tolerance_days: $tol, weekly_window_days: $ww,
           daily_retention_days: $dr, weekly_retention_days: $wr, monthly_retention_days: $mr, ret_tolerance_days: $rt,
-          tz_offset: $off, tz_label: $lab}' | tr -d '\r'
+          replica_exempt_engines: $ex, tz_offset: $off, tz_label: $lab}' | tr -d '\r'
 }
+
 
 # ---------------------------------------------------------------------------- AWS (read-only)
 awsc() {   # awsc <out-file> <profile> <region> <service> <operation> [args...]; stderr -> <out-file>.err
@@ -346,11 +367,22 @@ region_summary() {   # one line per account: "8 regions scanned, 5 empty: a, b, 
 }
 
 scan_profile() {   # scan_profile <profile>  -> $WORK/data_<account>.json
-    local prof="$1" acct reg idf="$WORK/id_${1:-default}.json"; local -a regs=()
+    local prof="$1" acct reg idf="$WORK/id_${1:-default}.json" aname=""; local -a regs=()
     if (( DRY_RUN )); then acct="ACCOUNT"; awsc "$idf" "$prof" "" sts get-caller-identity
     else
         awsc "$idf" "$prof" "" sts get-caller-identity || { log_error "profile '${prof:-default}': no valid credentials ($(err_of "$idf"))"; return 1; }
         acct="$(jqv -r '.Account // empty' "$idf")"; [[ -n "$acct" ]] || { log_error "profile '${prof:-default}': no account id"; return 1; }
+    fi
+    aname="${ACCOUNT_NAMES[$acct]:-}"
+    local alias_reg="${REGIONS[0]:-${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}}"
+    if [[ -z "$aname" ]]; then   # IAM account alias: optional, read-only; denied / none = number only
+        local fails0=$AWS_FAILS
+        if awsc "$WORK/$acct.alias.json" "$prof" "$alias_reg" iam list-account-aliases; then
+            aname="$(jqv -r '(.AccountAliases // [])[0] // "" | explode | map(select(. >= 32)) | implode | .[0:64]' "$WORK/$acct.alias.json")"
+        else
+            AWS_FAILS=$fails0
+            log_debug "Account alias for $acct not available (iam:ListAccountAliases)"
+        fi
     fi
     GLOBAL_OK=true; GLOBAL_DONE=0; rm -f "$WORK/$acct.globals.json"
     if (( ALL_REGIONS )); then
@@ -400,9 +432,9 @@ scan_profile() {   # scan_profile <profile>  -> $WORK/data_<account>.json
     fi
     (( DRY_RUN )) && return 0
     region_summary "$acct"
-    jqv -n --arg s "$DATA_SCHEMA" --argjson v "$DATA_SCHEMA_VERSION" --arg tool "$SCRIPT_VERSION" --arg a "$acct" --arg p "${prof:-default}" --argjson now "$NOW" \
+    jqv -n --arg s "$DATA_SCHEMA" --argjson v "$DATA_SCHEMA_VERSION" --arg tool "$SCRIPT_VERSION" --arg a "$acct" --arg p "${prof:-default}" --arg n "$aname" --argjson now "$NOW" \
         '{schema: $s, schema_version: $v, tool_version: $tool, collected_epoch: $now, collected_at: ($now | todate),
-          accounts: [{account: $a, profile: $p, collected_epoch: $now}],
+          accounts: [{account: $a, profile: $p, name: $n, collected_epoch: $now}],
           regions: [ inputs | select(type == "object") ], resources: [], orphans: []}' "$WORK/$acct"/*/region.json >"$WORK/hdr_$acct.json"
     jqv -s '.[0] + {resources: [ .[1:][][] | del(.arn) ]}' "$WORK/hdr_$acct.json" "$WORK/$acct"/*/resources.json >"$WORK/res_$acct.json"
     jqv -s '.[0] + {orphans: [ .[1:][][] ]}' "$WORK/res_$acct.json" "$WORK/$acct"/*/orphans.json >"$WORK/data_$acct.json"
@@ -451,8 +483,10 @@ output_block() {   # Output (N files): then one complete absolute path per line
     if [[ -n "$LOG_FILE" ]]; then printf 'wrote %s\n' "${WRITTEN[@]}" >>"$LOG_FILE" 2>/dev/null || true; fi
 }
 render() {   # render <mode> <data> -> stdout
-    jqv -r --arg mode "$1" --argjson now "$NOW" --argjson cfg "$CFG" --arg tool "$SCRIPT_VERSION" --rawfile page "$LIBDIR/backup_page.js" -f "$LIBDIR/backup.jq" "$2"
+    jqv -r --arg mode "$1" --argjson now "$NOW" --argjson cfg "$CFG" --arg tool "$SCRIPT_VERSION" \
+        --argjson acct_names "$(account_names_json)" --rawfile page "$LIBDIR/backup_page.js" -f "$LIBDIR/backup.jq" "$2"
 }
+
 write_out() { local f="$1"; shift; "$@" >"$f" || die 4 "Cannot write $f"; WRITTEN+=("$f"); }
 
 main() {
