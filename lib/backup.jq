@@ -214,6 +214,38 @@ def gsum: . as $r
       (if ($r.excess // "") != "" then "excess backups" else empty end),
       (if ($r.over_retention // "") != "" then "holds more than retention" else empty end),
       (if $r.not_yet_due != "" then "not yet due" else empty end) ] | join(" · ");
+# ------------------------------------------------------------------ compliance exceptions (v1.6.0)
+# $ARGS.named.exc = [null] or absent: feature off; [[entries]]: compliance_exceptions.conf entries (validated by the script).
+# An unexpired entry for the scope makes the server compliant (actual_status keeps the evaluated one); expires = last valid
+# UTC day; within 14 days -> "expiring soon"; actual already compliant -> "no longer needed"; past expiry -> normal status.
+def exc_list: (($ARGS.named.exc // [null])[0]);
+def exc_on: exc_list != null;
+def exc_left($d): (($d + "T00:00:00Z" | fromdateiso8601) / 86400 | floor) - (($ARGS.named.exc_now // $now) | floor / 86400 | floor);
+def exc_find($scope; $acct; $id): ($id | ascii_downcase) as $i
+  | [ exc_list[]? | select(.account == $acct and (.identifier | ascii_downcase) == $i and ((.scopes | index([$scope])) != null)) ] | .[0];
+def exc_eval($e; $ok):
+  if $e == null then {exception: "no", exception_reason: "", exception_expires: "", exception_flag: ""}
+  else exc_left($e.expires) as $d
+  | {exception: (if $d < 0 then "expired" else "yes" end), exception_reason: $e.reason, exception_expires: $e.expires,
+     exception_flag: (if $d < 0 then "exception expired"
+                      else [ (if $ok then "no longer needed" else empty end), (if $d <= 14 then "expiring soon" else empty end) ] | join(", ") end)} end;
+def exc_unmatched($scope; $rows):
+  [ exc_list[]? | select((.scopes | index([$scope])) != null) | . as $e | ($e.identifier | ascii_downcase) as $i
+    | select([ $rows[] | select(.account_id == $e.account and (.identifier | ascii_downcase) == $i) ] | length == 0)
+    | {line, account, identifier} ];
+def exc_counts($rows; $scope):
+  {entries: ([ exc_list[]? | select((.scopes | index([$scope])) != null) ] | length),
+   applied: ([ $rows[] | select(.exception == "yes") ] | length),
+   attention: ([ $rows[] | select(.exception == "yes" and .exception_flag != "") ] | length),
+   expiring_soon: ([ $rows[] | select(.exception == "yes" and (.exception_flag | contains("expiring soon"))) ] | length),
+   no_longer_needed: ([ $rows[] | select(.exception == "yes" and (.exception_flag | contains("no longer needed"))) ] | length),
+   expired: ([ $rows[] | select(.exception == "expired") ] | length),
+   unmatched: exc_unmatched($scope; $rows)};
+def exc_apply:   # backup scope; status becomes COMPLIANT so every count, %, --fail-on-noncompliant and CSV include it
+  exc_eval(exc_find("backup"; .account_id; .identifier); .status == "COMPLIANT") as $v
+  | . + $v + {actual_status: .status} | if $v.exception == "yes" then .status = "COMPLIANT" else . end;
+def exc_label: if .exception == "yes" then "COMPLIANT (EXCEPTION)" else .status end;
+def exc_cols: if exc_on then ["exception","exception_reason","exception_expires","exception_flag","actual_status"] else [] end;
 def yon: ($cfg.yearly // 0) > 0;
 def ycols($a): if yon then $a else [] end;
 # compliance CSV (script --format csv and the HTML "Export CSV" use these, so both are identical). Numbers per period,
@@ -224,20 +256,20 @@ def chead: ["account_id","region","identifier","type","engine","engine_version",
     + [ PER[] as $k | "\($k)_status", "\($k)_found", "\($k)_expected", "\($k)_target", "\($k)_missing", "\($k)_full_on" ]
     + ["status","not_yet_due","gaps","warnings","weekly_retention","monthly_retention","backup_plans",
        "retention_mismatch_count","retention_mismatch","excess_daily","excess_weekly","excess_monthly","excess",
-       "over_retention_count","over_retention","counted_in_compliance_pct","pitr_enabled","pitr_since_utc","account_name"];
+       "over_retention_count","over_retention","counted_in_compliance_pct","pitr_enabled","pitr_since_utc","account_name"] + exc_cols;
 def pcols($c): if $c.st == "N/A" or $c.st == "UNKNOWN" or $c.st == "OFF" or $c.have == null then [$c.st, null, null, null, "", ""]
   else [$c.st, $c.have, $c.need, ($c.target // $c.need), ([ ($c.missing // [])[] | dwk ] | join("; ")), ($c.full_on_iso // "")] end;
 def crow: . as $r | [.account_id, .region, .identifier, .type, .engine, .engine_version, .global_cluster, .global_role, .retention_days,
              .created, .age_days, .settings.backup_window, .settings.copy_tags, .last_automated_utc, .last_automated_local]
            + [ PER[] as $k | $r[$k] | pcols(.)[] ]
-           + [.status, .not_yet_due, .gaps, .warnings, .settings.weekly_retention, .settings.monthly_retention, .settings.plans,
+           + [exc_label, .not_yet_due, .gaps, .warnings, .settings.weekly_retention, .settings.monthly_retention, .settings.plans,
               .retention_mismatch_count, .retention_mismatch, .excess_counts.daily, .excess_counts.weekly, .excess_counts.monthly, .excess,
               .over_retention_count, .over_retention, (if .status == "NOT YET DUE" then "no" else "yes" end),
-              (if .pitr.on then "yes" else "no" end), .pitr.since, (.account_name // "")];
+              (if .pitr.on then "yes" else "no" end), .pitr.since, (.account_name // "")] + [exc_cols[] as $c | $r[$c] // ""];
 def cstr: map(if . == null then "" else tostring end);
 def csvrow: map(if . == null then "" else tostring end
                 | if test("^[=+@-]") then "'" + . else . end) | @csv;   # formula-injection guard
-def rows: anmap as $an | [ .resources[] | evaluate | . + {account_name: ($an[.account_id] // "")} ]
+def rows: anmap as $an | [ .resources[] | evaluate | . + {account_name: ($an[.account_id] // "")} | if exc_on then exc_apply else . end ]
   | sort_by(
       .account_id,
       (if (.global_cluster // "") != "" and .global_cluster != "unknown" then .global_cluster else .identifier end),
@@ -251,7 +283,8 @@ def totals($rs): {resources: ($rs | length),
   not_yet_due: ([ $rs[] | select(.status == "NOT YET DUE") ] | length),
   unknown: ([ $rs[] | select(.status == "UNKNOWN") ] | length)}
   | . + {compliance: ((.resources - .not_yet_due) as $d | {compliant: .compliant, of: $d, not_yet_due: .not_yet_due,
-                       pct: (if $d == 0 then null else (100 * .compliant / $d | round) end)})};
+                       pct: (if $d == 0 then null else (100 * .compliant / $d | round) end)})}
+  | if exc_on then . + {exceptions: exc_counts($rs; "backup")} else . end;
 def comptxt($t): if $t.compliance.pct == null then "Compliance: - (nothing due yet)"
   else "Compliance: \($t.compliance.pct)% (\($t.compliance.compliant) of \($t.compliance.of))" end
   + (if $t.not_yet_due > 0 then ", \($t.not_yet_due) not yet due not counted" else "" end);
@@ -306,8 +339,16 @@ def gbtxt: if . >= 1024 then "\(. / 1024 | r1) TB" else "\(. | r1 | tostring | s
 def osumtxt($t): "\($t.orphaned) orphaned snapshot\(if $t.orphaned == 1 then "" else "s" end), \($t.size_gb | gbtxt), ~$\(if $t.est_monthly_usd >= 10 then ($t.est_monthly_usd | round) else $t.est_monthly_usd end)/month (estimate)";
 
 . as $D | rows as $R | orows($D) as $O | ototals($O) as $OT
-| if $mode == "rows" then $R
+# unmatched exceptions are checked against every scanned server ($D.exc_ids is set by --non-compliant-only)
+| def totals_all: totals($R) | if .exceptions then .exceptions.unmatched = exc_unmatched("backup"; ($D.exc_ids // $R)) else . end;
+  if $mode == "rows" then $R
   elif $mode == "osum" then osumtxt($OT)
+  elif $mode == "exclog" then   # script log lines (tab: W = warning, I = info); @FILE@ = exceptions file name
+    if exc_on then totals_all.exceptions as $e
+      | ($e.unmatched[] | "W\tException @FILE@:\(.line) (\(.account) \(.identifier)) matched no server in this report"),
+        ($R[] | select(.exception == "expired") | "W\tException for \(.account_id) \(.identifier) expired on \(.exception_expires): evaluated normally (\(.status))"),
+        "I\tExceptions (backup): \($e.applied) applied (counted as COMPLIANT), \($e.attention) expiring soon or no longer needed, \($e.expired) expired, \($e.unmatched | length) unmatched"
+    else empty end
   elif $mode == "ocsv" then   # orphaned manual snapshots only, oldest first
     (["account_id","region","snapshot_id","type","source_id","engine","engine_version","created_utc","created_" + ($cfg.tz_label | ascii_downcase),
       "age_days","size_gb","est_monthly_usd","encrypted","kms_key"] | csvrow),
@@ -316,7 +357,7 @@ def osumtxt($t): "\($t.orphaned) orphaned snapshot\(if $t.orphaned == 1 then "" 
         .age_days, .size_gb, .est_monthly_usd, .encrypted, .kms_key] | csvrow)
   elif $mode == "json" then
     {tool: "rds_backup_compliance_report", version: $tool, generated_utc: ($now | utc), generated_local: ($now | loc),
-     accounts: $D.accounts, thresholds: ($cfg | del(.tz_offset)), totals: totals($R),
+     accounts: $D.accounts, thresholds: ($cfg | del(.tz_offset)), totals: totals_all,
      regions: [ $D.regions[] | select(.status != "empty") | del(.existing) ], rows: $R,
      orphan_totals: ($OT + {summary: osumtxt($OT)}),
      orphaned_snapshots: [ $O[] | . + {created_utc: (.created_epoch | utc), created_local: (.created_epoch | loc)} ]}
@@ -344,20 +385,26 @@ def osumtxt($t): "\($t.orphaned) orphaned snapshot\(if $t.orphaned == 1 then "" 
      | [.r.account_id, .r.region, .r.id, .r.type, .r.engine, .s.id, (.s.created_epoch | utc), (.s.created_epoch | loc),
         (($now - .s.created_epoch) / 86400 | floor), .s.status, .s.size_gb, .o] | csvrow)
   elif $mode == "txt" then
-    totals($R) as $t
+    totals_all as $t
     | "RDS backup compliance - account \($D | accounts_label)",
       "Generated \($now | utc) / \($now | loc)",
       "Rule: \(ruletxt)",
       "Orphaned manual snapshots: \(osumtxt($OT)) at $\(price)/GB-month - rough upper estimate, snapshot billing is incremental",
       comptxt($t),
-      "Resources \($t.resources): compliant \($t.compliant), non-compliant \($t.non_compliant), not yet due \($t.not_yet_due), unknown \($t.unknown)",
+      "Resources \($t.resources): compliant \($t.compliant)\(if $t.exceptions then " (incl. \($t.exceptions.applied) exceptions)" else "" end), non-compliant \($t.non_compliant), not yet due \($t.not_yet_due), unknown \($t.unknown)",
       "",
       ([ "ACCOUNT", "REGION", "IDENTIFIER", "TYPE", "ROLE", "AGE_DAYS", "DAILY", "WEEKLY", "MONTHLY" ] + ycols(["YEARLY"]) + [ "STATUS", "GAPS", "WARNINGS" ] | join("\t")),
       ($R[] | [ (if (.account_name // "") != "" then "\(.account_name) (\(.account_id))" else .account_id end), .region, .identifier, .type, .global_role, (.age_days // "" | tostring), cell(.daily), cell(.weekly), cell(.monthly) ] + ycols([cell(.yearly)])
-              + [ .status, ([.gaps, .not_yet_due] | map(select(. != "")) | join("; ")),
+              + [ exc_label, ([.gaps, .not_yet_due] | map(select(. != "")) | join("; ")),
                  ([ .warnings, (.retention_mismatch // "" | if . != "" then "retention mismatch: " + . else . end),
                     (.excess // "" | if . != "" then "excess backups: " + . else . end),
                     (.over_retention // "" | if . != "" then "holds more than retention: " + . else . end) ] | map(select(. != "")) | join("; ")) ] | join("\t")),
+      (if $t.exceptions then "", "Exceptions: \($t.exceptions.applied) applied (counted as compliant)"
+          + (if $t.exceptions.attention > 0 then "; expiring soon or no longer needed: \($t.exceptions.attention)" else "" end)
+          + (if $t.exceptions.expired > 0 then "; expired: \($t.exceptions.expired)" else "" end),
+         ($R[] | select(.exception != "no") | "  \(.account_id) \(.identifier) until \(.exception_expires), actual \(.actual_status)"
+            + (if .exception == "expired" then ", EXPIRED (evaluated normally)" elif .exception_flag != "" then " [\(.exception_flag)]" else "" end) + ": \(.exception_reason)"),
+         ($t.exceptions.unmatched[] | "  line \(.line): \(.account) \(.identifier) matched no server") else empty end),
       (if any($D.regions[]; .status == "error") then "", "Region errors:", ($D.regions[] | select(.status == "error") | "  \(.account) \(.region): \(.errors | join("; "))") else empty end)
   elif $mode == "html" then
     {generated_utc: ($now | utc), generated_local: ($now | loc), tz_label: $cfg.tz_label, tz_offset: $cfg.tz_offset, now: $now,
@@ -376,7 +423,7 @@ def osumtxt($t): "\($t.orphaned) orphaned snapshot\(if $t.orphaned == 1 then "" 
                                          elif .kind == "automated" and .created_epoch != null and .created_epoch < over_cut($rr) then "older than the \($rr // 0)d retention"
                                          else null end), kind, id, c: .created_epoch, st: .status, gb: .size_gb, x: .expires_epoch, v: (.vault // ""),
                                     cl: (if .kind == "backup" then rp_class else "" end), rd: (if .kind == "backup" then rp_ret else null end),
-                                    pl: (.plan // ""), ru: (.rule // ""), bt: btype, sc: bsched} ]} ]}
+                                    pl: (.plan // ""), ru: (.rule // ""), bt: btype, sc: bsched} ]} ]} + (if exc_on then {exc: totals_all.exceptions} else {} end)
     | tojson | gsub("</"; "<\\/") as $json
     | "<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><title>RDS backup compliance - \($D | accounts_label)</title>\n<style>
 body{font-family:Segoe UI,Arial,sans-serif;margin:16px;color:#222;font-size:13px}h1{font-size:18px;margin:0 0 4px}.sub{color:#666;margin-bottom:10px}

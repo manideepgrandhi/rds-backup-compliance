@@ -1,0 +1,24 @@
+# compliance_exceptions.conf - approved compliance exceptions, shared by rds-patch-compliance,
+# rds-backup-compliance and rds-compliance-report (same file and format in all three).
+#
+# Copy to compliance_exceptions.conf next to the script (picked up automatically), or pass --exceptions FILE.
+# No file = no exceptions (reports exactly as before).
+#
+# One entry per line, all five fields required:
+#   account_id | identifier | scope | expires | reason
+#     account_id  12-digit AWS account
+#     identifier  DB instance or cluster identifier (exact, case-insensitive; no wildcards; any region)
+#     scope       patch, backup or patch,backup
+#     expires     YYYY-MM-DD (UTC), mandatory; the last day the exception applies
+#     reason      free text (ticket, owner, why); may contain |
+# A bad line (missing field, bad account / scope / date, duplicate account + identifier for the same scope)
+# stops the run with file:line. # comments and blank lines are ignored.
+#
+# Matched and not expired: shown as "Compliant (exception)" and counted as compliant in every %;
+#   the real status is kept (actual_status). Flags: "expiring soon" (14 days or less), "no longer needed"
+#   (the server is already compliant). Expired: evaluated normally and flagged "exception expired".
+# Applied when the report is built; --save-data files never change.
+
+111111111111 | legacy-aurora-pg12 | patch        | 2026-12-31 | Decommission in December, CHG-1234 (owner: dba-team)
+111111111111 | reports-pg         | patch,backup | 2027-03-31 | Vendor-pinned version, backups by vendor tool | INC-77
+222222222222 | dev-docdb          | backup       | 2027-01-31 | Dev cluster, data rebuilt from source

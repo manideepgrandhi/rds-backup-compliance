@@ -14,6 +14,8 @@
 #   Aurora global database secondaries and read replicas: daily only (weekly / monthly / yearly N/A).
 #   replica-exempt-engines=oracle-*,aurora-*: those Role=replica/secondary engines are always COMPLIANT (all schedules N/A).
 # Status: COMPLIANT | NON-COMPLIANT (gaps column) | NOT YET DUE (resource too young) | UNKNOWN (a call failed).
+# Exceptions (v1.6.0): compliance_exceptions.conf (or --exceptions FILE) lists servers that show COMPLIANT (EXCEPTION)
+#   and count as compliant until their expiry date; the evaluated status stays in actual_status.
 # Output: text | csv | json | html. Exit: 0 ok, 5 NON-COMPLIANT with --fail-on-noncompliant, 1 usage, 2 pre-check,
 #         3 bad --merge input, 4 output error, 130 interrupted. Logic and rendering live in lib/*.jq.
 
@@ -22,7 +24,7 @@ set -Eeuo pipefail
 umask 077
 
 readonly SCRIPT_NAME="${0##*/}"
-readonly SCRIPT_VERSION="1.5.4"
+readonly SCRIPT_VERSION="1.6.0"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_DIR
 LIBDIR="${RDS_BCR_LIB:-$SCRIPT_DIR/lib}"
@@ -42,6 +44,7 @@ NC_ONLY=0; FAIL_ON_NC=0; LOG_FILE=""; CONFIG_FILE=""; AWS_TIMEOUT=30; MAX_ATTEMP
 BG_PIDS=(); SCAN_PAR=0; HAVE_WAIT_N=0
 KEEP_WORKDIR=0; DRY_RUN=0; VERBOSE=0; SAVE_DATA=0; SAVE_DATA_FILE=""; MERGE=0
 WORK=""; NOW=0; STAMP=""; AWS_CALLS=0; AWS_FAILS=0
+EXC_FILE=""; EXC_JSON="null"; EXC_PATH=""; EXC_ARGS=()   # compliance exceptions (v1.6.0)
 declare -a WRITTEN=() DATA_FILES=()
 declare -A ACCOUNT_NAMES=()   # config: 123456789012 = name (display only)
 
@@ -87,6 +90,10 @@ Compliance (defaults in brackets):
                             these are always COMPLIANT (all schedules N/A). Empty = daily only  []
       --non-compliant-only  Show only NON-COMPLIANT rows (totals still count everything)
       --fail-on-noncompliant  Exit 5 when a NON-COMPLIANT resource is found
+      --exceptions FILE     Compliance exceptions (v1.6.0): lines "account_id | identifier | scope | expires | reason";
+                            listed servers (scope backup) show COMPLIANT (EXCEPTION) and count as compliant until the
+                            expiry date. Default: compliance_exceptions.conf next to the script, if present (none = off).
+                            Any malformed line stops the run. See compliance_exceptions.conf.example
 
 Report:
   -F, --format LIST         text,csv,json,html (default: text; html with --merge). Several formats need -o.
@@ -164,6 +171,7 @@ set_opt() {   # set_opt key value  (shared by CLI and --config)
         snapshot-price-per-gb|snapshot_price_per_gb) [[ "$v" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die 1 "--snapshot-price-per-gb must be a number like 0.021 (got '$v')"; SNAP_PRICE="$v" ;;
         manual-older-than|manual_older_than) int_ok --manual-older-than "$v"; MANUAL_OLDER="$v" ;;
         replica-exempt-engines|replica_exempt_engines) add_list EXEMPT_ENGINES "$v" ;;
+        exceptions) EXC_FILE="${v/#\~/$HOME}" ;;
         *) return 1 ;;
     esac
     return 0
@@ -209,7 +217,7 @@ parse_args() {
             --keep-workdir) KEEP_WORKDIR=1 ;; --dry-run) DRY_RUN=1 ;; -v|--verbose) VERBOSE=1 ;;
             --save-data) SAVE_DATA=1; if [[ $# -ge 2 && "$2" != -* ]]; then SAVE_DATA_FILE="$2"; shift; fi ;;
             --merge) MERGE=1; while [[ $# -ge 2 && "$2" != -* ]]; do MERGE_ARGS+=("$2"); shift; done ;;
-            --daily|--daily-max-age|--weekly|--monthly|--yearly|--weekly-days|--monthly-max-days|--monthly-days|--daily-retention-days|--weekly-retention-days|--monthly-retention-days|--retention-tolerance-days|--weekly-weekday|--monthly-rule|--tolerance-days|--parallel|--weekly-window-days|--prefix|--tz|--aws-timeout|--max-attempts|--manual-older-than|--snapshot-price-per-gb|--replica-exempt-engines)
+            --daily|--daily-max-age|--weekly|--monthly|--yearly|--weekly-days|--monthly-max-days|--monthly-days|--daily-retention-days|--weekly-retention-days|--monthly-retention-days|--retention-tolerance-days|--weekly-weekday|--monthly-rule|--tolerance-days|--parallel|--weekly-window-days|--prefix|--tz|--aws-timeout|--max-attempts|--manual-older-than|--snapshot-price-per-gb|--replica-exempt-engines|--exceptions)
                 need_arg "$1" $#; set_opt "${1#--}" "$2"; shift ;;
             --*=*) set_opt "${1%%=*}" "${1#*=}" 2>/dev/null || die 1 "Unknown option: $1"; ;;
             *) die 1 "Unknown option: $1 (see --help)" ;;
@@ -255,6 +263,56 @@ cfg_json() {
           replica_exempt_engines: $ex, tz_offset: $off, tz_label: $lab}' | tr -d '\r'
 }
 
+
+# ---------------------------------------------------------------------------- compliance exceptions (shared by
+# rds-patch-compliance, rds-backup-compliance and rds-compliance-report; same file format in all three)
+# compliance_exceptions.conf, one entry per line:  account_id | identifier | scope | expires | reason
+#   all five required; scope patch, backup or patch,backup; expires YYYY-MM-DD (UTC, last valid day); # comments
+# Strict: any bad line stops the run (exit 1) naming file:line. Applied at report time only (saved data is unchanged).
+exc_trim() { local -n _v="$1"; _v="${_v#"${_v%%[![:space:]]*}"}"; _v="${_v%"${_v##*[![:space:]]}"}"; }
+load_exceptions() {   # -> EXC_JSON: "null" (feature off: no file) or a JSON array of entries; EXC_PATH = the file used
+    local f="$EXC_FILE" line n=0 acct id scope exp reason s y m d dim k tsv=""
+    local -a sc=()
+    local -A seen=()
+    if [[ -z "$f" ]]; then f="$SCRIPT_DIR/compliance_exceptions.conf"; [[ -f "$f" ]] || return 0; fi
+    [[ -f "$f" && -r "$f" ]] || die 1 "Exceptions file not readable: $f"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        n=$((n + 1)); line="${line%$'\r'}"
+        [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+        [[ "$line" == *'|'*'|'*'|'*'|'* ]] || die 1 "Exceptions $f:$n: expected 5 fields 'account_id | identifier | scope | expires | reason'"
+        IFS='|' read -r acct id scope exp reason <<<"$line"
+        exc_trim acct; exc_trim id; exc_trim scope; exc_trim exp; reason="${reason//[$'\001'-$'\037']/ }"; exc_trim reason
+        [[ -n "$acct" && -n "$id" && -n "$scope" && -n "$exp" && -n "$reason" ]] \
+            || die 1 "Exceptions $f:$n: missing field (all of account_id, identifier, scope, expires, reason are required)"
+        [[ "$acct" =~ ^[0-9]{12}$ ]] || die 1 "Exceptions $f:$n: account_id must be 12 digits (got '$acct')"
+        [[ "$id" =~ ^[A-Za-z][A-Za-z0-9-]{0,62}$ ]] \
+            || die 1 "Exceptions $f:$n: identifier '$id' is not a DB instance / cluster identifier (letters, digits, hyphens; no wildcards)"
+        scope="${scope,,}"; scope="${scope//[[:space:]]/}"; IFS=',' read -r -a sc <<<"$scope"
+        (( ${#sc[@]} )) || die 1 "Exceptions $f:$n: scope must be patch, backup or patch,backup"
+        k=""; for s in "${sc[@]}"; do
+            [[ "$s" == patch || "$s" == backup ]] || die 1 "Exceptions $f:$n: scope must be patch, backup or patch,backup (got '$scope')"
+            [[ ",$k," == *",$s,"* ]] && die 1 "Exceptions $f:$n: scope lists '$s' twice"
+            k+="${k:+,}$s"
+        done
+        scope="$k"
+        [[ "$exp" =~ ^([0-9]{4})-([0-9]{2})-([0-9]{2})$ ]] || die 1 "Exceptions $f:$n: expires must be a date YYYY-MM-DD (got '$exp'); an expiry date is mandatory"
+        y=$((10#${BASH_REMATCH[1]})); m=$((10#${BASH_REMATCH[2]})); d=$((10#${BASH_REMATCH[3]}))
+        case "$m" in 1|3|5|7|8|10|12) dim=31 ;; 4|6|9|11) dim=30 ;;
+            2) if (( (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 )); then dim=29; else dim=28; fi ;; *) dim=0 ;; esac
+        (( m >= 1 && m <= 12 && d >= 1 && d <= dim && y >= 2000 )) || die 1 "Exceptions $f:$n: expires '$exp' is not a valid date"
+        for s in "${sc[@]}"; do
+            k="$acct|${id,,}|$s"
+            [[ -n "${seen[$k]:-}" ]] && die 1 "Exceptions $f:$n: duplicate entry for $acct $id ($s), already on line ${seen[$k]}"
+            seen[$k]=$n
+        done
+        tsv+="$n"$'\t'"$acct"$'\t'"$id"$'\t'"$scope"$'\t'"$exp"$'\t'"$reason"$'\n'
+    done <"$f"
+    EXC_PATH="$f"
+    EXC_JSON="$(printf '%s' "$tsv" | jq -Rcs 'split("\n") | map(select(. != "") | split("\t")
+        | {line: (.[0] | tonumber), account: .[1], identifier: .[2], scopes: (.[3] | split(",")), expires: .[4], reason: (.[5:] | join(" "))})' | tr -d '\r')" \
+        || die 1 "Exceptions $f: cannot convert the entries (jq)"
+    return 0
+}
 
 # ---------------------------------------------------------------------------- AWS (read-only)
 awsc() {   # awsc <out-file> <profile> <region> <service> <operation> [args...]; stderr -> <out-file>.err
@@ -484,7 +542,13 @@ output_block() {   # Output (N files): then one complete absolute path per line
 }
 render() {   # render <mode> <data> -> stdout
     jqv -r --arg mode "$1" --argjson now "$NOW" --argjson cfg "$CFG" --arg tool "$SCRIPT_VERSION" \
-        --argjson acct_names "$(account_names_json)" --rawfile page "$LIBDIR/backup_page.js" -f "$LIBDIR/backup.jq" "$2"
+        --argjson acct_names "$(account_names_json)" --rawfile page "$LIBDIR/backup_page.js" "${EXC_ARGS[@]}" -f "$LIBDIR/backup.jq" "$2"
+}
+exc_ready() {   # write the validated entries next to the work files once; jq reads them as $ARGS.named.exc
+    [[ "$EXC_JSON" != null && -n "$WORK" ]] || return 0
+    printf '%s' "$EXC_JSON" >"$WORK/exceptions.json"; EXC_ARGS=(--slurpfile exc "$WORK/exceptions.json")
+    [[ "${RDS_BCR_EXC_NOW:-}" =~ ^[0-9]+$ ]] && EXC_ARGS+=(--argjson exc_now "$RDS_BCR_EXC_NOW")   # tests: fixed "today" for expiry dates only
+    return 0
 }
 
 write_out() { local f="$1"; shift; "$@" >"$f" || die 4 "Cannot write $f"; WRITTEN+=("$f"); }
@@ -494,8 +558,11 @@ main() {
     command -v jq >/dev/null 2>&1 || die 2 "jq not found"
     for f in backup.jq backup_page.js collect.jq merge.jq; do [[ -r "$LIBDIR/$f" ]] || die 2 "Missing $LIBDIR/$f - keep the lib/ folder next to the script"; done
     (( MERGE )) || (( DRY_RUN )) || command -v aws >/dev/null 2>&1 || die 2 "aws CLI not found"
+    load_exceptions   # before any AWS call: a bad line stops the run now, not after the scan
+    [[ "$EXC_JSON" != null ]] && log_info "Exceptions file $EXC_PATH: $(jqv -r 'length' <<<"$EXC_JSON") entries"
     NOW="$(date -u +%s)"; STAMP="$(date -u +%Y%m%d_%H%M%S)"; tz_setup; CFG="$(cfg_json)"
     WORK="$(mktemp -d "${TMPDIR:-/tmp}/rds_bcr.XXXXXX")"
+    exc_ready
     trap '(( KEEP_WORKDIR )) && echo "workdir kept: $WORK" >&2 || rm -rf -- "$WORK"' EXIT
     trap '(( ${#BG_PIDS[@]} )) && kill "${BG_PIDS[@]}" 2>/dev/null; exit 130' INT TERM
     HAVE_WAIT_N=0; [[ -z "${RDS_BCR_NO_WAIT_N:-}" ]] && (( BASH_VERSINFO[0] > 4 || BASH_VERSINFO[1] >= 3 )) && HAVE_WAIT_N=1
@@ -524,7 +591,9 @@ main() {
     local data="$WORK/data.json" accts tag
     if (( NC_ONLY )); then
         render rows "$data" | jqv -c '[.[] | select(.status == "NON-COMPLIANT") | "\(.account_id)|\(.region)|\(.identifier)"]' >"$WORK/nc.json"
-        jqv --slurpfile k "$WORK/nc.json" '.resources |= [ .[] | select("\(.account_id)|\(.region)|\(.id)" as $x | $k[0] | index([$x])) ]' "$data" >"$WORK/data_nc.json"
+        # exc_ids: every scanned server, so an exception is not reported as unmatched only because its server is hidden
+        jqv --slurpfile k "$WORK/nc.json" '.exc_ids = [ .resources[] | {account_id, identifier: .id} ]
+            | .resources |= [ .[] | select("\(.account_id)|\(.region)|\(.id)" as $x | $k[0] | index([$x])) ]' "$data" >"$WORK/data_nc.json"
         data="$WORK/data_nc.json"
     fi
     accts="$(jqv -r '[.accounts[].account] | unique | join("_")' "$WORK/data.json")"
@@ -546,6 +615,9 @@ main() {
     fi
     local nc; nc="$(render rows "$WORK/data.json" | jqv '[.[] | select(.status == "NON-COMPLIANT")] | length')"
     log_info "resources: $(jqv '.resources | length' "$WORK/data.json"), non-compliant: $nc"
+    if [[ "$EXC_JSON" != null ]]; then
+        local l; while IFS=$'\t' read -r f l; do [[ -n "$l" ]] && if [[ "$f" == W ]]; then log_warn "$l"; else log_info "$l"; fi; done < <(render exclog "$WORK/data.json" | sed "s|@FILE@|${EXC_PATH##*/}|")
+    fi
     log_info "$(render osum "$WORK/data.json")"
     output_block
     if (( FAIL_ON_NC && nc > 0 )); then exit 5; fi

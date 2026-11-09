@@ -31,6 +31,9 @@
 # format=html,csv
 # output-dir=./reports
 # prefix=rds_backup_compliance
+# Compliance exceptions (v1.6.0; see compliance_exceptions.conf.example). Default: compliance_exceptions.conf
+# next to the script when present, else off.
+# exceptions = ./compliance_exceptions.conf
 # tz=Asia/Kolkata
 # aws-timeout=30
 # max-attempts=5

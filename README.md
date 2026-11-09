@@ -157,6 +157,29 @@ Only regions with databases, and errors, get their own line; empty regions are f
 
 If one region fails, the other regions still finish. The failed region is listed under Region errors in the report, and the exit code follows the usual rules. Bash 4.3+ uses `wait -n`. Without it the tool waits for each batch to finish. The temp folder is removed on exit, including Ctrl-C. In parallel mode each region that has clusters calls `describe-global-clusters` itself, so there are a few more calls than with `--parallel 1`.
 
+## Compliance exceptions (v1.6.0)
+
+Approved exceptions for servers you know are non-compliant (decommission planned, vendor-pinned version, and so on). They come from one shared file, `compliance_exceptions.conf`. rds-patch-compliance, rds-backup-compliance and rds-compliance-report all use the same file and format.
+
+```text
+# account_id | identifier | scope | expires | reason
+111111111111 | legacy-aurora-pg12 | patch        | 2026-12-31 | Decommission in December, CHG-1234
+111111111111 | reports-pg         | patch,backup | 2027-03-31 | Vendor-pinned version | INC-77
+```
+
+* **File:** `--exceptions FILE` (config `exceptions = FILE`). The default is `compliance_exceptions.conf` next to the script, if present. With no file the feature is off and the reports are exactly as before. Start from [compliance_exceptions.conf.example](compliance_exceptions.conf.example). The real file is in `.gitignore`.
+* **Format:** all five fields are required. account_id is 12 digits. The identifier is exact and case-insensitive, with no wildcards and no region. scope is `patch`, `backup` or `patch,backup`. expires is a mandatory `YYYY-MM-DD` (UTC) and is the last day the exception applies. `#` comments and blank lines are ignored.
+* **Validation:** strict. A missing field, a bad account, scope or date, or a duplicate account + identifier for the same scope stops the run (exit 1) with `file:line`.
+* **Matched, not expired:** shown as **Compliant (exception)** and counted as compliant in every %. The evaluated status is kept in `actual_status`. Flags: **expiring soon** (14 days or less) and **no longer needed** (the server is compliant anyway).
+* **Expired:** the server is evaluated normally and flagged **exception expired**. The log warns about expired entries and about entries that match no server.
+* **When applied:** only when the report is built. `--save-data` files never change.
+* **Outputs:**
+  * Summary: `compliant N (incl. X exceptions)`. The COMPLIANT card pop-up shows Compliant, Non-compliant and "Exceptions expiring soon or no longer needed" (that line only when the count is above 0).
+  * HTML: an Exception column (reason, expiry, flag badge) and an **Exceptions** quick filter: all, exceptions only, non-exceptions, expiring soon or no longer needed, expired. The filter combines with the other filters, and the counts, tables and CSV export follow it.
+  * CSV / JSON: the CSV status column shows `COMPLIANT (EXCEPTION)`, and JSON keeps `COMPLIANT` with `"exception": "yes"`. Both get five fields at the end: `exception` (yes/no/expired), `exception_reason`, `exception_expires`, `exception_flag`, `actual_status`.
+  * Text: an Exceptions section.
+* `--fail-on-noncompliant` and `--non-compliant-only` treat an excepted resource as compliant.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -202,6 +225,10 @@ tests/validate_cli.py            # checks that every field read exists in the bu
 
 ## Changelog
 
+- **1.6.0**
+  - Compliance exceptions (`--exceptions FILE` / `compliance_exceptions.conf`, see [Compliance exceptions](#compliance-exceptions-v160)), backup scope. Applied when the report is built (scan or `--merge`); `--save-data` is unchanged.
+  - Excepted resources are COMPLIANT (EXCEPTION) and counted as compliant, and the evaluated status is kept. Flags: expiring soon, no longer needed, expired.
+  - HTML: Exception column, Exceptions quick filter and the COMPLIANT card pop-up. CSV / JSON: 5 columns at the end. Text: Exceptions section. With no file the outputs are unchanged.
 - **1.5.4**
   - Fix `replica-exempt-engines`: engine globs are matched against each configured pattern (v1.5.2 incorrectly treated every Role=replica/secondary as exempt whenever the list was non-empty). `oracle-*` now leaves Aurora secondaries on daily-only evaluation; `aurora-*` / `oracle-*,aurora-*` still exempt as documented.
   - Sort: within an account, members of the same Aurora global database sit together (primary, then secondary), then region and identifier. Standalone resources keep alphabetical order among themselves.
