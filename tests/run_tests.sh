@@ -29,7 +29,7 @@ rowt() { jq -e --arg i "$2" ".rows[] | select(.identifier == \$i) | $3" "$OUT/$1
 ncalls() { wc -l <"$MOCK_LOG" 2>/dev/null | tr -d ' ' || echo 0; }
 
 echo "== CLI"
-t version 0 fleet --version; has version out '1\.5\.4'
+t version 0 fleet --version; has version out '1\.6\.0'
 t help 0 fleet --help; has help out 'list-recovery-points-by-backup-vault'; has help out 'weekly-days'
 t badopt 1 fleet --nope
 t multifmt 1 fleet -P prod -r us-east-1 -F csv,html
@@ -444,7 +444,96 @@ jqt fleet '[.rows[] | select(.account_id == "111111111111") | {id: .identifier, 
 t gsort 0 fleet -P prod -r us-east-1,us-west-2 -F csv,html -o "$OUT/gsort"
 chk "csv: orders primary then secondary consecutive" python3 -c 'import csv,glob,sys; fs=[f for f in glob.glob(sys.argv[1]+"/*.csv") if "_backups" not in f and "_orphaned" not in f and "_manual" not in f]; r=list(csv.DictReader(open(fs[0],encoding="utf-8-sig"))); ids=[x["identifier"] for x in r]; i=ids.index("orders-aurora-pg15"); assert ids[i+1]=="orders-dr-pg15", ids; assert r[i]["global_role"]=="primary" and r[i+1]["global_role"]=="secondary"' "$OUT/gsort"
 chk "html: orders primary row before secondary" python3 -c 'import glob,sys; h=open(glob.glob(sys.argv[1]+"/*.html")[0],encoding="utf-8").read(); assert h.find("orders-aurora-pg15") < h.find("orders-dr-pg15") and "orders-aurora-pg15" in h and "orders-dr-pg15" in h' "$OUT/gsort"
-chk "version is 1.5.4" grep -qF 'SCRIPT_VERSION="1.5.4"' "$SCRIPT"
+chk "version is 1.6.0" grep -qF 'SCRIPT_VERSION="1.6.0"' "$SCRIPT"
+
+echo "== v1.6.0: compliance exceptions (--exceptions FILE / compliance_exceptions.conf)"
+EX="$OUT/exc"; mkdir -p "$EX"; export RDS_BCR_EXC_NOW=1791000000   # "today" for the expiry dates only = 2026-10-03 UTC
+cat >"$EX/ok.conf" <<'CONF'
+# account_id | identifier | scope | expires | reason
+111111111111 | legacy-mysql | backup | 2027-03-31 | Decommission in Q1 (CHG-1234)
+
+111111111111 | reports-pg   | patch,backup | 2026-10-03 | Vendor app freeze | ticket A|B
+  111111111111|Orders-Aurora-PG15|BACKUP|2027-01-01|<b>Old</b> migration window
+111111111111 | shop-dr-mysql | backup | 2026-10-02 | =DR rebuild
+111111111111 | gone-db | backup | 2027-01-01 | Retired server
+111111111111 | billing-aurora-mysql | patch | 2027-01-01 | Patch-only exception (not applied by the backup tool)
+CONF
+t exc_base 0 fleet -P prod -A -F json
+t exc_on 0 fleet -P prod -A -F json --exceptions "$EX/ok.conf"
+EJ="$OUT/exc_on.out"; BJ="$OUT/exc_base.out"
+jqt exc_base '.totals | .compliant == 2 and .non_compliant == 4 and .not_yet_due == 2 and .compliance.pct == 33 and (has("exceptions") | not)' "$BJ"
+jqt exc_base 'all(.rows[]; has("exception") | not)' "$BJ"
+jqt exc_on '.totals | .compliant == 4 and .non_compliant == 2 and .not_yet_due == 2 and .compliance.compliant == 4 and .compliance.of == 6 and .compliance.pct == 67' "$EJ"
+jqt exc_on '[.rows[] | select(.exception == "yes") | [.identifier, .status, .actual_status]] | sort == [["legacy-mysql","COMPLIANT","NON-COMPLIANT"],["orders-aurora-pg15","COMPLIANT","COMPLIANT"],["reports-pg","COMPLIANT","NON-COMPLIANT"]]' "$EJ"
+jqt exc_on '([.rows[] | select(.exception != "no") | {(.identifier): .exception_flag}] | add) == {"legacy-mysql": "", "orders-aurora-pg15": "no longer needed", "reports-pg": "expiring soon", "shop-dr-mysql": "exception expired"}' "$EJ"
+jqt exc_on '.rows[] | select(.identifier == "shop-dr-mysql") | .exception == "expired" and .status == "NON-COMPLIANT"' "$EJ"
+jqt exc_on '.rows[] | select(.identifier == "billing-aurora-mysql") | .exception == "no" and .status == "NON-COMPLIANT"' "$EJ"
+jqt exc_on '.rows[] | select(.identifier == "reports-pg") | .exception_reason == "Vendor app freeze | ticket A|B" and .exception_expires == "2026-10-03"' "$EJ"
+jqt exc_on '.totals.exceptions | .entries == 5 and .applied == 3 and .attention == 2 and .expiring_soon == 1 and .no_longer_needed == 1 and .expired == 1 and .unmatched == [{line: 7, account: "111111111111", identifier: "gone-db"}]' "$EJ"
+chk "exc: other rows unchanged vs no-file run" bash -c "diff <(jq -S '[.rows[] | select(.exception == \"no\") | del(.exception, .exception_reason, .exception_expires, .exception_flag, .actual_status)]' '$EJ') <(jq -S '[.rows[] | select(.identifier | IN(\"legacy-mysql\",\"orders-aurora-pg15\",\"reports-pg\",\"shop-dr-mysql\") | not)]' '$BJ')"
+has exc_on err 'ok\.conf:7 \(111111111111 gone-db\) matched no server'
+has exc_on err 'shop-dr-mysql expired on 2026-10-02'
+has exc_on err 'Exceptions \(backup\): 3 applied \(counted as COMPLIANT\), 2 expiring soon or no longer needed, 1 expired, 1 unmatched'
+has exc_on err 'non-compliant: 2$'
+t exc_files 0 fleet -P prod -A -F csv,html,txt --exceptions "$EX/ok.conf" -o "$EX/on"
+EC="$(ls "$EX"/on/rds_backup_compliance_*[0-9].csv)"
+chk "exc csv: 5 new columns at the end" bash -c "head -1 '$EC' | grep -q ',\"account_name\",\"exception\",\"exception_reason\",\"exception_expires\",\"exception_flag\",\"actual_status\"\$'"
+chk "exc csv: status COMPLIANT (EXCEPTION) on 3 rows" test "$(grep -c '"COMPLIANT (EXCEPTION)"' "$EC")" -eq 3
+chk "exc csv: expired row + formula guard" grep -q '"expired","'"'"'=DR rebuild","2026-10-02","exception expired","NON-COMPLIANT"$' "$EC"
+chk "exc csv: counted_in_compliance_pct yes for excepted rows" python3 -c 'import csv,sys; r=[x for x in csv.DictReader(open(sys.argv[1],encoding="utf-8-sig")) if x["exception"]=="yes"]; assert len(r)==3 and all(x["counted_in_compliance_pct"]=="yes" for x in r)' "$EC"
+ET="$(ls "$EX"/on/*.txt)"
+chk "exc text: summary + Exceptions section" bash -c "grep -q 'compliant 4 (incl. 3 exceptions), non-compliant 2' '$ET' && grep -q '^Exceptions: 3 applied (counted as compliant); expiring soon or no longer needed: 2; expired: 1' '$ET' && grep -q 'line 7: 111111111111 gone-db matched no server' '$ET' && grep -q 'COMPLIANT (EXCEPTION)' '$ET'"
+EH="$(ls "$EX"/on/*.html)"
+chk "exc html: exceptions in page data, reason escaped" bash -c "grep -q '\"exc\":{\"entries\":5' '$EH' && ! grep -q '<b>Old</b>' '$EH'"
+t exc_nc 0 fleet -P prod -A -F json --non-compliant-only --exceptions "$EX/ok.conf"
+jqt exc_nc '[.rows[].identifier] | sort == ["billing-aurora-mysql","shop-dr-mysql"]' "$OUT/exc_nc.out"
+jqt exc_nc '.totals.exceptions.unmatched | map(.identifier) == ["gone-db"]' "$OUT/exc_nc.out"
+jq -r '.rows[] | select(.status == "NON-COMPLIANT") | "\(.account_id) | \(.identifier) | backup | 2027-01-01 | all non-compliant"' "$BJ" >"$EX/all.conf"
+t exc_fail 0 fleet -P prod -A -F json --fail-on-noncompliant --exceptions "$EX/all.conf"
+jqt exc_fail '.totals.non_compliant == 0 and .totals.exceptions.applied == 4' "$OUT/exc_fail.out"
+t exc_fail5 5 fleet -P prod -A -F json --fail-on-noncompliant --exceptions "$EX/ok.conf"
+# validation: every bad line stops the run with file:line, before any AWS call
+xbad() { local name="$1" want="$2" line="$3"; printf '# header\n111111111111 | good-db | backup | 2027-01-01 | ok\n%s\n' "$line" >"$EX/$name.conf"
+         : >"$MOCK_LOG"; t "$name" 1 fleet -P prod -r us-east-1 --exceptions "$EX/$name.conf"
+         has "$name" err "Exceptions .*$name\\.conf:3: .*$want"; chk "$name: no AWS call made" test ! -s "$MOCK_LOG"; }
+xbad exc_missing 'missing field' '111111111111 | db1 | backup |  | r'
+xbad exc_fields 'expected 5 fields' '111111111111 | db1 | backup | 2027-01-01'
+xbad exc_acct 'account_id must be 12 digits' '1111111111x1 | db1 | backup | 2027-01-01 | r'
+xbad exc_scope 'scope must be patch, backup or patch,backup' '111111111111 | db1 | backups | 2027-01-01 | r'
+xbad exc_date 'is not a valid date' '111111111111 | db1 | backup | 2027-02-29 | r'
+xbad exc_date2 'expires must be a date YYYY-MM-DD' '111111111111 | db1 | backup | 01-01-2027 | r'
+xbad exc_glob 'is not a DB instance / cluster identifier' '111111111111 | * | backup | 2027-01-01 | r'
+xbad exc_dup 'duplicate entry for 111111111111 GOOD-db \(backup\), already on line 2' '111111111111 | GOOD-db | patch,backup | 2027-01-01 | r'
+printf '111111111111 | db1 | backup | 2028-02-29 | leap day ok\n111111111111 | db1 | patch | 2027-01-01 | other scope, not a duplicate\n' >"$EX/nodup.conf"
+t exc_nodup 0 fleet -P prod -r us-east-1 -F json --exceptions "$EX/nodup.conf"
+t exc_nofile 1 fleet -P prod -r us-east-1 --exceptions "$EX/does-not-exist.conf"; has exc_nofile err 'Exceptions file not readable'
+# default: compliance_exceptions.conf next to the script (a copy of the tool), absent = off; config key exceptions =
+TC="$OUT/toolcopy"; mkdir -p "$TC"; cp -r "$HERE/../rds_backup_compliance_report.sh" "$HERE/../lib" "$TC/"
+MOCK_SCENARIO=fleet "$TC/rds_backup_compliance_report.sh" -P prod -A -F json >"$EX/def0.json" 2>/dev/null
+jqt exc_def0 '.totals | has("exceptions") | not' "$EX/def0.json"
+cp "$EX/ok.conf" "$TC/compliance_exceptions.conf"
+MOCK_SCENARIO=fleet "$TC/rds_backup_compliance_report.sh" -P prod -A -F json >"$EX/def1.json" 2>"$EX/def1.err"
+jqt exc_def1 '.totals.exceptions.applied == 3' "$EX/def1.json"
+printf 'exceptions = %s\n' "$EX/all.conf" >"$EX/c.conf"
+t exc_conf 0 fleet -P prod -A -F json --config "$EX/c.conf"
+jqt exc_conf '.totals.non_compliant == 0 and .totals.exceptions.applied == 4' "$OUT/exc_conf.out"
+# --save-data file is the same with and without exceptions; --merge applies them at report time
+MOCK_NOW="$(date -u +%s)"; export MOCK_NOW
+MOCK_SCENARIO=fleet "$SCRIPT" -P prod -A --save-data "$EX/sd0.json" -F json >/dev/null 2>&1
+MOCK_SCENARIO=fleet "$SCRIPT" -P prod -A --save-data "$EX/sd1.json" -F json --exceptions "$EX/ok.conf" >/dev/null 2>&1
+unset MOCK_NOW
+chk "exc: --save-data file identical with and without exceptions" bash -c "diff <(jq -S 'del(.collected_epoch, .collected_at, .accounts[].collected_epoch)' '$EX/sd0.json') <(jq -S 'del(.collected_epoch, .collected_at, .accounts[].collected_epoch)' '$EX/sd1.json')"
+chk "exc: --save-data file has no exception fields" bash -c "! grep -qi exception '$EX/sd1.json'"
+n0="$(ncalls)"; t exc_merge 0 fleet --merge "$EX/sd0.json" -F json --exceptions "$EX/ok.conf"
+chk "exc merge: zero AWS calls" test "$(ncalls)" == "$n0"
+jqt exc_merge '.totals.compliant == 4 and .totals.exceptions.applied == 3' "$OUT/exc_merge.out"
+if command -v node >/dev/null 2>&1 && [[ -x "${CHROME:-/usr/bin/google-chrome}" ]] && NODE_PATH="${NODE_PATH:-}" node -e 'require("puppeteer-core")' 2>/dev/null; then
+    res="$(node "$HERE/browser_exceptions.js" "$EH" ${SHOTS:+"$SHOTS/exceptions"} 2>&1)"; rc=$?
+    chk "browser: exception column, quick filter with other filters, pop-up, CSV ($(jq -r '.checks' <<<"$res" 2>/dev/null) checks) ${res:0:400}" test "$rc" -eq 0
+    res="$(node "$HERE/browser_check.js" "$EH" 2>&1)"; rc=$?
+    chk "browser: existing checks still pass on a report with exceptions ${res:0:300}" test "$rc" -eq 0
+else echo "  skip exceptions browser check (node + puppeteer-core on NODE_PATH + Chrome not found)"; fi
+unset RDS_BCR_EXC_NOW
 
 echo "== browser"
 if command -v node >/dev/null && [[ -x "${CHROME:-/usr/bin/google-chrome}" ]] && node -e 'require("puppeteer-core")' 2>/dev/null; then

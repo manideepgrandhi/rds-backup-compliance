@@ -89,7 +89,7 @@ const sleep = ms => new Promise(x => setTimeout(x, ms));
   // v1.5.1: no More-filters toggle; every filter on the main row in the specified order
   const cord = await g.evaluate(() => [...document.querySelectorAll('#comp .filters label')].map(l => (l.querySelector('select,input') || {}).id).filter(Boolean).join());
   const gx = await g.evaluate(() => !!document.querySelector('#comp label #f-global'));
-  ok(!(await g.$('details.more')) && cord === ['f-acct', 'f-region', 'f-type', 'f-engine'].concat(gx ? ['f-global', 'f-role'] : [], ['f-status', 'f-show']).join(), 'compliance filters in order (' + cord + ')');
+  ok(!(await g.$('details.more')) && cord === ['f-acct', 'f-region', 'f-type', 'f-engine'].concat(gx ? ['f-global', 'f-role'] : [], ['f-status', 'f-show'], DD.exc ? ['f-exc'] : []).join(), 'compliance filters in order (' + cord + ')');
   // v1.5.3: Account filter / per-region / backups columns show name (number); value stays the id
   const anamed = DD.accounts.filter(a => a.name);
   ok(await g.evaluate(() => [...document.querySelectorAll('#f-acct option')].filter(o => o.value).every(o => {

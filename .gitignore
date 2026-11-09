@@ -1,0 +1,2 @@
+# local compliance exceptions (v1.6.0 / v1.2.0); the .example file is tracked
+compliance_exceptions.conf
