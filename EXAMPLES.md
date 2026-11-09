@@ -145,3 +145,102 @@ HTML Account filters and the Per-region / Backups Account columns show `name (nu
 ```
 
 Account names show as `name (number)` when set (config wins over the IAM alias). The compliance CSV ends with an `account_name` column.
+
+
+## Exceptions (v1.6.0)
+
+Approved exceptions for servers you know are non-compliant. Same shared file as rds-patch-compliance and rds-compliance-report. Matched, unexpired entries (scope `backup` or `patch,backup`) show as **Compliant (exception)** / `COMPLIANT (EXCEPTION)`, count as compliant in every %, and appear in the pop-up as `compliant N (incl. X exceptions)`. The HTML gets an Exception column and an Exceptions quick filter (all / exceptions only / non-exceptions / expiring soon or no longer needed / expired). Flags: **expiring soon** (14 days or less), **no longer needed** (already compliant), **exception expired**. CSV columns at the end: `exception`, `exception_reason`, `exception_expires`, `exception_flag`, `actual_status`. With no file the reports are exactly as before. Applied when the report is built; `--save-data` files never change.
+
+### 1. Set up the file
+
+```bash
+cp /home/cloudshell-user/rds-backup-compliance/compliance_exceptions.conf.example \
+   /home/cloudshell-user/rds-backup-compliance/compliance_exceptions.conf
+vi /home/cloudshell-user/rds-backup-compliance/compliance_exceptions.conf
+```
+
+One entry per line, all five fields required (`account_id | identifier | scope | expires | reason`). Sample:
+
+```text
+# account_id | identifier   | scope        | expires    | reason
+111111111111 | legacy-mysql | backup       | 2027-03-31 | Decommission in Q1, CHG-1234 (owner: dba-team)
+111111111111 | reports-pg   | patch,backup | 2027-03-31 | Vendor-pinned version, backups by vendor tool | INC-77
+111111111111 | billing-pg   | patch        | 2026-12-31 | Patch-only waiver (not applied by the backup tool)
+```
+
+`expires` is mandatory `YYYY-MM-DD` (UTC), last day the exception applies. `#` comments and blank lines are ignored. The real `compliance_exceptions.conf` is in `.gitignore`.
+
+### 2. Default run (file next to the script)
+
+If `compliance_exceptions.conf` sits next to the script it is picked up automatically:
+
+```bash
+/home/cloudshell-user/rds-backup-compliance/rds_backup_compliance_report.sh -A -F html,csv \
+  -o /home/cloudshell-user/out
+```
+
+### 3. Custom location
+
+```bash
+mkdir -p /home/cloudshell-user/configs
+cp /home/cloudshell-user/rds-backup-compliance/compliance_exceptions.conf.example \
+   /home/cloudshell-user/configs/compliance_exceptions.conf
+# edit /home/cloudshell-user/configs/compliance_exceptions.conf, then:
+/home/cloudshell-user/rds-backup-compliance/rds_backup_compliance_report.sh -A -F html,csv \
+  -o /home/cloudshell-user/out \
+  --exceptions /home/cloudshell-user/configs/compliance_exceptions.conf
+```
+
+Config file alternative: `exceptions = /home/cloudshell-user/configs/compliance_exceptions.conf` (CLI `--exceptions` wins).
+
+### 4. Multi-account: `--save-data` then `--merge`
+
+Exceptions are applied when the report is built. `--save-data` files are unchanged (with or without `--exceptions`).
+
+```bash
+# CloudShell, once per account (read-only) -> rds_backup_<ACCOUNT>_<YYYYMMDD>.json
+/home/cloudshell-user/rds-backup-compliance/rds_backup_compliance_report.sh -A --save-data \
+  -o /home/cloudshell-user/data
+
+# Offline merge: exceptions applied here
+/home/cloudshell-user/rds-backup-compliance/rds_backup_compliance_report.sh \
+  --merge /home/cloudshell-user/data -F html,csv -o /home/cloudshell-user/out \
+  --exceptions /home/cloudshell-user/configs/compliance_exceptions.conf
+```
+
+### 5. Validation error (run stops, exit 1, before any AWS call)
+
+A missing field, a bad account / scope / date, or a duplicate account + identifier for the same scope stops the run with `file:line`. Real captured output:
+
+Invalid date (2027 is not a leap year):
+
+```text
+2026-11-09 16:08:06 [ERROR] Exceptions /home/cloudshell-user/rds-backup-compliance/compliance_exceptions.conf:3: expires '2027-02-29' is not a valid date
+```
+
+Wrong date format:
+
+```text
+2026-11-09 16:08:06 [ERROR] Exceptions /home/cloudshell-user/rds-backup-compliance/compliance_exceptions.conf:3: expires must be a date YYYY-MM-DD (got '01-01-2027'); an expiry date is mandatory
+```
+
+Duplicate (case-insensitive identifier; `patch,backup` collides with an existing `backup` row):
+
+```text
+2026-11-09 16:08:06 [ERROR] Exceptions /home/cloudshell-user/rds-backup-compliance/compliance_exceptions.conf:3: duplicate entry for 111111111111 GOOD-db (backup), already on line 2
+```
+
+Fix: correct the date to a real `YYYY-MM-DD`, or remove / change the duplicate line so each account + identifier appears at most once per scope (`patch` and `backup` may both be listed, either as two lines or as `patch,backup`).
+
+### 6. Turning exceptions off
+
+```bash
+# rename (keep for later)
+mv /home/cloudshell-user/rds-backup-compliance/compliance_exceptions.conf \
+   /home/cloudshell-user/rds-backup-compliance/compliance_exceptions.conf.off
+
+# or remove
+rm /home/cloudshell-user/rds-backup-compliance/compliance_exceptions.conf
+```
+
+With no file (and no `--exceptions`), the report matches the pre-exceptions behaviour.
