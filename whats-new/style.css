@@ -1,0 +1,206 @@
+:root {
+  --bg: #f7f8fa;
+  --card: #ffffff;
+  --ink: #1a1d23;
+  --muted: #5c6570;
+  --line: #e4e7ec;
+  --accent: #0b6e4f;
+  --accent-soft: #e7f5ef;
+  --latest: #0b6e4f;
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 4px 12px rgba(16, 24, 40, 0.04);
+  --radius: 14px;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  font-family: var(--sans);
+  color: var(--ink);
+  background: var(--bg);
+  line-height: 1.5;
+  min-height: 100vh;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.wrap {
+  width: min(880px, calc(100% - 2rem));
+  margin: 0 auto;
+  padding: 2rem 0 4rem;
+}
+.site-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 1.75rem;
+}
+.brand {
+  font-weight: 700;
+  font-size: 1.05rem;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+.brand span { color: var(--accent); }
+.nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.85rem;
+  font-size: 0.92rem;
+}
+.hero {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1.5rem 1.5rem 1.35rem;
+  margin-bottom: 1.25rem;
+}
+.eyebrow {
+  margin: 0 0 0.35rem;
+  font-size: 0.75rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.hero h1 {
+  margin: 0 0 0.45rem;
+  font-size: clamp(1.55rem, 3vw, 2rem);
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+.lede {
+  margin: 0;
+  color: var(--muted);
+  max-width: 42rem;
+}
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  margin: 1.1rem 0 0.35rem;
+}
+#q {
+  flex: 1 1 220px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.7rem 0.9rem;
+  font: inherit;
+  background: #fff;
+  color: var(--ink);
+}
+#q:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent) 35%, white);
+  border-color: var(--accent);
+}
+.meta-line {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+#count { font-variant-numeric: tabular-nums; }
+.list {
+  display: grid;
+  gap: 0.9rem;
+  margin-top: 1rem;
+}
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1.15rem 1.25rem 1.2rem;
+}
+.card.hidden { display: none; }
+.card-top {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.75rem;
+  align-items: center;
+  margin-bottom: 0.55rem;
+}
+.ver {
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 1.05rem;
+  letter-spacing: -0.02em;
+}
+.badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.12rem 0.55rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: var(--accent-soft);
+  color: var(--latest);
+}
+.date {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin-left: auto;
+}
+.features {
+  margin: 0.35rem 0 0.9rem;
+  padding-left: 1.15rem;
+}
+.features li { margin: 0.25rem 0; }
+.features li mark {
+  background: #fff3bf;
+  color: inherit;
+  padding: 0 0.15em;
+  border-radius: 3px;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  border-radius: 9px;
+  padding: 0.45rem 0.75rem;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+}
+.btn:hover { border-color: #c9d0da; text-decoration: none; background: #fafbfc; }
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.btn.primary:hover { filter: brightness(0.96); background: var(--accent); }
+.empty {
+  display: none;
+  margin-top: 1rem;
+  padding: 1.25rem;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  color: var(--muted);
+  text-align: center;
+  background: #fff;
+}
+.empty.show { display: block; }
+.site-footer {
+  margin-top: 2rem;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+@media (max-width: 560px) {
+  .date { margin-left: 0; width: 100%; }
+  .hero, .card { padding: 1.05rem 1rem; }
+}

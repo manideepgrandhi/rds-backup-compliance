@@ -1,5 +1,7 @@
 # rds-backup-compliance
 
+Release history: [What's new](https://manideepgrandhi.github.io/rds-backup-compliance/) · also in [CHANGELOG.md](CHANGELOG.md).
+
 `rds_backup_compliance_report.sh` v1.5.4 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
 
 ## Install (CloudShell)
