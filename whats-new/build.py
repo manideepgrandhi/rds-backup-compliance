@@ -212,6 +212,10 @@ def build(repo_root: Path) -> None:
     <footer class="site-footer">
       Built from <code>CHANGELOG.md</code> and published GitHub releases.
       Source: <a href="https://github.com/{html.escape(owner)}/{html.escape(repo)}">github.com/{html.escape(owner)}/{html.escape(repo)}</a>
+      <nav class="more-tools" aria-label="More tools">
+        More tools:
+        <a href="https://manideepgrandhi.github.io/pg-role-grantor/">PostgreSQL Role Grantor</a>
+      </nav>
     </footer>
   </div>
   <script src="./app.js"></script>
