@@ -19,6 +19,8 @@
 # Output: text | csv | json | html. Exit: 0 ok, 5 NON-COMPLIANT with --fail-on-noncompliant, 1 usage, 2 pre-check,
 #         3 bad --merge input, 4 output error, 130 interrupted. Logic and rendering live in lib/*.jq.
 
+# ---------------------------------------------------------------------------- setup and defaults
+# Strict mode, constants (version, lib/ folder, --save-data schema) and the bash 4.4+ check.
 # shellcheck disable=SC2016,SC2034  # jq programs are single-quoted on purpose; KEEP_WORKDIR is read in the EXIT trap
 set -Eeuo pipefail
 umask 077
@@ -34,6 +36,8 @@ if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) ))
     echo "$SCRIPT_NAME: bash 4.4+ required (found $BASH_VERSION)" >&2; exit 2
 fi
 
+# Every setting with its default. set_opt (CLI and --config) changes them; arrays hold repeatable options.
+# Run state below: background job pids, AWS call counters, the work dir, written files, exceptions.
 PROFILES=(); REGIONS=(); ALL_REGIONS=0; ENGINES=(); IDENTIFIERS=(); FORMATS=(); MERGE_ARGS=(); EXEMPT_ENGINES=()
 OUTPUT_DIR=""; OUT_FILE=""; MANUAL_OLDER=""; SNAP_PRICE="0.021"; PREFIX="rds_backup_compliance"; DISPLAY_TZ="Asia/Kolkata"
 DAILY=7; DAILY_MAX_AGE_H=26; WEEKLY=auto; MONTHLY=12; YEARLY=0
@@ -48,12 +52,19 @@ EXC_FILE=""; EXC_JSON="null"; EXC_PATH=""; EXC_ARGS=()   # compliance exceptions
 declare -a WRITTEN=() DATA_FILES=()
 declare -A ACCOUNT_NAMES=()   # config: 123456789012 = name (display only)
 
+# ---------------------------------------------------------------------------- logging
+# _log LEVEL MSG...: timestamped line to stderr, and to --log-file too (never during --dry-run).
 _log() { local l; l="$(date '+%Y-%m-%d %H:%M:%S') [$1] ${*:2}"; printf '%s\n' "$l" >&2
          if [[ -n "$LOG_FILE" && "$DRY_RUN" -eq 0 ]]; then printf '%s\n' "$l" >>"$LOG_FILE" 2>/dev/null || true; fi; }
+# Level wrappers around _log (INFO / WARN / ERROR).
 log_info() { _log INFO "$@"; }; log_warn() { _log WARN "$@"; }; log_error() { _log ERROR "$@"; }
+# Debug line only with -v / --verbose; always returns 0 so it is safe under set -e.
 log_debug() { [[ "$VERBOSE" -eq 1 ]] && _log DEBUG "$@"; return 0; }
+# die CODE MSG...: log an ERROR and exit with CODE (see the exit codes in the header).
 die() { local c="$1"; shift; log_error "$@"; exit "$c"; }
 
+# ---------------------------------------------------------------------------- usage
+# Print --help: every option with its default, and the read-only AWS calls the script makes.
 usage() {
     cat <<USAGE
 $SCRIPT_NAME v$SCRIPT_VERSION - backup compliance report for Aurora clusters and RDS instances (read-only)
@@ -128,20 +139,33 @@ Config may also set 123456789012 = friendly-name (shown as "name (number)"; else
 USAGE
 }
 
+# ---------------------------------------------------------------------------- helpers
+# add_list ARRAY VALUE: split VALUE on commas, drop spaces and empty items, append to the named array.
 add_list() { local -n _a="$1"; local _i; local -a _p; IFS=',' read -r -a _p <<<"$2"
              for _i in "${_p[@]}"; do _i="${_i//[[:space:]]/}"; [[ -n "$_i" ]] && _a+=("$_i"); done; return 0; }
+# True for 1 / y / yes / true / on (any case): boolean values in --config.
 is_true() { case "${1,,}" in 1|y|yes|true|on) return 0 ;; *) return 1 ;; esac; }
+# need_arg OPTION "$#": stop with exit 1 when OPTION is the last argument (its value is missing).
 need_arg() { [[ "$2" -ge 2 ]] || die 1 "Option $1 requires a value (see --help)"; }
+# dow_ok OPTION VALUE: VALUE must be a weekday name sun..sat (exit 1 otherwise).
 dow_ok() { [[ "${2,,}" =~ ^(sun|mon|tue|wed|thu|fri|sat)$ ]] || die 1 "$1 must be sun, mon, tue, wed, thu, fri or sat (got '$2')"; }
+# dow_num DAY: weekday name -> number, 0 = Sunday .. 6 = Saturday (the numbering backup.jq uses).
 dow_num() { case "$1" in sun) echo 0 ;; mon) echo 1 ;; tue) echo 2 ;; wed) echo 3 ;; thu) echo 4 ;; fri) echo 5 ;; *) echo 6 ;; esac; }
+# int_ok OPTION VALUE: VALUE must be a whole number >= 0 (exit 1 otherwise).
 int_ok() { [[ "$2" =~ ^[0-9]+$ ]] || die 1 "$1 must be a whole number (got '$2')"; }
+# json_array ARGS...: print the arguments as a compact JSON array of strings ([] when none).
 json_array() { if (( $# )); then printf '%s\n' "$@" | jq -R . | jq -cs . | tr -d '\r'; else printf '[]'; fi; }
+# Account names from --config (12-digit = name lines) as one JSON object {account: name}.
 account_names_json() {   # config names as JSON object (wins over IAM aliases and saved names)
     local k; { for k in "${!ACCOUNT_NAMES[@]}"; do printf '%s\t%s\n' "$k" "${ACCOUNT_NAMES[$k]}"; done; } \
         | jq -Rcs 'split("\n") | map(select(. != "") | split("\t") | {key: .[0], value: (.[1:] | join(" "))}) | from_entries' | tr -d '\r'
 }
+# jq wrapper used for every value and file: removes the CR that jq.exe adds on Windows.
 jqv() { jq "$@" | tr -d '\r'; }       # jq.exe on Windows writes CRLF: strip for values and files
 
+# ---------------------------------------------------------------------------- config (options and --config values)
+# set_opt KEY VALUE: validate one setting and store it in its global. Shared by the CLI and --config;
+# returns 1 for an unknown key so each caller can word its own error.
 set_opt() {   # set_opt key value  (shared by CLI and --config)
     local k="$1" v="$2"
     case "$k" in
@@ -177,12 +201,15 @@ set_opt() {   # set_opt key value  (shared by CLI and --config)
     return 0
 }
 
+# load_config FILE: read key=value lines (# comments, blank lines skipped) through set_opt;
+# "123456789012 = name" lines set display names for accounts. Any bad line stops the run with file:line.
 load_config() {
     local f="$1" line n=0 key val
     [[ -r "$f" ]] || die 1 "Config file not readable: $f"
     while IFS= read -r line || [[ -n "$line" ]]; do
         n=$((n + 1)); line="${line%$'\r'}"
         [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+        # account name line: strip a trailing # comment, control characters and quotes; max 64 characters
         if [[ "$line" =~ ^[[:space:]]*([0-9]{12})[[:space:]]*=[[:space:]]*(.*)$ ]]; then   # account name (display only)
             key="${BASH_REMATCH[1]}"; val="${BASH_REMATCH[2]}"
             [[ "$val" =~ ^(.*[^[:space:]])?[[:space:]]+#.*$ ]] && val="${BASH_REMATCH[1]}"
@@ -196,6 +223,9 @@ load_config() {
 }
 
 
+# ---------------------------------------------------------------------------- args
+# parse_args "$@": load --config first (so CLI options override it), then read the CLI options,
+# then validate the combination. Sets the globals; exits 0 for --help / --version, 1 on a usage error.
 parse_args() {
     local a; for ((a = 1; a <= $#; a++)); do if [[ "${!a}" == --config ]]; then local b=$((a + 1)); [[ $b -le $# ]] || die 1 "--config needs a file"; CONFIG_FILE="${!b}"; fi; done
     [[ -n "$CONFIG_FILE" ]] && load_config "$CONFIG_FILE"
@@ -224,6 +254,7 @@ parse_args() {
         esac
         shift
     done
+    # validation: formats, weekly / monthly retention ranges, --merge rules, several formats need -o DIR
     (( ${#cli_formats[@]} )) && FORMATS=("${cli_formats[@]}")
     local f; for f in "${FORMATS[@]}"; do case "$f" in text|txt|csv|json|html) ;; *) die 1 "Unknown format '$f' (text,csv,json,html)" ;; esac; done
     (( ${#FORMATS[@]} )) || { if (( MERGE )); then FORMATS=(html); else FORMATS=(text); fi; }
@@ -239,6 +270,8 @@ parse_args() {
     return 0
 }
 
+# ---------------------------------------------------------------------------- evaluation settings (passed to lib/backup.jq as $cfg)
+# tz_setup: TZ_OFFSET (seconds) and TZ_LABEL for the second time zone shown next to UTC (--tz).
 tz_setup() {   # offset seconds + label of the second time zone (Git Bash date may lack zoneinfo: fallback for IST)
     local z; z="$(TZ="$DISPLAY_TZ" date +%z 2>/dev/null || echo +0000)"
     [[ "$z" =~ ^([+-])([0-9]{2})([0-9]{2})$ ]] || z="+0000"
@@ -249,6 +282,8 @@ tz_setup() {   # offset seconds + label of the second time zone (Git Bash date m
     return 0
 }
 
+# cfg_json: every threshold as one JSON object ($cfg in backup.jq). Weekday names become numbers
+# (0 = Sunday); --daily-retention-days defaults to --daily; weekly "auto" stays a string.
 cfg_json() {
     local w="$WEEKLY"; [[ "$w" == auto ]] && w='"auto"'
     jq -cn --argjson d "$DAILY" --argjson h "$DAILY_MAX_AGE_H" --argjson w "$w" --argjson m "$MONTHLY" --argjson y "$YEARLY" \
@@ -269,7 +304,10 @@ cfg_json() {
 # compliance_exceptions.conf, one entry per line:  account_id | identifier | scope | expires | reason
 #   all five required; scope patch, backup or patch,backup; expires YYYY-MM-DD (UTC, last valid day); # comments
 # Strict: any bad line stops the run (exit 1) naming file:line. Applied at report time only (saved data is unchanged).
+# exc_trim VAR: trim leading and trailing whitespace of the named variable in place.
 exc_trim() { local -n _v="$1"; _v="${_v#"${_v%%[![:space:]]*}"}"; _v="${_v%"${_v##*[![:space:]]}"}"; }
+# load_exceptions: read and validate the exceptions file (--exceptions, else compliance_exceptions.conf
+# next to the script; no file = feature off). Sets EXC_JSON (entries as JSON, or null) and EXC_PATH.
 load_exceptions() {   # -> EXC_JSON: "null" (feature off: no file) or a JSON array of entries; EXC_PATH = the file used
     local f="$EXC_FILE" line n=0 acct id scope exp reason s y m d dim k tsv=""
     local -a sc=()
@@ -287,6 +325,7 @@ load_exceptions() {   # -> EXC_JSON: "null" (feature off: no file) or a JSON arr
         [[ "$acct" =~ ^[0-9]{12}$ ]] || die 1 "Exceptions $f:$n: account_id must be 12 digits (got '$acct')"
         [[ "$id" =~ ^[A-Za-z][A-Za-z0-9-]{0,62}$ ]] \
             || die 1 "Exceptions $f:$n: identifier '$id' is not a DB instance / cluster identifier (letters, digits, hyphens; no wildcards)"
+        # scope: lower case, no spaces, only patch / backup, each at most once
         scope="${scope,,}"; scope="${scope//[[:space:]]/}"; IFS=',' read -r -a sc <<<"$scope"
         (( ${#sc[@]} )) || die 1 "Exceptions $f:$n: scope must be patch, backup or patch,backup"
         k=""; for s in "${sc[@]}"; do
@@ -295,11 +334,13 @@ load_exceptions() {   # -> EXC_JSON: "null" (feature off: no file) or a JSON arr
             k+="${k:+,}$s"
         done
         scope="$k"
+        # expires: mandatory YYYY-MM-DD that is a real calendar date (leap years checked)
         [[ "$exp" =~ ^([0-9]{4})-([0-9]{2})-([0-9]{2})$ ]] || die 1 "Exceptions $f:$n: expires must be a date YYYY-MM-DD (got '$exp'); an expiry date is mandatory"
         y=$((10#${BASH_REMATCH[1]})); m=$((10#${BASH_REMATCH[2]})); d=$((10#${BASH_REMATCH[3]}))
         case "$m" in 1|3|5|7|8|10|12) dim=31 ;; 4|6|9|11) dim=30 ;;
             2) if (( (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 )); then dim=29; else dim=28; fi ;; *) dim=0 ;; esac
         (( m >= 1 && m <= 12 && d >= 1 && d <= dim && y >= 2000 )) || die 1 "Exceptions $f:$n: expires '$exp' is not a valid date"
+        # the same account + identifier (any case) may appear only once per scope
         for s in "${sc[@]}"; do
             k="$acct|${id,,}|$s"
             [[ -n "${seen[$k]:-}" ]] && die 1 "Exceptions $f:$n: duplicate entry for $acct $id ($s), already on line ${seen[$k]}"
@@ -308,6 +349,7 @@ load_exceptions() {   # -> EXC_JSON: "null" (feature off: no file) or a JSON arr
         tsv+="$n"$'\t'"$acct"$'\t'"$id"$'\t'"$scope"$'\t'"$exp"$'\t'"$reason"$'\n'
     done <"$f"
     EXC_PATH="$f"
+    # tab-separated lines -> JSON array [{line, account, identifier, scopes, expires, reason}]
     EXC_JSON="$(printf '%s' "$tsv" | jq -Rcs 'split("\n") | map(select(. != "") | split("\t")
         | {line: (.[0] | tonumber), account: .[1], identifier: .[2], scopes: (.[3] | split(",")), expires: .[4], reason: (.[5:] | join(" "))})' | tr -d '\r')" \
         || die 1 "Exceptions $f: cannot convert the entries (jq)"
@@ -315,6 +357,8 @@ load_exceptions() {   # -> EXC_JSON: "null" (feature off: no file) or a JSON arr
 }
 
 # ---------------------------------------------------------------------------- AWS (read-only)
+# awsc OUT PROFILE REGION SERVICE OPERATION [ARGS]: run one read-only AWS CLI call, JSON to OUT, stderr to
+# OUT.err. Counts calls / failures; CLI retries in standard mode. --dry-run prints the command instead. Returns the CLI status.
 awsc() {   # awsc <out-file> <profile> <region> <service> <operation> [args...]; stderr -> <out-file>.err
     local out="$1" prof="$2" reg="$3"; shift 3
     local -a cmd=(aws "$@" --output json --cli-connect-timeout "$AWS_TIMEOUT" --cli-read-timeout "$AWS_TIMEOUT")
@@ -324,14 +368,20 @@ awsc() {   # awsc <out-file> <profile> <region> <service> <operation> [args...];
     if AWS_MAX_ATTEMPTS="$MAX_ATTEMPTS" AWS_RETRY_MODE=standard AWS_PAGER="" "${cmd[@]}" >"$out" 2>"$out.err"; then return 0; fi
     AWS_FAILS=$((AWS_FAILS + 1)); return 1
 }
+# err_of OUT: first readable line of OUT.err (the AWS error text), at most 200 characters.
 err_of() { tr -d '\r' <"$1.err" | grep -v '^[[:space:]]*$' | sed -E 's/^aws: \[ERROR\]: //; s/An error occurred //' | head -1 | cut -c1-200; }
 
+# glob_match VALUE GLOB...: case-insensitive match against any glob; no globs = match (no -e / -i filter).
 # shellcheck disable=SC2053  # the right-hand side is a glob on purpose
 glob_match() { local v="${1,,}" g; shift; (( $# )) || return 0; for g in "$@"; do [[ "$v" == ${g,,} ]] && return 0; done; return 1; }
 
+# ---------------------------------------------------------------------------- collection (one account + region)
+# scan_region PROFILE ACCOUNT REGION DIR: read one region (RDS, snapshots, AWS Backup), build its resources
+# with lib/collect.jq, apply the -e / -i filters. Writes DIR/resources.json, orphans.json, region.json, stats.
 scan_region() {   # scan_region <profile> <account> <region> <dir>  -> <dir>/resources.json, <dir>/region.json
     local prof="$1" acct="$2" reg="$3" d="$4" e; local -a errs=()
     local c0=$AWS_CALLS f0=$AWS_FAILS gf="$WORK/$acct.globals.json"
+    # a background job cannot update the parent's GLOBAL_DONE, so in parallel mode each region reads global clusters itself
     (( SCAN_PAR )) && { gf="$d/globals.json"; GLOBAL_DONE=0; GLOBAL_OK=true; }   # parallel: each region job has its own copy
     local csnap_ok=true isnap_ok=true backup_ok=true
     echo '{}' >"$d/c.json"; echo '{}' >"$d/i.json"; echo '{}' >"$d/cs.json"; echo '{}' >"$d/is.json"; echo '[]' >"$d/rp.json"
@@ -344,6 +394,7 @@ scan_region() {   # scan_region <profile> <account> <region> <dir>  -> <dir>/res
     # snapshots: region-wide in every region (manual snapshots outlive their source; --include-shared adds shared ones)
     awsc "$d/cs.json" "$prof" "$reg" rds describe-db-cluster-snapshots --include-shared || { csnap_ok=false; errs+=("describe-db-cluster-snapshots: $(err_of "$d/cs.json")"); echo '{}' >"$d/cs.json"; }
     awsc "$d/is.json" "$prof" "$reg" rds describe-db-snapshots --include-shared || { isnap_ok=false; errs+=("describe-db-snapshots: $(err_of "$d/is.json")"); echo '{}' >"$d/is.json"; }
+    # global clusters and AWS Backup recovery points are read only when the region has a database
     if (( nc + ni > 0 )); then
         if (( nc > 0 && ! GLOBAL_DONE )); then GLOBAL_DONE=1
             if awsc "$gf" "$prof" "$reg" rds describe-global-clusters; then GLOBAL_OK=true
@@ -360,6 +411,7 @@ scan_region() {   # scan_region <profile> <account> <region> <dir>  -> <dir>/res
         else backup_ok=false; errs+=("list-backup-vaults: $(err_of "$d/v.json")"); fi
     fi
     [[ -s "$gf" ]] || echo '{}' >"$gf"   # (re)fetched only once: GLOBAL_DONE
+    # lib/collect.jq: raw describe-* outputs -> {resources, orphans, existing}
     jqv -n --arg acct "$acct" --arg region "$reg" --slurpfile clusters "$d/c.json" --slurpfile instances "$d/i.json" \
         --slurpfile csnaps "$d/cs.json" --slurpfile isnaps "$d/is.json" --slurpfile rps "$d/rp.json" --slurpfile globals "$gf" \
         --argjson csnap_ok "$csnap_ok" --argjson isnap_ok "$isnap_ok" --argjson backup_ok "$backup_ok" --argjson global_ok "${GLOBAL_OK:-true}" -f "$LIBDIR/collect.jq" >"$d/coll.json"
@@ -379,6 +431,7 @@ scan_region() {   # scan_region <profile> <account> <region> <dir>  -> <dir>/res
     done < <(jqv -r '.orphans[] | [(.source_id // ""), (.engine // "")] | @tsv' "$d/coll.json")
     jqv --argjson k "$(json_array "${ko[@]}")" '[ .orphans | to_entries[] | select(.key | tostring as $x | $k | index([$x])) | .value ]' "$d/coll.json" >"$d/orphans.json"
     local n no status; n="$(jqv length "$d/resources.json")"; no="$(jqv length "$d/orphans.json")"
+    # region status: error > with databases > snapshots only > empty
     if (( ${#errs[@]} )); then status=error; elif (( n > 0 )); then status="with databases"; elif (( no > 0 )); then status="snapshots only"; else status=empty; fi
     for e in "${errs[@]}"; do log_warn "$acct $reg: $e"; done
     region_progress "$reg" "$d/resources.json" "$no" "${errs[@]}"
@@ -388,6 +441,9 @@ scan_region() {   # scan_region <profile> <account> <region> <dir>  -> <dir>/res
     echo "$((AWS_CALLS - c0)) $((AWS_FAILS - f0))" >"$d/stats"
 }
 
+# ---------------------------------------------------------------------------- region jobs (parallel scan)
+# region_job ARGS: background job wrapper. Runs scan_region in a subshell with its own error handling and writes
+# its exit code to DIR/rc; a missing rc file means the job was killed.
 # shellcheck disable=SC2030,SC2031  # REG_T0 is per job on purpose
 region_job() {   # background job: scan_region in a subshell; <dir>/rc marks a normal finish
     local d="$4"
@@ -395,6 +451,8 @@ region_job() {   # background job: scan_region in a subshell; <dir>/rc marks a n
     ( set -e; shopt -s inherit_errexit 2>/dev/null || true; REG_T0=$SECONDS; scan_region "$@" ); echo $? >"$d/rc"
 }
 
+# region_failed ACCOUNT REGION DIR WHY: write empty results and an "error" region.json for a failed job,
+# so the other regions still report and the failure shows under Region errors.
 region_failed() {   # region_failed <account> <region> <dir> <why>: placeholder result so other regions still report
     local a="$1" r="$2" d="$3" why="$4"
     echo '[]' >"$d/resources.json"; echo '[]' >"$d/orphans.json"
@@ -402,6 +460,8 @@ region_failed() {   # region_failed <account> <region> <dir> <why>: placeholder 
         '{account: $a, region: $r, status: "error", resources: 0, errors: [$e], snapshot_scan: false, existing: []}' >"$d/region.json"
 }
 
+# region_progress REGION RESOURCES_FILE ORPHANS [ERRORS]: log one progress line for the region (counts, seconds,
+# errors). Empty regions are logged only with -v; they appear in region_summary.
 region_progress() {   # one line per region with resources (all regions with -v): [i/N] region: counts (seconds); errors always shown
     local reg="$1" res="$2" no="$3"; shift 3
     # shellcheck disable=SC2031  # REG_T0 is set per region inside that region's own (sub)shell on purpose
@@ -418,12 +478,16 @@ region_progress() {   # one line per region with resources (all regions with -v)
     log_info "[$REG_I/$REG_N] $reg: $line"
 }
 
+# region_summary ACCOUNT: one log line with regions scanned, the empty ones and the failed ones.
 region_summary() {   # one line per account: "8 regions scanned, 5 empty: a, b, c" (+ failed regions)
     log_info "$1: $(jqv -rs '(map(select(.status == "empty") | .region)) as $e | (map(select(.status == "error") | .region)) as $f
         | "\(length) region\(if length == 1 then "" else "s" end) scanned, \($e | length) empty\(if ($e | length) > 0 then ": " + ($e | join(", ")) else "" end)"
           + (if ($f | length) > 0 then "; \($f | length) failed: \($f | join(", "))" else "" end)' "$WORK/$1"/*/region.json)"
 }
 
+# ---------------------------------------------------------------------------- collection (one account: its regions, serial or parallel)
+# scan_profile PROFILE: account id (sts), display name (config or IAM alias), region list (-r, -A or default),
+# then every region. Writes $WORK/data_<account>.json and adds it to DATA_FILES; returns 1 if the account cannot be read.
 scan_profile() {   # scan_profile <profile>  -> $WORK/data_<account>.json
     local prof="$1" acct reg idf="$WORK/id_${1:-default}.json" aname=""; local -a regs=()
     if (( DRY_RUN )); then acct="ACCOUNT"; awsc "$idf" "$prof" "" sts get-caller-identity
@@ -442,6 +506,7 @@ scan_profile() {   # scan_profile <profile>  -> $WORK/data_<account>.json
             log_debug "Account alias for $acct not available (iam:ListAccountAliases)"
         fi
     fi
+    # describe-global-clusters is account-wide: serial scans read it once (first region with a cluster)
     GLOBAL_OK=true; GLOBAL_DONE=0; rm -f "$WORK/$acct.globals.json"
     if (( ALL_REGIONS )); then
         if (( DRY_RUN )); then awsc "$WORK/regs.json" "$prof" "${REGIONS[0]:-us-east-1}" ec2 describe-regions; regs=("<each-enabled-region>")
@@ -458,6 +523,8 @@ scan_profile() {   # scan_profile <profile>  -> $WORK/data_<account>.json
         regs=("$reg")
     fi
     log_info "account $acct (profile ${prof:-default}): ${#regs[@]} region(s)"
+    # parallel region jobs: at most $par at a time. With wait -n a new job starts as soon as one ends;
+    # without it (bash < 4.3 or RDS_BCR_NO_WAIT_N) each batch must finish first. Each job writes only its own dir.
     local i=0 d n=${#regs[@]} par=$PARALLEL running=0 st
     (( DRY_RUN || n < 2 )) && par=1
     SCAN_PAR=$(( par > 1 ))
@@ -472,6 +539,7 @@ scan_profile() {   # scan_profile <profile>  -> $WORK/data_<account>.json
         (( VERBOSE )) && log_info "[$i/$n] $reg: started"
         region_job "$prof" "$acct" "$reg" "$d" & BG_PIDS+=("$!"); running=$((running + 1))
     done
+    # after all jobs: check each rc / result in region order, replace failures with placeholders, add the call counters
     if (( SCAN_PAR )); then
         wait || true; BG_PIDS=()
         i=0; local fails=0 summ=()
@@ -490,6 +558,7 @@ scan_profile() {   # scan_profile <profile>  -> $WORK/data_<account>.json
     fi
     (( DRY_RUN )) && return 0
     region_summary "$acct"
+    # account data document: header + regions, then resources (ARNs removed) and orphan snapshots in region order
     jqv -n --arg s "$DATA_SCHEMA" --argjson v "$DATA_SCHEMA_VERSION" --arg tool "$SCRIPT_VERSION" --arg a "$acct" --arg p "${prof:-default}" --arg n "$aname" --argjson now "$NOW" \
         '{schema: $s, schema_version: $v, tool_version: $tool, collected_epoch: $now, collected_at: ($now | todate),
           accounts: [{account: $a, profile: $p, name: $n, collected_epoch: $now}],
@@ -500,9 +569,13 @@ scan_profile() {   # scan_profile <profile>  -> $WORK/data_<account>.json
 }
 
 # ---------------------------------------------------------------------------- merge input
+# winpath PATH: PATH as given if it exists, else converted with cygpath (Git Bash C:\ paths).
 winpath() { local p="$1"; [[ -e "$p" ]] && { printf '%s' "$p"; return; }
             command -v cygpath >/dev/null 2>&1 && { cygpath -u -- "$p" 2>/dev/null | tr -d '\r'; return; }; printf '%s' "$p"; }
+# is_data_file FILE: true when FILE is JSON with the --save-data schema name.
 is_data_file() { [[ "$(jq -r --arg s "$DATA_SCHEMA" 'if type == "object" and .schema == $s then "y" else "n" end' -- "$1" 2>/dev/null | tr -d '\r')" == y ]]; }
+# collect_merge_inputs: expand the --merge FILE / DIR arguments into --save-data files, merge them with
+# lib/merge.jq into $WORK/data.json (newest collection per account wins) and log ignored older collections.
 collect_merge_inputs() {
     local a p f; local -a files=()
     for a in "${MERGE_ARGS[@]}"; do
@@ -515,6 +588,7 @@ collect_merge_inputs() {
         else die 3 "Merge input not found: $a"; fi
     done
     local i=0 parts=()
+    # number each file in argument order: merge.jq uses it to break ties between equal collection times
     for f in "${files[@]}"; do i=$((i + 1)); jqv -c --argjson i "$i" '{i: $i, d: .}' -- "$f" >"$WORK/m$i.json"; parts+=("$WORK/m$i.json"); done
     jqv -s -f "$LIBDIR/merge.jq" "${parts[@]}" >"$WORK/data.json"
     local r; while IFS= read -r r; do [[ -n "$r" ]] && log_warn "account $r: an older collection was ignored (newer file wins)"; done < <(jqv -r '.replaced[] | .account' "$WORK/data.json")
@@ -522,6 +596,7 @@ collect_merge_inputs() {
 }
 
 # ---------------------------------------------------------------------------- output
+# abs_dir DIR: absolute path with ~, ., .. and // resolved, without touching the disk.
 abs_dir() {   # absolute, normalised directory (no //, ./, ..; ~ expanded) - CloudShell and Git Bash
     local p="$1" out="" part; local -a parts=() keep=()
     [[ "$p" == "~" || "$p" == \~/* ]] && p="$HOME${p#\~}"
@@ -533,6 +608,7 @@ abs_dir() {   # absolute, normalised directory (no //, ./, ..; ~ expanded) - Clo
     for part in "${keep[@]}"; do out+="/$part"; done
     printf '%s' "${out:-/}"
 }
+# output_block: list every written file with its full path on stderr (and in --log-file).
 output_block() {   # Output (N files): then one complete absolute path per line
     (( ${#WRITTEN[@]} )) || return 0
     local f n=${#WRITTEN[@]}
@@ -540,10 +616,14 @@ output_block() {   # Output (N files): then one complete absolute path per line
     for f in "${WRITTEN[@]}"; do printf '  %s/%s\n' "$(abs_dir "$(dirname -- "$f")")" "${f##*/}" >&2; done
     if [[ -n "$LOG_FILE" ]]; then printf 'wrote %s\n' "${WRITTEN[@]}" >>"$LOG_FILE" 2>/dev/null || true; fi
 }
+# ---------------------------------------------------------------------------- evaluation and render (lib/backup.jq)
+# render MODE DATA: evaluate compliance and print one output mode (rows, json, csv, bcsv, mcsv, ocsv, osum, exclog,
+# txt, html). Compliance is computed here, at render time, so saved data is evaluated again with today's rules.
 render() {   # render <mode> <data> -> stdout
     jqv -r --arg mode "$1" --argjson now "$NOW" --argjson cfg "$CFG" --arg tool "$SCRIPT_VERSION" \
         --argjson acct_names "$(account_names_json)" --rawfile page "$LIBDIR/backup_page.js" "${EXC_ARGS[@]}" -f "$LIBDIR/backup.jq" "$2"
 }
+# exc_ready: write the validated exceptions to $WORK/exceptions.json and set EXC_ARGS for render (no-op when off).
 exc_ready() {   # write the validated entries next to the work files once; jq reads them as $ARGS.named.exc
     [[ "$EXC_JSON" != null && -n "$WORK" ]] || return 0
     printf '%s' "$EXC_JSON" >"$WORK/exceptions.json"; EXC_ARGS=(--slurpfile exc "$WORK/exceptions.json")
@@ -551,15 +631,22 @@ exc_ready() {   # write the validated entries next to the work files once; jq re
     return 0
 }
 
+# ---------------------------------------------------------------------------- outputs
+# write_out FILE CMD...: run CMD into FILE (exit 4 if it cannot be written) and remember FILE for output_block.
 write_out() { local f="$1"; shift; "$@" >"$f" || die 4 "Cannot write $f"; WRITTEN+=("$f"); }
 
+# ---------------------------------------------------------------------------- main
+# main "$@": pre-checks, exceptions, scan or merge, optional --save-data, render every format, summary log, exit code.
+# This script sends no alerts: --fail-on-noncompliant (exit 5) is the hook for schedulers / CI.
 main() {
     parse_args "$@"
+    # pre-checks: jq, the lib/ files and the aws CLI (not needed for --merge / --dry-run)
     command -v jq >/dev/null 2>&1 || die 2 "jq not found"
     for f in backup.jq backup_page.js collect.jq merge.jq; do [[ -r "$LIBDIR/$f" ]] || die 2 "Missing $LIBDIR/$f - keep the lib/ folder next to the script"; done
     (( MERGE )) || (( DRY_RUN )) || command -v aws >/dev/null 2>&1 || die 2 "aws CLI not found"
     load_exceptions   # before any AWS call: a bad line stops the run now, not after the scan
     [[ "$EXC_JSON" != null ]] && log_info "Exceptions file $EXC_PATH: $(jqv -r 'length' <<<"$EXC_JSON") entries"
+    # one clock for the whole run: every evaluation and file name uses NOW / STAMP
     NOW="$(date -u +%s)"; STAMP="$(date -u +%Y%m%d_%H%M%S)"; tz_setup; CFG="$(cfg_json)"
     WORK="$(mktemp -d "${TMPDIR:-/tmp}/rds_bcr.XXXXXX")"
     exc_ready
@@ -568,6 +655,7 @@ main() {
     HAVE_WAIT_N=0; [[ -z "${RDS_BCR_NO_WAIT_N:-}" ]] && (( BASH_VERSINFO[0] > 4 || BASH_VERSINFO[1] >= 3 )) && HAVE_WAIT_N=1
     [[ -n "$OUTPUT_DIR" ]] && { mkdir -p -- "$OUTPUT_DIR" 2>/dev/null || die 4 "Cannot create $OUTPUT_DIR"; }
 
+    # data: merge saved files offline, or scan every profile and combine the account documents
     if (( MERGE )); then collect_merge_inputs
     else
         (( ${#PROFILES[@]} )) || PROFILES=("")
@@ -578,6 +666,7 @@ main() {
             '{schema: $s, schema_version: $v, collected_epoch: $now, accounts: [.[].accounts[]], regions: [.[].regions[]], resources: [.[].resources[]], orphans: [.[].orphans[]]}' \
             "${DATA_FILES[@]}" >"$WORK/data.json"
         log_info "AWS calls: $AWS_CALLS ($AWS_FAILS failed)"
+        # --save-data: one raw file per account (rds_backup_<account>_<date>.json) for a later --merge
         if (( SAVE_DATA )); then
             local df a
             for df in "${DATA_FILES[@]}"; do
@@ -589,6 +678,7 @@ main() {
         fi
     fi
     local data="$WORK/data.json" accts tag
+    # --non-compliant-only: keep only NON-COMPLIANT resources (rows evaluated once to find them)
     if (( NC_ONLY )); then
         render rows "$data" | jqv -c '[.[] | select(.status == "NON-COMPLIANT") | "\(.account_id)|\(.region)|\(.identifier)"]' >"$WORK/nc.json"
         # exc_ids: every scanned server, so an exception is not reported as unmatched only because its server is hidden
@@ -596,9 +686,11 @@ main() {
             | .resources |= [ .[] | select("\(.account_id)|\(.region)|\(.id)" as $x | $k[0] | index([$x])) ]' "$data" >"$WORK/data_nc.json"
         data="$WORK/data_nc.json"
     fi
+    # file name tag: account numbers, or merged_<N>_accounts for more than 3 accounts
     accts="$(jqv -r '[.accounts[].account] | unique | join("_")' "$WORK/data.json")"
     tag="$accts"; [[ "$(jqv '.accounts | length' "$WORK/data.json")" -gt 3 ]] && tag="merged_$(jqv '.accounts | length' "$WORK/data.json")_accounts"
     local f ext base
+    # outputs: one file per format; csv also writes the backups and orphaned snapshot CSVs
     for f in "${FORMATS[@]}"; do
         case "$f" in text|txt) ext=txt; f=txt ;; *) ext="$f" ;; esac
         if [[ -n "$OUTPUT_DIR" ]]; then
@@ -613,6 +705,7 @@ main() {
         write_out "${OUTPUT_DIR:-.}/${PREFIX}_${tag}_${STAMP}_manual_older_than_${MANUAL_OLDER}d.csv" render mcsv "$WORK/data.json"
         log_info "manual snapshots older than ${MANUAL_OLDER} days: $(render mcsv "$WORK/data.json" | tail -n +2 | grep -c . || true)"
     fi
+    # summary: counts and exception notes in the log, then the exit code (5 only with --fail-on-noncompliant)
     local nc; nc="$(render rows "$WORK/data.json" | jqv '[.[] | select(.status == "NON-COMPLIANT")] | length')"
     log_info "resources: $(jqv '.resources | length' "$WORK/data.json"), non-compliant: $nc"
     if [[ "$EXC_JSON" != null ]]; then
