@@ -24,7 +24,7 @@ def arnp: if type == "string" and startswith("arn:") then split(":") | {region: 
                                cron: (.BackupRuleCron // null), rtz: (.BackupRuleTimezone // null)} | with_entries(select(.value != null))) ];
   def role($arn; $repl): if $global_ok | not then (if $repl then "replica" else "unknown" end)
       elif $GM[$arn] then (if $GM[$arn].w then "primary" else "secondary" end)
-      elif $repl then "replica" else "none" end;
+      elif $repl then "replica" else "primary" end;
   ([ ($clusters[0].DBClusters // [])[].DBClusterIdentifier ] | unique) as $EC
 | ([ ($instances[0].DBInstances // [])[].DBInstanceIdentifier ] | unique) as $EI
 | def orphan($type; $sid; $src; $srcarn; $snaparn):
@@ -56,7 +56,7 @@ def arnp: if type == "string" and startswith("arn:") then split(":") | {region: 
     | {account_id: $acct, region: $region, id: .DBInstanceIdentifier, type: "instance", engine: .Engine, engine_version: .EngineVersion,
        created_epoch: (.InstanceCreateTime | ts), retention: (.BackupRetentionPeriod // 0), global_cluster: null,
        backup_window: (.PreferredBackupWindow // null), copy_tags: (if .CopyTagsToSnapshot == null then null else .CopyTagsToSnapshot end),
-       global_role: (if (.ReadReplicaSourceDBInstanceIdentifier // "") != "" then "replica" else "none" end),
+       global_role: (if (.ReadReplicaSourceDBInstanceIdentifier // "") != "" or (.ReadReplicaSourceDBClusterIdentifier // "") != "" then "replica" else "primary" end),
        snap_ok: $isnap_ok, backup_ok: $backup_ok, arn: .DBInstanceArn,
        snapshots: ([ ($isnaps[0].DBSnapshots // [])[] | select(.DBInstanceIdentifier == $i.DBInstanceIdentifier and (.SnapshotType == "manual" or .SnapshotType == "automated"))
                      | {kind: .SnapshotType, id: .DBSnapshotIdentifier, created_epoch: (.SnapshotCreateTime | ts), status: .Status,

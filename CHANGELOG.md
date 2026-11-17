@@ -2,6 +2,11 @@
 
 Plain-English features for each published release. The What's new page is built from this file.
 
+## 1.6.1
+- Role column shows `primary` instead of `none` for standalone and source servers, including Oracle
+- Instances that replicate from a Multi-AZ cluster now show `replica`
+- Statuses, counts and filters are unchanged
+
 ## 1.6.0
 - Mark chosen servers as always compliant with a simple exceptions file (expiry date required)
 - Excepted servers count as compliant, with warnings when an exception is expiring soon, expired, or no longer needed
