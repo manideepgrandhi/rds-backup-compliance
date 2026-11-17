@@ -32,7 +32,7 @@ rowt() { jq -e --arg i "$2" ".rows[] | select(.identifier == \$i) | $3" "$OUT/$1
 ncalls() { wc -l <"$MOCK_LOG" 2>/dev/null | tr -d ' ' || echo 0; }
 
 echo "== CLI"
-t version 0 fleet --version; has version out '1\.6\.0'
+t version 0 fleet --version; has version out '1\.6\.1'
 t help 0 fleet --help; has help out 'list-recovery-points-by-backup-vault'; has help out 'weekly-days'
 t badopt 1 fleet --nope
 t multifmt 1 fleet -P prod -r us-east-1 -F csv,html
@@ -195,6 +195,10 @@ has bdeny err '\[1/2\] us-east-1: .* - ERROR: .*list-backup-vaults'
 jqt bdeny '[.regions[] | select(.status == "error")] | length == 2' "$OUT/bdeny.out"
 t gdeny 0 globaldeny -P prod -r us-west-2 -F json
 rowt gdeny orders-dr-pg15 '.global_role == "unknown" and .weekly.st == "FAIL"'
+# v1.6.1: with global clusters unreadable a plain cluster stays unknown (not primary); instances are never global, so primary
+t gdeny2 0 globaldeny -P prod -r us-east-1 -F json
+rowt gdeny2 billing-aurora-mysql '.global_role == "unknown"'
+rowt gdeny2 legacy-mysql '.global_role == "primary"'
 has gdeny err 'describe-global-clusters: \(AccessDenied\)'
 t sdeny 0 snapdeny -P prod -r us-east-1 -F json
 rowt sdeny reports-pg '.daily.st == "UNKNOWN"'
@@ -302,7 +306,7 @@ t merge 0 fleet --merge "$M/prod.json" "$M/nonprod.json" "$M/dev.json" "$OUT/pro
 chk "merge made zero AWS calls" test "$(ncalls)" == "$n0"
 jqt merge '[.accounts[].account] | sort == ["111111111111", "222222222222", "333333333333"]' "$OUT/merge.out"
 jqt merge '.rows | length == 13' "$OUT/merge.out"
-rowt merge erp-oracle '.pitr.on == true and (.pitr.since | test("^20[0-9]{2}-")) and .global_role == "none"'
+rowt merge erp-oracle '.pitr.on == true and (.pitr.since | test("^20[0-9]{2}-")) and .global_role == "primary"'
 rowt merge payroll-sqlserver '.pitr.on == false'
 jqt merge '.orphan_totals.orphaned == 5 and .orphan_totals.summary == "5 orphaned snapshots, 1.6 TB, ~$34/month (estimate)"' "$OUT/merge.out"
 jqt merge '[.orphaned_snapshots[] | select(.source_status == "ORPHANED") | .account_id] | unique == ["111111111111", "222222222222", "333333333333"]' "$OUT/merge.out"
@@ -378,7 +382,24 @@ echo "== v1.5.2: replica-exempt-engines + account names"
 # Oracle replica without exemption: daily fails
 t orex0 0 fleet -P dev -r eu-west-1 -F json
 rowt orex0 erp-oracle-rr '.global_role == "replica" and .status == "NON-COMPLIANT" and .weekly.st == "N/A" and (.gaps | test("daily"))'
-rowt orex0 erp-oracle '.global_role == "none" and .status == "COMPLIANT"'
+rowt orex0 erp-oracle '.global_role == "primary" and .status == "COMPLIANT"'
+# v1.6.1: standalone / source instances show primary (never none); a replica of a Multi-AZ cluster is a replica
+jqt orex0 '[.rows[] | select(.type == "instance")] | length > 0 and all(.global_role == "primary" or .global_role == "replica")' "$OUT/orex0.out"
+jqt orex0 '[.rows[] | select(.global_role == "none")] | length == 0' "$OUT/orex0.out"
+MOCK_REPLICA_OF_CLUSTER=1 t orexc 0 fleet -P dev -r eu-west-1 -F json
+rowt orexc erp-oracle-rr '.global_role == "replica" and .status == "NON-COMPLIANT" and (.gaps | test("daily"))'
+rowt orexc erp-oracle '.global_role == "primary" and .status == "COMPLIANT"'
+MOCK_REPLICA_OF_CLUSTER=1 t orexc1 0 fleet -P dev -r eu-west-1 -F json --replica-exempt-engines 'oracle-*'
+rowt orexc1 erp-oracle-rr '.global_role == "replica" and .status == "COMPLIANT" and .weekly.st == "N/A"'
+# plain (non-global) Aurora cluster is primary, with no global cluster; statuses unchanged
+t plainclu 0 fleet -P prod -r us-east-1 -F json
+rowt plainclu billing-aurora-mysql '.type == "cluster" and .global_role == "primary" and .global_cluster == "" and .status == "NON-COMPLIANT"'
+rowt plainclu legacy-mysql '.type == "instance" and .global_role == "primary" and .status == "NON-COMPLIANT"'
+# older saved data (global_role "none") is shown as primary at merge time; a saved unknown stays unknown
+jq '.resources |= map(if .id == "legacy-mysql" then .global_role = "none" elif .id == "billing-aurora-mysql" then .global_role = "unknown" else . end)' "$M/prod.json" >"$OUT/prod_none.json"
+t oldnone 0 fleet --merge "$OUT/prod_none.json" -F json
+rowt oldnone legacy-mysql '.global_role == "primary" and .status == "NON-COMPLIANT"'
+rowt oldnone billing-aurora-mysql '.global_role == "unknown"'
 # oracle-* exempts the replica only
 t orex1 0 fleet -P dev -r eu-west-1 -F json --replica-exempt-engines 'oracle-*'
 rowt orex1 erp-oracle-rr '.status == "COMPLIANT" and .daily.st == "N/A" and .weekly.st == "N/A" and .monthly.st == "N/A" and .gaps == ""'
@@ -447,7 +468,7 @@ jqt fleet '[.rows[] | select(.account_id == "111111111111") | {id: .identifier, 
 t gsort 0 fleet -P prod -r us-east-1,us-west-2 -F csv,html -o "$OUT/gsort"
 chk "csv: orders primary then secondary consecutive" python3 -c 'import csv,glob,sys; fs=[f for f in glob.glob(sys.argv[1]+"/*.csv") if "_backups" not in f and "_orphaned" not in f and "_manual" not in f]; r=list(csv.DictReader(open(fs[0],encoding="utf-8-sig"))); ids=[x["identifier"] for x in r]; i=ids.index("orders-aurora-pg15"); assert ids[i+1]=="orders-dr-pg15", ids; assert r[i]["global_role"]=="primary" and r[i+1]["global_role"]=="secondary"' "$OUT/gsort"
 chk "html: orders primary row before secondary" python3 -c 'import glob,sys; h=open(glob.glob(sys.argv[1]+"/*.html")[0],encoding="utf-8").read(); assert h.find("orders-aurora-pg15") < h.find("orders-dr-pg15") and "orders-aurora-pg15" in h and "orders-dr-pg15" in h' "$OUT/gsort"
-chk "version is 1.6.0" grep -qF 'SCRIPT_VERSION="1.6.0"' "$SCRIPT"
+chk "version is 1.6.1" grep -qF 'SCRIPT_VERSION="1.6.1"' "$SCRIPT"
 
 echo "== v1.6.0: compliance exceptions (--exceptions FILE / compliance_exceptions.conf)"
 EX="$OUT/exc"; mkdir -p "$EX"; export RDS_BCR_EXC_NOW=1791000000   # "today" for the expiry dates only = 2026-10-03 UTC

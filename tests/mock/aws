@@ -10,6 +10,7 @@ MOCK_SCENARIO: fleet (default) | backupdeny (backup list-backup-vaults AccessDen
                | rpquirks (prod vault: weekly points without CalculatedLifecycle and Status AVAILABLE, plus a continuous point)
 MOCK_NOW: fixed epoch for "now".  MOCK_SLEEP: "region=seconds,..." delay per region (completion order in parallel tests).
 MOCK_LOG: append argv as JSONL.  MOCK_DEFAULT_REGION: answer for `aws configure get region`.
+MOCK_REPLICA_OF_CLUSTER: instance replicas name a Multi-AZ cluster source (ReadReplicaSourceDBClusterIdentifier) instead of an instance.
 MOCK_ALIAS / MOCK_ALIAS_DENY: override or deny iam list-account-aliases (v1.5.2 account names).
 """
 import json, os, sys
@@ -214,7 +215,8 @@ if svc == "rds" and op == "describe-db-instances":
                  "BackupRetentionPeriod": r[6], "InstanceCreateTime": iso(created(r)), "DBInstanceStatus": "available",
                  "PreferredBackupWindow": "04:00-04:30", "CopyTagsToSnapshot": r[1] != "legacy-mysql"}
             if opts(r).get("replica_of"):
-                d["ReadReplicaSourceDBInstanceIdentifier"] = opts(r)["replica_of"]
+                # MOCK_REPLICA_OF_CLUSTER=1: the replica's source is a Multi-AZ DB cluster (ReadReplicaSourceDBClusterIdentifier)
+                d["ReadReplicaSourceDBClusterIdentifier" if os.environ.get("MOCK_REPLICA_OF_CLUSTER") else "ReadReplicaSourceDBInstanceIdentifier"] = opts(r)["replica_of"]
             out.append(d)
     print(json.dumps({"DBInstances": out})); sys.exit(0)
 if svc == "rds" and op == "describe-global-clusters":

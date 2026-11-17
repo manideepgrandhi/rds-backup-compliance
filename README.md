@@ -2,7 +2,7 @@
 
 Release history: [What's new](https://manideepgrandhi.github.io/rds-backup-compliance/) · also in [CHANGELOG.md](CHANGELOG.md).
 
-`rds_backup_compliance_report.sh` v1.5.4 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
+`rds_backup_compliance_report.sh` v1.6.1 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
 
 ## Install (CloudShell)
 
@@ -60,7 +60,11 @@ You can change these with `--weekly-days MIN-MAX`, `--monthly-days MIN-MAX`, `--
 
 How the role of each resource is decided:
 
-- **Global cluster roles** come from `describe-global-clusters`. The writer is `primary` and the other members are `secondary`. Secondaries are checked for daily backups only, and their weekly, monthly and yearly checks show N/A.
+- **Role column** (`global_role`, "Global role" in the page): every cluster and instance gets a role.
+  - **Instances** are `replica` when RDS reports a replication source (`ReadReplicaSourceDBInstanceIdentifier`, or `ReadReplicaSourceDBClusterIdentifier` for a replica of a Multi-AZ cluster). All other instances are `primary`: standalone and source instances of every engine, including Oracle (v1.6.1; older versions showed `none`).
+  - **Clusters:** the writer of an Aurora global database is `primary` and its other members are `secondary`. A cluster that replicates from another cluster is `replica`. Any other cluster is `primary`. If `describe-global-clusters` is denied, clusters show `unknown` (replicas still show `replica`).
+  - The role does not change a status. `primary`, `unknown` and (in older saved data) `none` all get the full checks. Only a `primary` that belongs to an Aurora global database counts as global: the Aurora global DB and Global role filters in the page ignore standalone primaries.
+- **Global cluster roles** come from `describe-global-clusters`. Secondaries are checked for daily backups only, and their weekly, monthly and yearly checks show N/A.
 - **Read replicas** (cross-region cluster replicas and instance read replicas) are checked for daily backups only.
 - **`replica-exempt-engines`** (v1.5.2): engines matching these globs with Role=`replica` or Role=`secondary` skip every backup check and are COMPLIANT. Use for Oracle replicas or Aurora global secondaries that keep no local backups on purpose.
 - **Aurora cluster member instances** are not listed separately.
@@ -245,8 +249,10 @@ tests/validate_cli.py            # checks that every field read exists in the bu
 
 ## Changelog
 
-- **Unreleased**
+- **1.7.0**
   - `rds_backup_compliance_report.conf` next to the script is loaded automatically (`--config FILE` overrides, `--no-config` skips). New `--check-config` validates the settings and exceptions files and shows each setting's source, with no AWS calls. See [Settings file and --check-config](#settings-file-and---check-config-unreleased).
+  - The role column (`global_role`) shows `primary` for every instance and cluster that is not a replica or a global-database secondary, instead of `none` (Oracle sources and standalone instances included). Instances that replicate from a Multi-AZ cluster (`ReadReplicaSourceDBClusterIdentifier`) now show `replica`.
+  - Statuses, gaps, counts and filters are unchanged. Reports merged from older saved data show `primary` where that data says `none`. CSV and JSON keep the column name `global_role`; the value `none` no longer appears, so anything that filtered on it must use `primary`.
 - **1.6.0**
   - Compliance exceptions (`--exceptions FILE` / `compliance_exceptions.conf`, see [Compliance exceptions](#compliance-exceptions-v160)), backup scope. Applied when the report is built (scan or `--merge`); `--save-data` is unchanged.
   - Excepted resources are COMPLIANT (EXCEPTION) and counted as compliant, and the evaluated status is kept. Flags: expiring soon, no longer needed, expired.
