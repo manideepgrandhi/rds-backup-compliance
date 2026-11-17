@@ -2,7 +2,7 @@
 
 Release history: [What's new](https://manideepgrandhi.github.io/rds-backup-compliance/) · also in [CHANGELOG.md](CHANGELOG.md).
 
-`rds_backup_compliance_report.sh` v1.6.1 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
+`rds_backup_compliance_report.sh` v1.7.0 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
 
 ## Install (CloudShell)
 
@@ -61,7 +61,7 @@ You can change these with `--weekly-days MIN-MAX`, `--monthly-days MIN-MAX`, `--
 How the role of each resource is decided:
 
 - **Role column** (`global_role`, "Global role" in the page): every cluster and instance gets a role.
-  - **Instances** are `replica` when RDS reports a replication source (`ReadReplicaSourceDBInstanceIdentifier`, or `ReadReplicaSourceDBClusterIdentifier` for a replica of a Multi-AZ cluster). All other instances are `primary`: standalone and source instances of every engine, including Oracle (v1.6.1; older versions showed `none`).
+  - **Instances** are `replica` when RDS reports a replication source (`ReadReplicaSourceDBInstanceIdentifier`, or `ReadReplicaSourceDBClusterIdentifier` for a replica of a Multi-AZ cluster). All other instances are `primary`: standalone and source instances of every engine, including Oracle (v1.7.0; older versions showed `none`).
   - **Clusters:** the writer of an Aurora global database is `primary` and its other members are `secondary`. A cluster that replicates from another cluster is `replica`. Any other cluster is `primary`. If `describe-global-clusters` is denied, clusters show `unknown` (replicas still show `replica`).
   - The role does not change a status. `primary`, `unknown` and (in older saved data) `none` all get the full checks. Only a `primary` that belongs to an Aurora global database counts as global: the Aurora global DB and Global role filters in the page ignore standalone primaries.
 - **Global cluster roles** come from `describe-global-clusters`. Secondaries are checked for daily backups only, and their weekly, monthly and yearly checks show N/A.
@@ -163,7 +163,7 @@ Only regions with databases, and errors, get their own line; empty regions are f
 
 If one region fails, the other regions still finish. The failed region is listed under Region errors in the report, and the exit code follows the usual rules. Bash 4.3+ uses `wait -n`. Without it the tool waits for each batch to finish. The temp folder is removed on exit, including Ctrl-C. In parallel mode each region that has clusters calls `describe-global-clusters` itself, so there are a few more calls than with `--parallel 1`.
 
-## Settings file and `--check-config` (unreleased)
+## Settings file and `--check-config` (v1.7.0)
 
 Settings can live in a file instead of on the command line. Copy [rds_backup_compliance_report.conf.example](rds_backup_compliance_report.conf.example) to `rds_backup_compliance_report.conf` in the **same folder as the script** and it is loaded automatically. You do not need `--config`.
 
@@ -179,6 +179,32 @@ Settings can live in a file instead of on the command line. Copy [rds_backup_com
 ```bash
 ./rds_backup_compliance_report.sh --check-config
 ./rds_backup_compliance_report.sh --check-config --weekly 4 -P prod    # shows weekly = CLI
+```
+
+Where the files go, with fake account numbers (full walk-through with sample output in [EXAMPLES.md](EXAMPLES.md#settings-file-and---check-config-v170)):
+
+```text
+rds-backup-compliance/                       <- the folder that holds the script
+  rds_backup_compliance_report.sh
+  rds_backup_compliance_report.conf          <- settings + account names, auto-loaded
+  compliance_exceptions.conf                 <- exceptions, auto-loaded
+```
+
+```text
+# rds_backup_compliance_report.conf
+daily-max-age=26
+weekly-retention-days=35
+replica-exempt-engines=oracle-*,aurora-*
+111111111111 = prod-payments
+
+# compliance_exceptions.conf   (account_id | identifier | scope | expires | reason)
+111111111111 | legacy-mysql | backup | 2027-03-31 | Decommission in Q1, CHG-1234
+```
+
+```bash
+./rds_backup_compliance_report.sh -A -F html,csv -o ./out                 # both files load by themselves
+./rds_backup_compliance_report.sh --config /path/other.conf -A            # use a different settings file
+./rds_backup_compliance_report.sh --no-config -A                          # ignore the automatic settings file
 ```
 
 ## Compliance exceptions (v1.6.0)
@@ -250,7 +276,7 @@ tests/validate_cli.py            # checks that every field read exists in the bu
 ## Changelog
 
 - **1.7.0**
-  - `rds_backup_compliance_report.conf` next to the script is loaded automatically (`--config FILE` overrides, `--no-config` skips). New `--check-config` validates the settings and exceptions files and shows each setting's source, with no AWS calls. See [Settings file and --check-config](#settings-file-and---check-config-unreleased).
+  - `rds_backup_compliance_report.conf` next to the script is loaded automatically (`--config FILE` overrides, `--no-config` skips). New `--check-config` validates the settings and exceptions files and shows each setting's source, with no AWS calls. See [Settings file and --check-config](#settings-file-and---check-config-v170).
   - The role column (`global_role`) shows `primary` for every instance and cluster that is not a replica or a global-database secondary, instead of `none` (Oracle sources and standalone instances included). Instances that replicate from a Multi-AZ cluster (`ReadReplicaSourceDBClusterIdentifier`) now show `replica`.
   - Statuses, gaps, counts and filters are unchanged. Reports merged from older saved data show `primary` where that data says `none`. CSV and JSON keep the column name `global_role`; the value `none` no longer appears, so anything that filtered on it must use `primary`.
 - **1.6.0**

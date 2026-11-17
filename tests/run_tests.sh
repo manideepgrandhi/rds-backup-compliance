@@ -32,7 +32,7 @@ rowt() { jq -e --arg i "$2" ".rows[] | select(.identifier == \$i) | $3" "$OUT/$1
 ncalls() { wc -l <"$MOCK_LOG" 2>/dev/null | tr -d ' ' || echo 0; }
 
 echo "== CLI"
-t version 0 fleet --version; has version out '1\.6\.1'
+t version 0 fleet --version; has version out '1\.7\.0'
 t help 0 fleet --help; has help out 'list-recovery-points-by-backup-vault'; has help out 'weekly-days'
 t badopt 1 fleet --nope
 t multifmt 1 fleet -P prod -r us-east-1 -F csv,html
@@ -468,7 +468,7 @@ jqt fleet '[.rows[] | select(.account_id == "111111111111") | {id: .identifier, 
 t gsort 0 fleet -P prod -r us-east-1,us-west-2 -F csv,html -o "$OUT/gsort"
 chk "csv: orders primary then secondary consecutive" python3 -c 'import csv,glob,sys; fs=[f for f in glob.glob(sys.argv[1]+"/*.csv") if "_backups" not in f and "_orphaned" not in f and "_manual" not in f]; r=list(csv.DictReader(open(fs[0],encoding="utf-8-sig"))); ids=[x["identifier"] for x in r]; i=ids.index("orders-aurora-pg15"); assert ids[i+1]=="orders-dr-pg15", ids; assert r[i]["global_role"]=="primary" and r[i+1]["global_role"]=="secondary"' "$OUT/gsort"
 chk "html: orders primary row before secondary" python3 -c 'import glob,sys; h=open(glob.glob(sys.argv[1]+"/*.html")[0],encoding="utf-8").read(); assert h.find("orders-aurora-pg15") < h.find("orders-dr-pg15") and "orders-aurora-pg15" in h and "orders-dr-pg15" in h' "$OUT/gsort"
-chk "version is 1.6.1" grep -qF 'SCRIPT_VERSION="1.6.1"' "$SCRIPT"
+chk "version is 1.7.0" grep -qF 'SCRIPT_VERSION="1.7.0"' "$SCRIPT"
 
 echo "== v1.6.0: compliance exceptions (--exceptions FILE / compliance_exceptions.conf)"
 EX="$OUT/exc"; mkdir -p "$EX"; export RDS_BCR_EXC_NOW=1791000000   # "today" for the expiry dates only = 2026-10-03 UTC

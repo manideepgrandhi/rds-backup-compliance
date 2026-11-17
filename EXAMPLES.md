@@ -151,7 +151,37 @@ HTML Account filters and the Per-region / Backups Account columns show `name (nu
 Account names show as `name (number)` when set (config wins over the IAM alias). The compliance CSV ends with an `account_name` column.
 
 
-## Settings file and --check-config (unreleased)
+## Role column: `primary` instead of `none` (v1.7.0)
+
+The `global_role` column (CSV, JSON, text and HTML) now says `primary` for every instance or cluster that is not a replica or a global-database secondary. Before, standalone instances, plain clusters and Oracle sources showed `none`. The column name is unchanged. Statuses, counts and filters are unchanged.
+
+Before (v1.6.0 and older), compliance CSV, selected columns:
+
+```text
+account_id    identifier            type      engine              global_cluster  global_role  status
+111111111111  billing-aurora-mysql  cluster   aurora-mysql        -               none         NON-COMPLIANT
+111111111111  legacy-mysql          instance  mysql               -               none         NON-COMPLIANT
+111111111111  orders-aurora-pg15    cluster   aurora-postgresql   orders-global   primary      COMPLIANT
+111111111111  orders-dr-pg15        cluster   aurora-postgresql   orders-global   secondary    COMPLIANT
+333333333333  erp-oracle            instance  oracle-ee           -               none         COMPLIANT
+333333333333  erp-oracle-rr         instance  oracle-ee           -               replica      NON-COMPLIANT
+```
+
+After (v1.7.0), same data:
+
+```text
+account_id    identifier            type      engine              global_cluster  global_role  status
+111111111111  billing-aurora-mysql  cluster   aurora-mysql        -               primary      NON-COMPLIANT
+111111111111  legacy-mysql          instance  mysql               -               primary      NON-COMPLIANT
+111111111111  orders-aurora-pg15    cluster   aurora-postgresql   orders-global   primary      COMPLIANT
+111111111111  orders-dr-pg15        cluster   aurora-postgresql   orders-global   secondary    COMPLIANT
+333333333333  erp-oracle            instance  oracle-ee           -               primary      COMPLIANT
+333333333333  erp-oracle-rr         instance  oracle-ee           -               replica      NON-COMPLIANT
+```
+
+If a script or spreadsheet filtered on `global_role = none`, change it to `primary`. To find only members of an Aurora global database, filter on a non-empty `global_cluster`. Reports merged from older saved data (`--merge`) also show `primary` where that data says `none`. An instance that replicates from a Multi-AZ cluster now shows `replica`.
+
+## Settings file and --check-config (v1.7.0)
 
 Where the files go: in the **same folder as `rds_backup_compliance_report.sh`**. Both are loaded automatically; no `--config` or `--exceptions` needed.
 
