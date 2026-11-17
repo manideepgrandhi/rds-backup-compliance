@@ -16,8 +16,12 @@
 # Use it as a CI gate
 ./rds_backup_compliance_report.sh -A --fail-on-noncompliant -F json -o ./out || echo "exit $?"
 
-# Settings file (the CLI overrides it)
+# Settings file (the CLI overrides it). rds_backup_compliance_report.conf next to the script loads by itself;
+# --config FILE picks another file; --no-config skips the automatic one (see "Settings file and --check-config" below)
 ./rds_backup_compliance_report.sh --config rds_backup_compliance_report.conf.example -A
+
+# Validate the settings and exceptions files without calling AWS
+./rds_backup_compliance_report.sh --check-config
 
 # See which calls would run, without calling anything
 ./rds_backup_compliance_report.sh -A --dry-run
@@ -146,6 +150,74 @@ HTML Account filters and the Per-region / Backups Account columns show `name (nu
 
 Account names show as `name (number)` when set (config wins over the IAM alias). The compliance CSV ends with an `account_name` column.
 
+
+## Settings file and --check-config (unreleased)
+
+Where the files go: in the **same folder as `rds_backup_compliance_report.sh`**. Both are loaded automatically; no `--config` or `--exceptions` needed.
+
+### 1. Put the files next to the script
+
+```bash
+cd /home/cloudshell-user/rds-backup-compliance
+cp rds_backup_compliance_report.conf.example rds_backup_compliance_report.conf   # settings + account names
+cp compliance_exceptions.conf.example compliance_exceptions.conf                 # exceptions (optional)
+vi rds_backup_compliance_report.conf compliance_exceptions.conf
+```
+
+```text
+# rds_backup_compliance_report.conf
+daily-max-age=26
+weekly-retention-days=35
+replica-exempt-engines=oracle-*,aurora-*
+111111111111 = prod-payments
+222222222222 = nonprod-shared
+```
+
+### 2. Run as usual
+
+```bash
+./rds_backup_compliance_report.sh -A -F html,csv -o ./out
+# [INFO] Config file loaded automatically: /home/cloudshell-user/rds-backup-compliance/rds_backup_compliance_report.conf (--no-config skips it)
+```
+
+### 3. Overrides
+
+```bash
+./rds_backup_compliance_report.sh -A --weekly 4                      # CLI beats the config file
+./rds_backup_compliance_report.sh -A --config /home/cloudshell-user/configs/prod.conf   # use another file instead
+./rds_backup_compliance_report.sh -A --no-config                     # ignore the automatic file (defaults + CLI)
+```
+
+### 4. Check before you run (no AWS calls)
+
+```bash
+./rds_backup_compliance_report.sh --check-config
+./rds_backup_compliance_report.sh --check-config --weekly 4 -P prod
+```
+
+Sample (abridged; the full list has every setting):
+
+```text
+Config file:     /home/cloudshell-user/rds-backup-compliance/rds_backup_compliance_report.conf (auto-loaded from the script folder)
+Exceptions file: /home/cloudshell-user/rds-backup-compliance/compliance_exceptions.conf (auto-loaded from the script folder)
+
+Settings in effect (name, value, source):
+  profile                    prod                     CLI
+  daily-max-age              26                       config /home/cloudshell-user/rds-backup-compliance/rds_backup_compliance_report.conf
+  weekly                     4                        CLI
+  monthly                    12                       default
+
+Account names (2):
+  111111111111 = prod-payments
+  222222222222 = nonprod-shared
+
+Exceptions (1); today is 2026-11-17 UTC:
+  line 1: 111111111111 legacy-mysql scope=backup expires 2027-03-31 - Decommission in Q1
+
+OK: configuration is valid (no AWS calls made)
+```
+
+An error stops with exit 1 and `file:line`, for example `Config /home/cloudshell-user/rds-backup-compliance/rds_backup_compliance_report.conf:3: unknown key 'bogus'`.
 
 ## Exceptions (v1.6.0)
 

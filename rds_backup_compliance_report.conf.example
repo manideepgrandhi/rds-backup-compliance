@@ -1,5 +1,12 @@
-# rds_backup_compliance_report.sh --config FILE
+# rds_backup_compliance_report.conf.example - settings file for rds_backup_compliance_report.sh
+#
+# Where to put it: copy this file to rds_backup_compliance_report.conf in the SAME folder as the script
+# (next to rds_backup_compliance_report.sh, not in your current folder). It is then loaded automatically,
+# no --config needed. Elsewhere: --config /path/to/file.conf. --no-config skips the automatic file.
+# Check it without calling AWS: ./rds_backup_compliance_report.sh --check-config
+#
 # key=value, long option names without "--". Never sourced. Command-line options override these.
+# Lines starting with # are comments. Uncomment and edit only what you need.
 # profile=prod
 # region=us-east-1,us-west-2
 # all-regions=true
@@ -40,6 +47,8 @@
 # Engines whose Role=replica or Role=secondary rows are always COMPLIANT (no backup checks).
 # Comma-separated globs. Empty = today's daily-only for those roles. Examples: oracle-* | aurora-* | oracle-*,aurora-*
 # replica-exempt-engines=oracle-*,aurora-*
-# Account names (v1.5.2; shown as "name (number)"; otherwise the IAM account alias, otherwise the number)
+# Account names (v1.5.2; shown as "name (number)"; otherwise the IAM account alias, otherwise the number).
+# One line per account: 12-digit account number = friendly name (display only; fake numbers shown here).
 # 111111111111 = prod-payments
 # 222222222222 = nonprod-shared
+# 333333333333 = dev-sandbox

@@ -15,6 +15,8 @@
 #   replica-exempt-engines=oracle-*,aurora-*: those Role=replica/secondary engines are always COMPLIANT (all schedules N/A).
 # Role (global_role column): replica | secondary (global DB member) | primary (everything else, v1.6.1; was none) | unknown (global clusters unreadable).
 # Status: COMPLIANT | NON-COMPLIANT (gaps column) | NOT YET DUE (resource too young) | UNKNOWN (a call failed).
+# Config: rds_backup_compliance_report.conf next to the script is loaded automatically (--config FILE overrides it,
+#   --no-config skips it, CLI options override both). --check-config validates the files and shows each setting's source.
 # Exceptions (v1.6.0): compliance_exceptions.conf (or --exceptions FILE) lists servers that show COMPLIANT (EXCEPTION)
 #   and count as compliant until their expiry date; the evaluated status stays in actual_status.
 # Output: text | csv | json | html. Exit: 0 ok, 5 NON-COMPLIANT with --fail-on-noncompliant, 1 usage, 2 pre-check,
@@ -31,6 +33,7 @@ readonly SCRIPT_VERSION="1.6.1"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_DIR
 LIBDIR="${RDS_BCR_LIB:-$SCRIPT_DIR/lib}"
+readonly CONFIG_NAME="rds_backup_compliance_report.conf"   # auto-loaded from $SCRIPT_DIR
 readonly DATA_SCHEMA="rds_backup_compliance_data" DATA_SCHEMA_VERSION=1
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
@@ -45,13 +48,15 @@ DAILY=7; DAILY_MAX_AGE_H=26; WEEKLY=auto; MONTHLY=12; YEARLY=0
 WEEKLY_MIN_DAYS=25; WEEKLY_MAX_DAYS=40; MONTHLY_MIN_DAYS=300; MONTHLY_MAX_DAYS=400
 WEEKLY_WEEKDAY=sat; MONTHLY_RULE=first-sun; TOLERANCE_DAYS=1; WEEKLY_WINDOW_DAYS=30; PARALLEL=4
 DAILY_RETENTION_DAYS=""; WEEKLY_RETENTION_DAYS=30; MONTHLY_RETENTION_DAYS=365; RET_TOLERANCE_DAYS=1
-NC_ONLY=0; FAIL_ON_NC=0; LOG_FILE=""; CONFIG_FILE=""; AWS_TIMEOUT=30; MAX_ATTEMPTS=5
+NC_ONLY=0; FAIL_ON_NC=0; LOG_FILE=""; CONFIG_FILE=""; CONFIG_AUTO=0; NO_CONFIG=0; CHECK_CONFIG=0; AWS_TIMEOUT=30; MAX_ATTEMPTS=5
 BG_PIDS=(); SCAN_PAR=0; HAVE_WAIT_N=0
 KEEP_WORKDIR=0; DRY_RUN=0; VERBOSE=0; SAVE_DATA=0; SAVE_DATA_FILE=""; MERGE=0
 WORK=""; NOW=0; STAMP=""; AWS_CALLS=0; AWS_FAILS=0
 EXC_FILE=""; EXC_JSON="null"; EXC_PATH=""; EXC_ARGS=()   # compliance exceptions (v1.6.0)
 declare -a WRITTEN=() DATA_FILES=()
 declare -A ACCOUNT_NAMES=()   # config: 123456789012 = name (display only)
+declare -A OPT_SRC=()         # setting name -> where its value came from (config file path or "CLI"); unset = default
+CUR_SRC=""                    # source recorded by set_opt: the config file being read, "CLI" while parsing options
 
 # ---------------------------------------------------------------------------- logging
 # _log LEVEL MSG...: timestamped line to stderr, and to --log-file too (never during --dry-run).
@@ -62,7 +67,9 @@ log_info() { _log INFO "$@"; }; log_warn() { _log WARN "$@"; }; log_error() { _l
 # Debug line only with -v / --verbose; always returns 0 so it is safe under set -e.
 log_debug() { [[ "$VERBOSE" -eq 1 ]] && _log DEBUG "$@"; return 0; }
 # die CODE MSG...: log an ERROR and exit with CODE (see the exit codes in the header).
-die() { local c="$1"; shift; log_error "$@"; exit "$c"; }
+# While a config line is being read, ERR_CTX ("Config FILE:LINE: ") is put in front of the message, so a bad value names its line.
+ERR_CTX=""
+die() { local c="$1"; shift; log_error "$ERR_CTX$*"; exit "$c"; }
 
 # ---------------------------------------------------------------------------- usage
 # Print --help: every option with its default, and the read-only AWS calls the script makes.
@@ -123,7 +130,12 @@ Merge (offline, no AWS calls, jq only - works in Git Bash on Windows):
                             wins. Compliance is re-evaluated at merge time. e.g. --merge a.json b.json -o all.html
 
 Behaviour:
-      --config FILE         key=value settings (long option names, e.g. weekly=4; never sourced; CLI overrides)
+      --config FILE         key=value settings (long option names, e.g. weekly=4; never sourced; CLI overrides).
+                            Default: rds_backup_compliance_report.conf next to the script, if present
+      --no-config           Do not auto-load rds_backup_compliance_report.conf (an explicit --config still loads)
+      --check-config        Validate the config and exceptions files, print every setting with its source
+                            (default / config file / CLI), the account names and the exceptions; no AWS calls.
+                            Exit 0 when OK, 1 with file:line on an error
       --aws-timeout SEC     AWS CLI connect/read timeout (default: 30)
       --max-attempts N      AWS CLI retry attempts (default: 5)
       --keep-workdir        Keep raw AWS responses for debugging
@@ -165,9 +177,21 @@ account_names_json() {   # config names as JSON object (wins over IAM aliases an
 jqv() { jq "$@" | tr -d '\r'; }       # jq.exe on Windows writes CRLF: strip for values and files
 
 # ---------------------------------------------------------------------------- config (options and --config values)
-# set_opt KEY VALUE: validate one setting and store it in its global. Shared by the CLI and --config;
-# returns 1 for an unknown key so each caller can word its own error.
+# set_opt KEY VALUE: validate one setting, store it in its global and note its source. Shared by the CLI and
+# --config; returns 1 for an unknown key so each caller can word its own error.
 set_opt() {   # set_opt key value  (shared by CLI and --config)
+    local k="$1" v="$2"
+    set_opt_apply "$k" "$v" || return 1
+    src_note "$k"
+}
+# src_note KEY: remember that setting KEY was last set by CUR_SRC (config file path or CLI).
+src_note() {
+    local k="${1//_/-}"; k="${k,,}"
+    [[ "$k" == monthly-max-days ]] && k=monthly-days
+    OPT_SRC["$k"]="$CUR_SRC"
+}
+# set_opt_apply KEY VALUE: the validation and assignment behind set_opt (one case per setting).
+set_opt_apply() {
     local k="$1" v="$2"
     case "$k" in
         profile) add_list PROFILES "$v" ;; region) add_list REGIONS "$v" ;; all-regions|all_regions) is_true "$v" && ALL_REGIONS=1 ;;
@@ -207,9 +231,11 @@ set_opt() {   # set_opt key value  (shared by CLI and --config)
 load_config() {
     local f="$1" line n=0 key val
     [[ -r "$f" ]] || die 1 "Config file not readable: $f"
+    CUR_SRC="$f"
     while IFS= read -r line || [[ -n "$line" ]]; do
         n=$((n + 1)); line="${line%$'\r'}"
         [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+        ERR_CTX="Config $f:$n: "
         # account name line: strip a trailing # comment, control characters and quotes; max 64 characters
         if [[ "$line" =~ ^[[:space:]]*([0-9]{12})[[:space:]]*=[[:space:]]*(.*)$ ]]; then   # account name (display only)
             key="${BASH_REMATCH[1]}"; val="${BASH_REMATCH[2]}"
@@ -218,9 +244,10 @@ load_config() {
             [[ "$val" =~ ^\"(.*)\"$ || "$val" =~ ^\'(.*)\'$ ]] && val="${BASH_REMATCH[1]}"
             ACCOUNT_NAMES["$key"]="${val:0:64}"; continue
         fi
-        [[ "$line" =~ ^[[:space:]]*([A-Za-z_-]+)[[:space:]]*=[[:space:]]*(.*[^[:space:]])?[[:space:]]*$ ]] || die 1 "Config $f:$n: expected key=value"
-        set_opt "${BASH_REMATCH[1],,}" "${BASH_REMATCH[2]:-}" || die 1 "Config $f:$n: unknown key '${BASH_REMATCH[1]}'"
+        [[ "$line" =~ ^[[:space:]]*([A-Za-z_-]+)[[:space:]]*=[[:space:]]*(.*[^[:space:]])?[[:space:]]*$ ]] || die 1 "expected key=value"
+        set_opt "${BASH_REMATCH[1],,}" "${BASH_REMATCH[2]:-}" || die 1 "unknown key '${BASH_REMATCH[1]}'"
     done <"$f"
+    ERR_CTX=""
 }
 
 
@@ -228,25 +255,39 @@ load_config() {
 # parse_args "$@": load --config first (so CLI options override it), then read the CLI options,
 # then validate the combination. Sets the globals; exits 0 for --help / --version, 1 on a usage error.
 parse_args() {
-    local a; for ((a = 1; a <= $#; a++)); do if [[ "${!a}" == --config ]]; then local b=$((a + 1)); [[ $b -le $# ]] || die 1 "--config needs a file"; CONFIG_FILE="${!b}"; fi; done
-    [[ -n "$CONFIG_FILE" ]] && load_config "$CONFIG_FILE"
+    # config first, so CLI options override it: --config FILE, else rds_backup_compliance_report.conf next to the
+    # script (unless --no-config). No file = nothing loaded. Never sourced: load_config parses key=value lines.
+    local a; for ((a = 1; a <= $#; a++)); do
+        case "${!a}" in
+            --config) local b=$((a + 1)); [[ $b -le $# ]] || die 1 "--config needs a file"; CONFIG_FILE="${!b}" ;;
+            --no-config) NO_CONFIG=1 ;;
+        esac
+    done
+    if [[ -z "$CONFIG_FILE" && "$NO_CONFIG" -eq 0 && -f "$SCRIPT_DIR/$CONFIG_NAME" ]]; then CONFIG_FILE="$SCRIPT_DIR/$CONFIG_NAME"; CONFIG_AUTO=1; fi
+    if [[ -n "$CONFIG_FILE" ]]; then
+        load_config "$CONFIG_FILE"
+        (( CONFIG_AUTO )) && log_info "Config file loaded automatically: $CONFIG_FILE (--no-config skips it)"
+    fi
+    CUR_SRC="CLI"
     local cli_formats=()
     while (( $# )); do
         case "$1" in
             -h|--help) usage; exit 0 ;;
             -V|--version) echo "$SCRIPT_NAME $SCRIPT_VERSION"; exit 0 ;;
-            -P|--profile) need_arg "$1" $#; add_list PROFILES "$2"; shift ;;
-            -r|--region) need_arg "$1" $#; add_list REGIONS "$2"; shift ;;
-            -A|--all-regions) ALL_REGIONS=1 ;;
-            -e|--engine) need_arg "$1" $#; add_list ENGINES "$2"; shift ;;
-            -i|--identifier) need_arg "$1" $#; add_list IDENTIFIERS "$2"; shift ;;
-            -F|--format) need_arg "$1" $#; add_list cli_formats "$2"; shift ;;
-            -o|--output-dir) need_arg "$1" $#; OUTPUT_DIR="$2"; shift ;;
-            -l|--log-file) need_arg "$1" $#; LOG_FILE="$2"; shift ;;
+            -P|--profile) need_arg "$1" $#; add_list PROFILES "$2"; src_note profile; shift ;;
+            -r|--region) need_arg "$1" $#; add_list REGIONS "$2"; src_note region; shift ;;
+            -A|--all-regions) ALL_REGIONS=1; src_note all-regions ;;
+            -e|--engine) need_arg "$1" $#; add_list ENGINES "$2"; src_note engine; shift ;;
+            -i|--identifier) need_arg "$1" $#; add_list IDENTIFIERS "$2"; src_note identifier; shift ;;
+            -F|--format) need_arg "$1" $#; add_list cli_formats "$2"; src_note format; shift ;;
+            -o|--output-dir) need_arg "$1" $#; OUTPUT_DIR="$2"; src_note output-dir; shift ;;
+            -l|--log-file) need_arg "$1" $#; LOG_FILE="$2"; src_note log-file; shift ;;
             --config) shift ;;
-            --non-compliant-only) NC_ONLY=1 ;; --fail-on-noncompliant) FAIL_ON_NC=1 ;;
+            --no-config) ;;   # handled before the config is loaded
+            --check-config) CHECK_CONFIG=1 ;;
+            --non-compliant-only) NC_ONLY=1; src_note non-compliant-only ;; --fail-on-noncompliant) FAIL_ON_NC=1; src_note fail-on-noncompliant ;;
             --keep-workdir) KEEP_WORKDIR=1 ;; --dry-run) DRY_RUN=1 ;; -v|--verbose) VERBOSE=1 ;;
-            --save-data) SAVE_DATA=1; if [[ $# -ge 2 && "$2" != -* ]]; then SAVE_DATA_FILE="$2"; shift; fi ;;
+            --save-data) SAVE_DATA=1; src_note save-data; if [[ $# -ge 2 && "$2" != -* ]]; then SAVE_DATA_FILE="$2"; shift; fi ;;
             --merge) MERGE=1; while [[ $# -ge 2 && "$2" != -* ]]; do MERGE_ARGS+=("$2"); shift; done ;;
             --daily|--daily-max-age|--weekly|--monthly|--yearly|--weekly-days|--monthly-max-days|--monthly-days|--daily-retention-days|--weekly-retention-days|--monthly-retention-days|--retention-tolerance-days|--weekly-weekday|--monthly-rule|--tolerance-days|--parallel|--weekly-window-days|--prefix|--tz|--aws-timeout|--max-attempts|--manual-older-than|--snapshot-price-per-gb|--replica-exempt-engines|--exceptions)
                 need_arg "$1" $#; set_opt "${1#--}" "$2"; shift ;;
@@ -355,6 +396,61 @@ load_exceptions() {   # -> EXC_JSON: "null" (feature off: no file) or a JSON arr
         | {line: (.[0] | tonumber), account: .[1], identifier: .[2], scopes: (.[3] | split(",")), expires: .[4], reason: (.[5:] | join(" "))})' | tr -d '\r')" \
         || die 1 "Exceptions $f: cannot convert the entries (jq)"
     return 0
+}
+
+# ---------------------------------------------------------------------------- --check-config
+# setting_line NAME VALUE: one "name  value  source" row; the source is "default", "CLI" or the config file path.
+setting_line() {
+    local src="${OPT_SRC[$1]:-default}"
+    [[ "$src" == default || "$src" == CLI ]] || src="config $src"
+    printf '  %-26s %-24s %s\n' "$1" "${2:-(not set)}" "$src"
+}
+# check_config: print the files in use, every effective setting with its source, the account names and the
+# exceptions. Runs after parse_args and load_exceptions (both already stopped the run, exit 1 with file:line, on a
+# bad line), so reaching it means the files are valid. Makes no AWS call.
+check_config() {
+    local cfg_note exc_note a today
+    if [[ -z "$CONFIG_FILE" ]]; then cfg_note="none (defaults and CLI only)"; (( NO_CONFIG )) && cfg_note="none (--no-config)"
+    elif (( CONFIG_AUTO )); then cfg_note="$CONFIG_FILE (auto-loaded from the script folder)"
+    else cfg_note="$CONFIG_FILE (--config)"; fi
+    if [[ -n "$EXC_FILE" ]]; then
+        if [[ "${OPT_SRC[exceptions]:-}" == CLI ]]; then exc_note="$EXC_PATH (--exceptions)"; else exc_note="$EXC_PATH (exceptions key in config)"; fi
+    elif [[ -n "$EXC_PATH" ]]; then exc_note="$EXC_PATH (auto-loaded from the script folder)"
+    else exc_note="none (no exceptions in effect)"; fi
+    echo "Config file:     $cfg_note"
+    echo "Exceptions file: $exc_note"
+    echo "Script folder:   $SCRIPT_DIR"
+    echo; echo "Settings in effect (name, value, source):"
+    setting_line profile "$(IFS=,; echo "${PROFILES[*]}")"; setting_line region "$(IFS=,; echo "${REGIONS[*]}")"
+    setting_line all-regions "$( ((ALL_REGIONS)) && echo yes || echo no)"
+    setting_line engine "$(IFS=,; echo "${ENGINES[*]}")"; setting_line identifier "$(IFS=,; echo "${IDENTIFIERS[*]}")"
+    setting_line daily "$DAILY"; setting_line daily-max-age "$DAILY_MAX_AGE_H"
+    setting_line weekly "$WEEKLY"; setting_line weekly-window-days "$WEEKLY_WINDOW_DAYS"; setting_line weekly-weekday "$WEEKLY_WEEKDAY"
+    setting_line monthly "$MONTHLY"; setting_line monthly-rule "$MONTHLY_RULE"; setting_line yearly "$YEARLY"
+    setting_line weekly-days "$WEEKLY_MIN_DAYS-$WEEKLY_MAX_DAYS"; setting_line monthly-days "$MONTHLY_MIN_DAYS-$MONTHLY_MAX_DAYS"
+    setting_line tolerance-days "$TOLERANCE_DAYS"
+    setting_line daily-retention-days "${DAILY_RETENTION_DAYS:-= daily ($DAILY)}"; setting_line weekly-retention-days "$WEEKLY_RETENTION_DAYS"
+    setting_line monthly-retention-days "$MONTHLY_RETENTION_DAYS"; setting_line retention-tolerance-days "$RET_TOLERANCE_DAYS"
+    setting_line replica-exempt-engines "$(IFS=,; echo "${EXEMPT_ENGINES[*]}")"
+    setting_line parallel "$PARALLEL"; setting_line non-compliant-only "$( ((NC_ONLY)) && echo yes || echo no)"
+    setting_line fail-on-noncompliant "$( ((FAIL_ON_NC)) && echo yes || echo no)"
+    setting_line format "$(IFS=,; echo "${FORMATS[*]:-}")"; setting_line output-dir "$OUTPUT_DIR"; setting_line prefix "$PREFIX"
+    setting_line tz "$DISPLAY_TZ"; setting_line log-file "$LOG_FILE"; setting_line save-data "$( ((SAVE_DATA)) && echo yes || echo no)"
+    setting_line manual-older-than "$MANUAL_OLDER"; setting_line snapshot-price-per-gb "$SNAP_PRICE"
+    setting_line aws-timeout "$AWS_TIMEOUT"; setting_line max-attempts "$MAX_ATTEMPTS"
+    echo; echo "Account names (${#ACCOUNT_NAMES[@]}):"
+    if (( ${#ACCOUNT_NAMES[@]} )); then for a in $(printf '%s\n' "${!ACCOUNT_NAMES[@]}" | sort); do printf '  %s = %s\n' "$a" "${ACCOUNT_NAMES[$a]}"; done
+    else echo "  none (IAM account alias, else the number, is shown)"; fi
+    today="$(date -u +%F)"; [[ "${RDS_BCR_EXC_NOW:-}" =~ ^[0-9]+$ ]] && today="$(date -u -d "@$RDS_BCR_EXC_NOW" +%F)"
+    echo; if [[ "$EXC_JSON" == null ]]; then echo "Exceptions: none"
+    else
+        echo "Exceptions ($(jqv -r 'length' <<<"$EXC_JSON")); today is $today UTC:"
+        jqv -r --arg today "$today" '.[] | "  line \(.line): \(.account) \(.identifier) scope=\(.scopes | join(",")) expires \(.expires)"
+              + (if .expires < $today then " EXPIRED" else "" end)
+              + (if (.scopes | index("backup")) then "" else " (patch only: not applied by this script)" end)
+              + " - \(.reason)"' <<<"$EXC_JSON"
+    fi
+    echo; echo "OK: configuration is valid (no AWS calls made)"
 }
 
 # ---------------------------------------------------------------------------- AWS (read-only)
@@ -641,11 +737,12 @@ write_out() { local f="$1"; shift; "$@" >"$f" || die 4 "Cannot write $f"; WRITTE
 # This script sends no alerts: --fail-on-noncompliant (exit 5) is the hook for schedulers / CI.
 main() {
     parse_args "$@"
-    # pre-checks: jq, the lib/ files and the aws CLI (not needed for --merge / --dry-run)
+    # pre-checks: jq, the lib/ files and the aws CLI (not needed for --merge / --dry-run / --check-config)
     command -v jq >/dev/null 2>&1 || die 2 "jq not found"
     for f in backup.jq backup_page.js collect.jq merge.jq; do [[ -r "$LIBDIR/$f" ]] || die 2 "Missing $LIBDIR/$f - keep the lib/ folder next to the script"; done
-    (( MERGE )) || (( DRY_RUN )) || command -v aws >/dev/null 2>&1 || die 2 "aws CLI not found"
+    (( MERGE )) || (( DRY_RUN )) || (( CHECK_CONFIG )) || command -v aws >/dev/null 2>&1 || die 2 "aws CLI not found"
     load_exceptions   # before any AWS call: a bad line stops the run now, not after the scan
+    if (( CHECK_CONFIG )); then check_config; exit 0; fi   # --check-config: files validated above, nothing else runs
     [[ "$EXC_JSON" != null ]] && log_info "Exceptions file $EXC_PATH: $(jqv -r 'length' <<<"$EXC_JSON") entries"
     # one clock for the whole run: every evaluation and file name uses NOW / STAMP
     NOW="$(date -u +%s)"; STAMP="$(date -u +%Y%m%d_%H%M%S)"; tz_setup; CFG="$(cfg_json)"

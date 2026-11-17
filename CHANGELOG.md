@@ -2,10 +2,12 @@
 
 Plain-English features for each published release. The What's new page is built from this file.
 
-## 1.6.1
+## 1.7.0
+- A settings file named `rds_backup_compliance_report.conf` next to the script is now loaded automatically, so `--config` is no longer needed (`--config FILE` still overrides it, `--no-config` skips it)
+- New `--check-config` checks the settings and exceptions files and shows where every setting comes from, without calling AWS
 - Role column shows `primary` instead of `none` for standalone and source servers, including Oracle
 - Instances that replicate from a Multi-AZ cluster now show `replica`
-- Statuses, counts and filters are unchanged
+- Statuses, counts and filters are unchanged; without a settings file the script behaves exactly as before
 
 ## 1.6.0
 - Mark chosen servers as always compliant with a simple exceptions file (expiry date required)

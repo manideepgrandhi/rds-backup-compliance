@@ -1,3 +1,5 @@
 # local compliance exceptions (v1.6.0 / v1.2.0); the .example file is tracked
 compliance_exceptions.conf
+# local settings file, auto-loaded from the script folder; the .example file is tracked
+rds_backup_compliance_report.conf
 whats-new/dist/

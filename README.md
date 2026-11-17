@@ -163,6 +163,24 @@ Only regions with databases, and errors, get their own line; empty regions are f
 
 If one region fails, the other regions still finish. The failed region is listed under Region errors in the report, and the exit code follows the usual rules. Bash 4.3+ uses `wait -n`. Without it the tool waits for each batch to finish. The temp folder is removed on exit, including Ctrl-C. In parallel mode each region that has clusters calls `describe-global-clusters` itself, so there are a few more calls than with `--parallel 1`.
 
+## Settings file and `--check-config` (unreleased)
+
+Settings can live in a file instead of on the command line. Copy [rds_backup_compliance_report.conf.example](rds_backup_compliance_report.conf.example) to `rds_backup_compliance_report.conf` in the **same folder as the script** and it is loaded automatically. You do not need `--config`.
+
+* **Order of precedence:** built-in defaults, then the config file, then command-line options (the CLI always wins).
+* **`--config FILE`:** load this file instead of the automatic one.
+* **`--no-config`:** skip the automatic file. An explicit `--config` still loads.
+* **No file:** the script behaves exactly as before.
+* **Format:** `key=value`, long option names without `--` (`daily-max-age=26`). Parsed line by line, never sourced. A bad line stops the run (exit 1) with `file:line`. Account names go in the same file: `111111111111 = prod-payments`.
+* **Exceptions file:** `compliance_exceptions.conf` next to the script is also loaded automatically (see [Compliance exceptions](#compliance-exceptions-v160)); `--exceptions FILE` or the `exceptions =` key overrides it.
+* **The script folder** is the real folder of the script (symlinks resolved), not the folder you run it from. Both files are in `.gitignore`.
+* **`--check-config`:** validates the config and exceptions files and prints every setting with where it came from (`default`, `config <file>` or `CLI`), plus the account names and exceptions found. It makes no AWS calls and needs no credentials. Exit 0 when OK, 1 with `file:line` on an error.
+
+```bash
+./rds_backup_compliance_report.sh --check-config
+./rds_backup_compliance_report.sh --check-config --weekly 4 -P prod    # shows weekly = CLI
+```
+
 ## Compliance exceptions (v1.6.0)
 
 Approved exceptions for servers you know are non-compliant (decommission planned, vendor-pinned version, and so on). They come from one shared file, `compliance_exceptions.conf`. rds-patch-compliance, rds-backup-compliance and rds-compliance-report all use the same file and format.
@@ -173,7 +191,7 @@ Approved exceptions for servers you know are non-compliant (decommission planned
 111111111111 | reports-pg         | patch,backup | 2027-03-31 | Vendor-pinned version | INC-77
 ```
 
-* **File:** `--exceptions FILE` (config `exceptions = FILE`). The default is `compliance_exceptions.conf` next to the script, if present. With no file the feature is off and the reports are exactly as before. Start from [compliance_exceptions.conf.example](compliance_exceptions.conf.example). The real file is in `.gitignore`.
+* **File:** `--exceptions FILE` (config `exceptions = FILE`). The default (loaded automatically, like the settings file; check it with `--check-config`) is `compliance_exceptions.conf` next to the script, if present. With no file the feature is off and the reports are exactly as before. Start from [compliance_exceptions.conf.example](compliance_exceptions.conf.example). The real file is in `.gitignore`.
 * **Format:** all five fields are required. account_id is 12 digits. The identifier is exact and case-insensitive, with no wildcards and no region. scope is `patch`, `backup` or `patch,backup`. expires is a mandatory `YYYY-MM-DD` (UTC) and is the last day the exception applies. `#` comments and blank lines are ignored.
 * **Validation:** strict. A missing field, a bad account, scope or date, or a duplicate account + identifier for the same scope stops the run (exit 1) with `file:line`.
 * **Matched, not expired:** shown as **Compliant (exception)** and counted as compliant in every %. The evaluated status is kept in `actual_status`. Flags: **expiring soon** (14 days or less) and **no longer needed** (the server is compliant anyway).
@@ -231,7 +249,8 @@ tests/validate_cli.py            # checks that every field read exists in the bu
 
 ## Changelog
 
-- **1.6.1**
+- **1.7.0**
+  - `rds_backup_compliance_report.conf` next to the script is loaded automatically (`--config FILE` overrides, `--no-config` skips). New `--check-config` validates the settings and exceptions files and shows each setting's source, with no AWS calls. See [Settings file and --check-config](#settings-file-and---check-config-unreleased).
   - The role column (`global_role`) shows `primary` for every instance and cluster that is not a replica or a global-database secondary, instead of `none` (Oracle sources and standalone instances included). Instances that replicate from a Multi-AZ cluster (`ReadReplicaSourceDBClusterIdentifier`) now show `replica`.
   - Statuses, gaps, counts and filters are unchanged. Reports merged from older saved data show `primary` where that data says `none`. CSV and JSON keep the column name `global_role`; the value `none` no longer appears, so anything that filtered on it must use `primary`.
 - **1.6.0**
