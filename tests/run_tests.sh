@@ -13,6 +13,9 @@ unset AWS_REGION AWS_DEFAULT_REGION AWS_PROFILE MOCK_DEFAULT_REGION MOCK_SCENARI
 export AWS_ACCESS_KEY_ID=fake AWS_SECRET_ACCESS_KEY=fake AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null \
        AWS_EC2_METADATA_DISABLED=true AWS_ENDPOINT_URL=http://127.0.0.1:9 TMPDIR="$OUT"
 if [[ "$(command -v aws)" != "$HERE/mock/aws" || "$(aws --version 2>&1)" != *.mock* ]]; then echo "GUARD: aws is not the mock"; exit 2; fi
+for stray in rds_backup_compliance_report.conf compliance_exceptions.conf; do   # both are auto-loaded from the script folder and would change results
+    if [[ -e "$HERE/../$stray" ]]; then echo "GUARD: $HERE/../$stray exists; the tests would load it. Move it away and re-run."; exit 2; fi
+done
 BEFORE="$(cd "$HERE/.." && find . -path ./.git -prune -o -print | sort)"
 trap '(( KEEP )) && echo "kept $OUT" || rm -rf -- "$OUT"' EXIT
 ok()  { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
@@ -566,6 +569,61 @@ if command -v node >/dev/null 2>&1 && [[ -x "${CHROME:-/usr/bin/google-chrome}" 
     res="$(node "$HERE/xss_check.js" "$XH" 2>&1)"; rc=$?
     chk "xss: headless Chrome, no payload executed or injected ${res:0:300}" test "$rc" -eq 0
 else echo "  skip xss browser check (node + puppeteer-core on NODE_PATH + Chrome not found)"; fi
+
+echo "== auto-loaded settings file (rds_backup_compliance_report.conf next to the script) and --check-config"
+# every case runs a COPY of the tool in a temp folder, so the repo folder never gets a conf file
+AC="$OUT/autoconf"; mkdir -p "$AC"; cp -r "$HERE/../rds_backup_compliance_report.sh" "$HERE/../lib" "$AC/"
+ACS="$AC/rds_backup_compliance_report.sh"
+act() { local name="$1" exp="$2"; shift 2   # like t, but runs the temp copy (fleet scenario)
+        MOCK_SCENARIO=fleet "$ACS" "$@" >"$OUT/$name.out" 2>"$OUT/$name.err"; local rc=$?
+        if [[ "$rc" == "$exp" ]]; then ok "$name (rc=$rc)"; else bad "$name: rc=$rc expected $exp"; tail -3 "$OUT/$name.err" | sed 's/^/       /'; fi; }
+BASEARGS=(-P prod -r us-east-1 -i 'orders-*' -F json)
+act ac_none 0 "${BASEARGS[@]}"; rowt ac_none orders-aurora-pg15 '.weekly.need == 4 or .weekly.need == 5'; hasnt ac_none err 'loaded automatically'
+printf 'weekly = 6\n111111111111 = auto-named\n' >"$AC/rds_backup_compliance_report.conf"
+act ac_auto 0 "${BASEARGS[@]}"; rowt ac_auto orders-aurora-pg15 '.weekly.need == 6'; has ac_auto err 'Config file loaded automatically: .*/autoconf/rds_backup_compliance_report\.conf'
+jqt ac_auto '[.accounts[] | .name] | index("auto-named") != null' "$OUT/ac_auto.out"
+printf 'weekly = 5\n' >"$AC/other.conf"
+act ac_override 0 "${BASEARGS[@]}" --config "$AC/other.conf"; rowt ac_override orders-aurora-pg15 '.weekly.need == 5'; hasnt ac_override err 'loaded automatically'
+act ac_cli 0 "${BASEARGS[@]}" --weekly 4; rowt ac_cli orders-aurora-pg15 '.weekly.need == 4'
+act ac_cli_over_explicit 0 "${BASEARGS[@]}" --config "$AC/other.conf" --weekly 4; rowt ac_cli_over_explicit orders-aurora-pg15 '.weekly.need == 4'
+act ac_noconf 0 "${BASEARGS[@]}" --no-config; rowt ac_noconf orders-aurora-pg15 '.weekly.need == 4 or .weekly.need == 5'; hasnt ac_noconf err 'loaded automatically'
+jqt ac_noconf '[.accounts[] | .name] | index("auto-named") == null' "$OUT/ac_noconf.out"
+act ac_noconf_explicit 0 "${BASEARGS[@]}" --no-config --config "$AC/other.conf"; rowt ac_noconf_explicit orders-aurora-pg15 '.weekly.need == 5'
+chk "auto-load: a bad auto-loaded conf stops the run with file:line" bash -c "printf 'bogus=1\n' >'$AC/rds_backup_compliance_report.conf'; MOCK_SCENARIO=fleet '$ACS' -P prod >/dev/null 2>'$OUT/ac_bad.err'; [[ \$? -eq 1 ]] && grep -q 'Config .*autoconf/rds_backup_compliance_report.conf:1: unknown key' '$OUT/ac_bad.err'"
+# --check-config: no AWS call at all (the mock log stays empty), sources shown, exit 0
+printf 'daily = 9\nweekly=6\n111111111111 = prod-payments  # main\n222222222222 = "nonprod-shared"\n' >"$AC/rds_backup_compliance_report.conf"
+printf '# account | id | scope | expires | reason\n111111111111 | legacy-mysql | backup | 2027-03-31 | Decommission in Q1\n111111111111 | old-pg | backup | 2026-01-01 | Old\n111111111111 | pg-only | patch | 2027-03-31 | Patch waiver\n' >"$AC/compliance_exceptions.conf"
+: >"$MOCK_LOG"
+RDS_BCR_EXC_NOW=1791000000 act cc_ok 0 --check-config --weekly 4 -P prod
+chk "check-config: zero AWS calls" test "$(ncalls)" -eq 0
+has cc_ok out '^Config file: +.*autoconf/rds_backup_compliance_report\.conf \(auto-loaded from the script folder\)'
+has cc_ok out '^Exceptions file: +.*autoconf/compliance_exceptions\.conf \(auto-loaded from the script folder\)'
+has cc_ok out '^  daily +9 +config .*autoconf/rds_backup_compliance_report\.conf$'
+has cc_ok out '^  weekly +4 +CLI$'; has cc_ok out '^  profile +prod +CLI$'; has cc_ok out '^  monthly +12 +default$'
+has cc_ok out '^  111111111111 = prod-payments$'; has cc_ok out '^  222222222222 = nonprod-shared$'
+has cc_ok out '^Exceptions \(3\); today is 2026-10-03 UTC'; has cc_ok out 'line 3: 111111111111 old-pg scope=backup expires 2026-01-01 EXPIRED'
+has cc_ok out 'line 4: .* \(patch only: not applied by this script\)'; has cc_ok out '^OK: configuration is valid \(no AWS calls made\)'
+# explicit files: --config / --exceptions are named as such; --no-config shows defaults
+printf 'exceptions = %s\nweekly=5\n' "$AC/compliance_exceptions.conf" >"$AC/other.conf"
+act cc_explicit 0 --check-config --config "$AC/other.conf"; has cc_explicit out '\(--config\)$'; has cc_explicit out 'compliance_exceptions\.conf \(exceptions key in config\)'
+has cc_explicit out '^  weekly +5 +config .*other\.conf$'
+act cc_nocfg 0 --check-config --no-config --exceptions "$AC/compliance_exceptions.conf"; has cc_nocfg out '^Config file: +none \(--no-config\)'
+has cc_nocfg out '\(--exceptions\)$'; has cc_nocfg out '^  daily +7 +default$'; hasnt cc_nocfg out 'prod-payments'
+chk "check-config: no AWS calls after all runs" test "$(ncalls)" -eq 0
+chk "check-config: works without the aws CLI" bash -c "PATH='$(dirname "$(command -v jq)")':/usr/bin:/bin; command -v aws >/dev/null 2>&1 && exit 0; '$ACS' --check-config >/dev/null 2>&1"
+# errors: exit 1 naming file:line (existing messages), still no AWS call
+printf 'daily = 9\nweekly = x\n' >"$AC/rds_backup_compliance_report.conf"
+act cc_badconf 1 --check-config; has cc_badconf err 'Config .*autoconf/rds_backup_compliance_report\.conf:2: --weekly must be a whole number'
+printf 'daily = 9\nbogus = 1\n' >"$AC/rds_backup_compliance_report.conf"
+act cc_badconf2 1 --check-config; has cc_badconf2 err 'Config .*autoconf/rds_backup_compliance_report\.conf:2: unknown key .bogus.'
+printf 'daily = 9\n' >"$AC/rds_backup_compliance_report.conf"
+printf '111111111111 | legacy-mysql | backup | 2027-03-31 | ok\n111111111111 | bad | backup | 2027-02-29 | bad date\n' >"$AC/compliance_exceptions.conf"
+act cc_badexc 1 --check-config; has cc_badexc err 'Exceptions .*autoconf/compliance_exceptions\.conf:2: expires '"'"'2027-02-29'"'"' is not a valid date'
+act cc_badexc_explicit 1 --check-config --no-config --exceptions "$AC/nope.conf"; has cc_badexc_explicit err 'Exceptions file not readable'
+chk "check-config errors: no AWS calls" test "$(ncalls)" -eq 0
+rm -f "$AC/rds_backup_compliance_report.conf" "$AC/compliance_exceptions.conf"
+act cc_empty 0 --check-config; has cc_empty out '^Config file: +none \(defaults and CLI only\)'; has cc_empty out '^Exceptions file: +none'; has cc_empty out '^Account names \(0\)'
+t cc_help 0 fleet --help; has cc_help out '--no-config'; has cc_help out '--check-config'
 
 AFTER="$(cd "$HERE/.." && find . -path ./.git -prune -o -print | sort)"
 chk "nothing written into the repo" test "$BEFORE" == "$AFTER"
