@@ -13,6 +13,7 @@
 #   Dates before the resource was created are never expected. Points whose retention fits no class: warning only.
 #   Aurora global database secondaries and read replicas: daily only (weekly / monthly / yearly N/A).
 #   replica-exempt-engines=oracle-*,aurora-*: those Role=replica/secondary engines are always COMPLIANT (all schedules N/A).
+# Role (global_role column): replica | secondary (global DB member) | primary (everything else, v1.6.1; was none) | unknown (global clusters unreadable).
 # Status: COMPLIANT | NON-COMPLIANT (gaps column) | NOT YET DUE (resource too young) | UNKNOWN (a call failed).
 # Exceptions (v1.6.0): compliance_exceptions.conf (or --exceptions FILE) lists servers that show COMPLIANT (EXCEPTION)
 #   and count as compliant until their expiry date; the evaluated status stays in actual_status.
@@ -26,7 +27,7 @@ set -Eeuo pipefail
 umask 077
 
 readonly SCRIPT_NAME="${0##*/}"
-readonly SCRIPT_VERSION="1.6.0"
+readonly SCRIPT_VERSION="1.6.1"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_DIR
 LIBDIR="${RDS_BCR_LIB:-$SCRIPT_DIR/lib}"

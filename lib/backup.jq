@@ -225,7 +225,7 @@ def evaluate:
   # status precedence: any FAIL -> NON-COMPLIANT, else any UNKNOWN -> UNKNOWN, else any DUE -> NOT YET DUE
   # (resource too young for the full schedule; not counted in the compliance %), else COMPLIANT
   { account_id: $r.account_id, region: $r.region, identifier: $r.id, type: $r.type, engine: $r.engine,
-      engine_version: $r.engine_version, global_cluster: ($r.global_cluster // ""), global_role: ($r.global_role // "none"),
+      engine_version: $r.engine_version, global_cluster: ($r.global_cluster // ""), global_role: (if ($r.global_role // "none") == "none" then "primary" else $r.global_role end),   # v1.6.1: "none" (older saved data) is shown as primary
       created: ($r.created_epoch | utc), created_epoch: $r.created_epoch,
       age_days: (if $r.created_epoch == null then null else ($age | floor) end),
       retention_days: $r.retention, last_automated_utc: ($last_auto | utc),
