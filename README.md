@@ -2,7 +2,7 @@
 
 Release history: [What's new](https://manideepgrandhi.github.io/rds-backup-compliance/) · also in [CHANGELOG.md](CHANGELOG.md).
 
-`rds_backup_compliance_report.sh` v1.7.0 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
+`rds_backup_compliance_report.sh` v1.7.1 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
 
 ## Install (CloudShell)
 
@@ -11,6 +11,8 @@ curl -fsSLO https://github.com/manideepgrandhi/rds-backup-compliance/releases/la
 sha256sum -c rds-backup-compliance.zip.sha256 && unzip -oq rds-backup-compliance.zip && cd rds-backup-compliance
 ./rds_backup_compliance_report.sh -A -F html,csv --save-data -o ./out
 ```
+
+All settings come from [rds_backup_compliance_report.conf](rds_backup_compliance_report.conf), which is in the zip next to the script. With the shipped values, `./rds_backup_compliance_report.sh` on its own scans every region of the current login and writes HTML and CSV into `./reports`. Edit the file once (see [The settings file](#the-settings-file-v171)) and check it with `--check-config`.
 
 `sha256sum -c` must print `rds-backup-compliance.zip: OK`. If it reports `FAILED`, the `&&` chain stops before `unzip`; delete the zip and do not run it. Releases from v1.2.1 on publish `rds-backup-compliance.zip.sha256` next to the zip.
 
@@ -133,7 +135,7 @@ A manual snapshot is **orphaned** when its source cluster or instance no longer 
 
 AWS Backup recovery points, automated snapshots, `awsbackup:` snapshots and DocumentDB/Neptune snapshots are not part of the orphan logic.
 
-- **Summary**, in the Compliance header and the Backups tab: e.g. `4 orphaned snapshots, 1.8 TB, ~$38/month (estimate)`. The estimate is size GB × `--snapshot-price-per-gb` (default 0.021, or `snapshot_price_per_gb` in the config file). It is a **rough upper estimate**: snapshot storage is billed incrementally, so the real cost is usually lower.
+- **Summary**, in the Compliance header and the Backups tab: e.g. `4 orphaned snapshots, 1.8 TB, ~$38/month (estimate)`. The estimate is size GB × `--snapshot-price-per-gb` (`snapshot-price-per-gb` in the settings file, shipped 0.021). It is a **rough upper estimate**: snapshot storage is billed incrementally, so the real cost is usually lower.
 - **Backups tab, All clusters and instances:** a Source status filter (All, Existing, Orphaned, Shared, Unverified when present), Source and Est. $/month columns, a clickable orphaned count in the orphan summary line, and `(deleted) <id>` entries in the Resource dropdown.
 - **CSV:** with `csv` in `-F`, `<prefix>_<account>_<stamp>_orphaned_snapshots.csv` (oldest first: account_id, region, snapshot_id, type, source_id, engine, engine_version, created_utc, created_ist, age_days, size_gb, est_monthly_usd, encrypted, kms_key), for live scans and `--merge`. `_backups.csv` and the in-page export gain a `source_status` column.
 - Data saved by v1.0.0 and v1.1.0 still merges; those accounts simply have no orphan data.
@@ -163,49 +165,147 @@ Only regions with databases, and errors, get their own line; empty regions are f
 
 If one region fails, the other regions still finish. The failed region is listed under Region errors in the report, and the exit code follows the usual rules. Bash 4.3+ uses `wait -n`. Without it the tool waits for each batch to finish. The temp folder is removed on exit, including Ctrl-C. In parallel mode each region that has clusters calls `describe-global-clusters` itself, so there are a few more calls than with `--parallel 1`.
 
-## Settings file and `--check-config` (v1.7.0)
+## The settings file (v1.7.1)
 
-Settings can live in a file instead of on the command line. Copy [rds_backup_compliance_report.conf.example](rds_backup_compliance_report.conf.example) to `rds_backup_compliance_report.conf` in the **same folder as the script** and it is loaded automatically. You do not need `--config`.
+Every setting lives in **one file**, [rds_backup_compliance_report.conf](rds_backup_compliance_report.conf). It ships in the zip next to the script and is loaded automatically. The script and `lib/` hold no setting values of their own, so the file is the single reference for what a run does.
 
-* **Order of precedence:** built-in defaults, then the config file, then command-line options (the CLI always wins).
-* **`--config FILE`:** load this file instead of the automatic one.
-* **`--no-config`:** skip the automatic file. An explicit `--config` still loads.
-* **No file:** the script behaves exactly as before.
-* **Format:** `key=value`, long option names without `--` (`daily-max-age=26`). Parsed line by line, never sourced. A bad line stops the run (exit 1) with `file:line`. Account names go in the same file: `111111111111 = prod-payments`.
-* **Exceptions file:** `compliance_exceptions.conf` next to the script is also loaded automatically (see [Compliance exceptions](#compliance-exceptions-v160)); `--exceptions FILE` or the `exceptions =` key overrides it.
-* **The script folder** is the real folder of the script (symlinks resolved), not the folder you run it from. Both files are in `.gitignore`.
-* **`--check-config`:** validates the config and exceptions files and prints every setting with where it came from (`default`, `config <file>` or `CLI`), plus the account names and exceptions found. It makes no AWS calls and needs no credentials. Exit 0 when OK, 1 with `file:line` on an error.
+* **Easy to read:** settings are grouped under headings (Accounts and regions, Schedule, Output, Snapshot audit, Report retention, Email, Account names, Advanced). Notes start with `##`. Every other line is a setting, `key=value`, and each key appears once. There are no commented-out settings to confuse with real ones.
+* **Required:** if the file is missing, the run stops (exit 1) and says where to put it. Every setting must be in the file; a missing one stops the run with the list of missing keys. A value may be empty where its note says so, for example `profile=` (current login) or `alert-email=` (no e-mail).
+* **Checked:** a bad value, an unknown key or a key listed twice stops the run with `file:line`.
+* **Command line wins for one run:** `--daily 14`, `-P prod`, `-o ''` (print to the screen), `-l ''` (no log file). `-r REGION` replaces `all-regions` from the file. A list option given on the command line (`-P`, `-r`, `-e`, `-i`, `-F`, `--alert-email`, `--replica-exempt-engines`) replaces the list in the file.
+* **`--config FILE`:** use another complete copy instead of the file next to the script (it must also have every setting). Nothing is mixed between the two files.
+* **`--no-config` was removed** (it existed in v1.7.0 only); it now stops with a message, because the file is required.
+* **Relative paths** such as `output-dir=./reports` start from the folder you run the script in. Use full paths when a scheduler runs it.
+* **Upgrades:** the zip contains the shipped file, so keep a copy of your edited file before you unzip a new release over it, then compare the two.
 
-```bash
-./rds_backup_compliance_report.sh --check-config
-./rds_backup_compliance_report.sh --check-config --weekly 4 -P prod    # shows weekly = CLI
+The main settings, as shipped:
+
+```text
+## ============================== Accounts and regions ==============================
+profile=
+all-regions=yes
+region=
+engine=
+identifier=
+## ============================== Schedule ==============================
+daily=7
+daily-max-age=26
+weekly-weekday=sat
+weekly-retention-days=30
+monthly-rule=first-sun
+monthly=12
+monthly-retention-days=365
+replica-exempt-engines=oracle-*,aurora-*
+## ============================== Output ==============================
+format=html,csv
+output-dir=./reports
+tz=Asia/Kolkata
+non-compliant-only=no
+log-file=./reports/run.log
+## ============================== Snapshot audit ==============================
+manual-older-than=90
+snapshot-price-per-gb=0.021
+## ============================== Report retention ==============================
+keep-reports=30
+## ============================== Email ==============================
+alert-email=
+alert-from=
+alert-on=noncompliant
+## ============================== Account names (display only) ==============================
+111111111111 = prod-payments
+222222222222 = nonprod-shared
 ```
 
-Where the files go, with fake account numbers (full walk-through with sample output in [EXAMPLES.md](EXAMPLES.md#settings-file-and---check-config-v170)):
+The real file also has a short `##` note above each setting. Notes always sit on their own line: a setting line holds only `key=value`. `profile=` empty means the current login; for several accounts list one AWS CLI profile per account, e.g. `profile=prod,nonprod,dev`.
+
+**Advanced (rarely changed)**, at the bottom of the same file:
+
+| Key | Shipped value | Meaning |
+|---|---|---|
+| `weekly` | `auto` | `auto` = every weekly-weekday in the weekly window; `N` = the last N |
+| `weekly-window-days` | empty | Weekly window in days; empty = `weekly-retention-days` |
+| `weekly-days` / `monthly-days` | `25-40` / `300-400` | Retention ranges that make a recovery point weekly / monthly |
+| `tolerance-days` | `1` | A point counts for a scheduled day if taken up to N days before or after (0-3) |
+| `daily-retention-days` | empty | Expected RDS backup retention; empty = `daily` |
+| `retention-tolerance-days` | `1` | Allowed difference from the expected retention |
+| `yearly` | `0` | Yearly points expected; 0 = off |
+| `parallel` | `4` | Regions of one account scanned at the same time |
+| `prefix` | `rds_backup_compliance` | Start of every report file name |
+| `aws-timeout` / `max-attempts` | `30` / `5` | AWS CLI timeout (seconds) and retries |
+| `mail-timeout` | `60` | Seconds the mail command may take |
+| `fail-on-noncompliant` / `save-data` | `no` / `no` | Exit 5 on NON-COMPLIANT / also write `--save-data` files |
+| `exceptions` | empty | Exceptions file; empty = `compliance_exceptions.conf` next to the script, if present |
+
+`weekly-window-days` now follows `weekly-retention-days`: with the shipped 30/30 nothing changes, but if you set `weekly-retention-days=35` the weekly window becomes 35 days too (set `weekly-window-days=30` to keep the old window).
+
+### `--check-config`
+
+Validates the settings and exceptions files and prints every setting with its source (`conf` or `CLI`), the account names, the exceptions and the mail command it would use. No AWS calls, no credentials needed. Exit 0 when OK, 1 with `file:line` (or the list of missing keys) on an error.
+
+```text
+$ ./rds_backup_compliance_report.sh --check-config --daily 9
+Config file:     /home/cloudshell-user/rds-backup-compliance/rds_backup_compliance_report.conf (next to the script)
+Exceptions file: none (no exceptions in effect)
+Script folder:   /home/cloudshell-user/rds-backup-compliance
+
+Settings in effect (name, value, source: conf = the config file above, CLI = command line):
+  profile                    (empty)                        conf
+  all-regions                yes                            conf
+  daily                      9                              CLI
+  daily-max-age              26                             conf
+  weekly-retention-days      30                             conf
+  ...
+  weekly-window-days         = weekly-retention-days (30)   conf
+  keep-reports               30 days                        conf
+  alert-email                (empty = off)                  conf
+
+Account names (2):
+  111111111111 = prod-payments
+  222222222222 = nonprod-shared
+
+Exceptions: none
+
+E-mail: off (alert-email is empty)
+
+OK: configuration is valid (no AWS calls made)
+```
+
+Where the files go (fake account numbers; walk-through in [EXAMPLES.md](EXAMPLES.md#the-settings-file-v171)):
 
 ```text
 rds-backup-compliance/                       <- the folder that holds the script
   rds_backup_compliance_report.sh
-  rds_backup_compliance_report.conf          <- settings + account names, auto-loaded
-  compliance_exceptions.conf                 <- exceptions, auto-loaded
+  rds_backup_compliance_report.conf          <- every setting + account names (required, shipped)
+  compliance_exceptions.conf                 <- exceptions (optional), auto-loaded
+  lib/
 ```
+
+The script folder is the real folder of the script (symlinks resolved), not the folder you run it from. `compliance_exceptions.conf` stays in `.gitignore`; the settings file is tracked.
+
+## Report retention: `keep-reports` (v1.7.1)
+
+`keep-reports=30` (shipped) deletes this tool's old report files after each run, so `output-dir` does not fill up.
+
+* Only files directly in `output-dir` whose name starts with `prefix` + `_` and ends in `.html`, `.csv`, `.json` or `.txt`, and that are older than N days. Other files, sub-folders, the run log and `--save-data` files (`rds_backup_<account>_<date>.json`) are never touched.
+* Every deleted file is logged: `keep-reports: deleted rds_backup_compliance_111111111111_20250101_000000.html (older than 30 days)`, then a count.
+* `keep-reports=0` keeps everything (as before v1.7.1). No `output-dir` (`-o ''`) or `--dry-run`: nothing is deleted.
+
+## E-mail: `alert-email` (v1.7.1)
+
+The same e-mail settings as rds-patch-compliance, sent with the machine's own mail command (no AWS service):
 
 ```text
-# rds_backup_compliance_report.conf
-daily-max-age=26
-weekly-retention-days=35
-replica-exempt-engines=oracle-*,aurora-*
-111111111111 = prod-payments
-
-# compliance_exceptions.conf   (account_id | identifier | scope | expires | reason)
-111111111111 | legacy-mysql | backup | 2027-03-31 | Decommission in Q1, CHG-1234
+alert-email=dba-team@example.com,oncall@example.com
+alert-from=rds-reports@example.com
+alert-on=noncompliant
 ```
 
-```bash
-./rds_backup_compliance_report.sh -A -F html,csv -o ./out                 # both files load by themselves
-./rds_backup_compliance_report.sh --config /path/other.conf -A            # use a different settings file
-./rds_backup_compliance_report.sh --no-config -A                          # ignore the automatic settings file
-```
+* **When:** `alert-on=noncompliant` sends only when a server is NON-COMPLIANT or an AWS call failed (UNKNOWN rows or failed regions). Servers with an applied exception count as compliant. `alert-on=always` sends after every run, including `--merge`.
+* **What:** the subject is `[rds_backup_compliance] NON-COMPLIANT: 3 non-compliant of 6, 25% compliant`. The body has the counts, every NON-COMPLIANT server with its reasons, UNKNOWN servers, region errors and the report file paths.
+* **How:** with `sendmail` and `html` in `format`, the HTML report is attached (MIME). With only `mail` / `mailx`, the text summary is sent without the attachment. The mail command may take `mail-timeout` seconds (60).
+* **No mail command:** the run logs a warning and still finishes with its normal exit code. E-mail never changes the exit code.
+* **Test it:** `./rds_backup_compliance_report.sh --alert-test` sends one test e-mail and exits, with no AWS calls. `--check-config` shows which mail command would be used.
+* Addresses are validated (one plain address each, no spaces or shell characters). The CLI options are `--alert-email`, `--alert-from`, `--alert-on`, `--alert-test`, `--mail-timeout`.
 
 ## Compliance exceptions (v1.6.0)
 
@@ -217,7 +317,7 @@ Approved exceptions for servers you know are non-compliant (decommission planned
 111111111111 | reports-pg         | patch,backup | 2027-03-31 | Vendor-pinned version | INC-77
 ```
 
-* **File:** `--exceptions FILE` (config `exceptions = FILE`). The default (loaded automatically, like the settings file; check it with `--check-config`) is `compliance_exceptions.conf` next to the script, if present. With no file the feature is off and the reports are exactly as before. Start from [compliance_exceptions.conf.example](compliance_exceptions.conf.example). The real file is in `.gitignore`.
+* **File:** `--exceptions FILE` (config `exceptions=FILE`). The default (loaded automatically; check it with `--check-config`) is `compliance_exceptions.conf` next to the script, if present. With no file the feature is off and the reports are exactly as before. Start from [compliance_exceptions.conf.example](compliance_exceptions.conf.example). The real file is in `.gitignore`.
 * **Format:** all five fields are required. account_id is 12 digits. The identifier is exact and case-insensitive, with no wildcards and no region. scope is `patch`, `backup` or `patch,backup`. expires is a mandatory `YYYY-MM-DD` (UTC) and is the last day the exception applies. `#` comments and blank lines are ignored.
 * **Validation:** strict. A missing field, a bad account, scope or date, or a duplicate account + identifier for the same scope stops the run (exit 1) with `file:line`.
 * **Matched, not expired:** shown as **Compliant (exception)** and counted as compliant in every %. The evaluated status is kept in `actual_status`. Flags: **expiring soon** (14 days or less) and **no longer needed** (the server is compliant anyway).
@@ -235,7 +335,7 @@ Approved exceptions for servers you know are non-compliant (decommission planned
 | Code | Meaning |
 |---|---|
 | 0 | OK |
-| 1 | Usage error |
+| 1 | Usage or settings error (missing settings file, missing or bad setting) |
 | 2 | Pre-check failed (aws, jq, credentials or region) |
 | 3 | Bad merge input |
 | 4 | Output error |
@@ -275,8 +375,15 @@ tests/validate_cli.py            # checks that every field read exists in the bu
 
 ## Changelog
 
+- **1.7.1**
+  - One settings file: `rds_backup_compliance_report.conf` ships next to the script with every setting filled in, under headings, with `##` notes. It is required (clear message when missing), every key must be present and listed once, and the script and `lib/` no longer contain setting values. `--config FILE` uses another complete file; `--no-config` was removed. See [The settings file](#the-settings-file-v171).
+  - `weekly-window-days` follows `weekly-retention-days` unless set.
+  - New `keep-reports` (shipped 30): old report files in `output-dir` are deleted after each run, only this tool's own files.
+  - New e-mail summary (`alert-email`, `alert-from`, `alert-on`, `--alert-test`, `mail-timeout`) with mail / mailx / sendmail; sendmail attaches the HTML report.
+  - `--check-config` shows each setting's source as `conf` or `CLI`, the mail command, and reports missing keys.
+  - With the same settings, reports are identical to v1.7.0. `-r` on the command line replaces `all-regions` from the file, and a list option on the command line replaces the list in the file.
 - **1.7.0**
-  - `rds_backup_compliance_report.conf` next to the script is loaded automatically (`--config FILE` overrides, `--no-config` skips). New `--check-config` validates the settings and exceptions files and shows each setting's source, with no AWS calls. See [Settings file and --check-config](#settings-file-and---check-config-v170).
+  - `rds_backup_compliance_report.conf` next to the script is loaded automatically (`--config FILE` overrides, `--no-config` skips). New `--check-config` validates the settings and exceptions files and shows each setting's source, with no AWS calls. See [The settings file](#the-settings-file-v171) (v1.7.1 replaced the optional file with one required file).
   - The role column (`global_role`) shows `primary` for every instance and cluster that is not a replica or a global-database secondary, instead of `none` (Oracle sources and standalone instances included). Instances that replicate from a Multi-AZ cluster (`ReadReplicaSourceDBClusterIdentifier`) now show `replica`.
   - Statuses, gaps, counts and filters are unchanged. Reports merged from older saved data show `primary` where that data says `none`. CSV and JSON keep the column name `global_role`; the value `none` no longer appears, so anything that filtered on it must use `primary`.
 - **1.6.0**

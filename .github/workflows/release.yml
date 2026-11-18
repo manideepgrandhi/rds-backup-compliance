@@ -27,7 +27,7 @@ jobs:
           D=dist/rds-backup-compliance; mkdir -p "$D"
           # runtime only: no docs/, samples/, tests/, .github/
           for f in rds_backup_compliance_report.sh lib README.md \
-                   rds_backup_compliance_report.conf.example compliance_exceptions.conf.example EXAMPLES.md LICENSE; do
+                   rds_backup_compliance_report.conf compliance_exceptions.conf.example EXAMPLES.md LICENSE; do
             [ -e "$f" ] && cp -a "$f" "$D/"
           done
           chmod +x "$D"/*.sh
@@ -38,6 +38,8 @@ jobs:
           sha256sum rds-backup-compliance.zip > rds-backup-compliance.zip.sha256
           sha256sum -c rds-backup-compliance.zip.sha256
           unzip -q rds-backup-compliance.zip -d check && ./check/rds-backup-compliance/rds_backup_compliance_report.sh --version
+          # v1.7.1: the one settings file must ship next to the script and be valid
+          ./check/rds-backup-compliance/rds_backup_compliance_report.sh --check-config >/dev/null
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
