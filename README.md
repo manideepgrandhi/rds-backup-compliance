@@ -16,6 +16,19 @@ All settings come from [rds_backup_compliance_report.conf](rds_backup_compliance
 
 `sha256sum -c` must print `rds-backup-compliance.zip: OK`. If it reports `FAILED`, the `&&` chain stops before `unzip`; delete the zip and do not run it. Releases from v1.2.1 on publish `rds-backup-compliance.zip.sha256` next to the zip.
 
+## Quick start
+
+```bash
+cd rds-backup-compliance
+vi rds_backup_compliance_report.conf                       # profile, region / all-regions, alert-email ...
+./rds_backup_compliance_report.sh --check-config           # validate it, no AWS calls
+./rds_backup_compliance_report.sh                          # HTML + CSV into ./reports
+./rds_backup_compliance_report.sh -F text -o '' --non-compliant-only --manual-older-than ''   # quick look on the screen
+./rds_backup_compliance_report.sh --alert-test             # test the e-mail settings
+```
+
+More, with sample output for each: [Usage examples](EXAMPLES.md#usage-examples-v171). They cover the first run, several accounts, scheduled jobs and exit codes, one-off overrides, `--config`, e-mail, `keep-reports`, the manual snapshot audit, a cron job and the exceptions file.
+
 ## Policy
 
 The default rules follow this schedule: RDS automated backups daily (7-day retention), AWS Backup every Saturday (kept about a month) and on the first Sunday of each month (kept a year). There are no yearly backups, so the yearly check is off.
