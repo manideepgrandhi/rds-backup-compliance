@@ -49,7 +49,7 @@ rowt() { jq -e --arg i "$2" ".rows[] | select(.identifier == \$i) | $3" "$OUT/$1
 ncalls() { wc -l <"$MOCK_LOG" 2>/dev/null | tr -d ' ' || echo 0; }
 
 echo "== CLI"
-t version 0 fleet --version; has version out '1\.7\.1'
+t version 0 fleet --version; has version out '1\.7\.2'
 t help 0 fleet --help; has help out 'list-recovery-points-by-backup-vault'; has help out 'weekly-days'
 t badopt 1 fleet --nope
 t multifmt 1 fleet -P prod -r us-east-1 -F csv,html
@@ -487,7 +487,7 @@ jqt fleet '[.rows[] | select(.account_id == "111111111111") | {id: .identifier, 
 t gsort 0 fleet -P prod -r us-east-1,us-west-2 -F csv,html -o "$OUT/gsort"
 chk "csv: orders primary then secondary consecutive" python3 -c 'import csv,glob,sys; fs=[f for f in glob.glob(sys.argv[1]+"/*.csv") if "_backups" not in f and "_orphaned" not in f and "_manual" not in f]; r=list(csv.DictReader(open(fs[0],encoding="utf-8-sig"))); ids=[x["identifier"] for x in r]; i=ids.index("orders-aurora-pg15"); assert ids[i+1]=="orders-dr-pg15", ids; assert r[i]["global_role"]=="primary" and r[i+1]["global_role"]=="secondary"' "$OUT/gsort"
 chk "html: orders primary row before secondary" python3 -c 'import glob,sys; h=open(glob.glob(sys.argv[1]+"/*.html")[0],encoding="utf-8").read(); assert h.find("orders-aurora-pg15") < h.find("orders-dr-pg15") and "orders-aurora-pg15" in h and "orders-dr-pg15" in h' "$OUT/gsort"
-chk "version is 1.7.1" grep -qF 'SCRIPT_VERSION="1.7.1"' "$SCRIPT"
+chk "version is 1.7.2" grep -qF 'SCRIPT_VERSION="1.7.2"' "$SCRIPT"
 
 echo "== v1.6.0: compliance exceptions (--exceptions FILE / compliance_exceptions.conf)"
 EX="$OUT/exc"; mkdir -p "$EX"; export RDS_BCR_EXC_NOW=1791000000   # "today" for the expiry dates only = 2026-10-03 UTC
@@ -646,7 +646,7 @@ chk "check-config: works without the aws CLI" bash -c "PATH='$(dirname "$(comman
 rm -f "$ACF"
 act noconf 1 -P prod; has noconf err 'Settings file not readable: .*autoconf/rds_backup_compliance_report\.conf'; has noconf err 'Put the shipped file next to the script'
 act noconf_cc 1 --check-config; has noconf_cc err 'Settings file not readable'
-act noconf_help 0 --help; has noconf_help out 'settings file not loaded'; act noconf_ver 0 --version; has noconf_ver out '1\.7\.1'
+act noconf_help 0 --help; has noconf_help out 'settings file not loaded'; act noconf_ver 0 --version; has noconf_ver out '1\.7\.2'
 chk "missing conf: no AWS calls" test "$(ncalls)" -eq 0
 # missing keys (e.g. a v1.7.0 partial conf): exit 1 listing every missing key
 grep -vE '^(daily|weekly-weekday|alert-on)=' "$SHIPPED" >"$ACF"
@@ -719,7 +719,7 @@ if git -C "$HERE/.." rev-parse -q --verify 'v1.7.0^{commit}' >/dev/null 2>&1; th
         PATH="$FD:$PATH" FAKE_NOW="$FN" MOCK_NOW="$FN" MOCK_SCENARIO="$scen" "$SCRIPT" --config "$BASECONF" "$@" -F "$fmt" >"$o.new" 2>/dev/null
         if [[ "$fmt" == json ]]; then
             chk "same as v1.7.0: $name" cmp -s <(jq -S 'walk(if type == "object" then del(.version, .tool_version) else . end)' "$o.old") <(jq -S 'walk(if type == "object" then del(.version, .tool_version) else . end)' "$o.new")
-        else chk "same as v1.7.0: $name" cmp -s <(sed 's/1\.7\.0/1.7.x/g' "$o.old") <(sed 's/1\.7\.1/1.7.x/g' "$o.new"); fi
+        else chk "same as v1.7.0: $name" cmp -s <(sed 's/1\.7\.0/1.7.x/g' "$o.old") <(sed 's/1\.7\.2/1.7.x/g' "$o.new"); fi
         [[ -s "$o.new" ]] || bad "same as v1.7.0: $name produced no output"; cd "$HERE" || return; }
     same fleet_2r fleet json -P prod -r us-east-1,us-west-2
     same fleet_all fleet json -P prod,nonprod,dev -A
@@ -825,7 +825,7 @@ em em_merge mailx 0 fleet --merge "$M" -F json "${A2[@]}"; has em_merge.cap body
 # --alert-test: one test e-mail, no AWS calls
 n0="$(ncalls)"; em em_test sendmail 0 fleet "${A2[@]}" --alert-test
 chk "--alert-test: zero AWS calls" test "$(ncalls)" == "$n0"
-has em_test.cap body '^Subject: \[rds_backup_compliance\] TEST e-mail from '; has em_test.cap body '^Test e-mail from rds_backup_compliance_report\.sh v1\.7\.1 '
+has em_test.cap body '^Subject: \[rds_backup_compliance\] TEST e-mail from '; has em_test.cap body '^Test e-mail from rds_backup_compliance_report\.sh v1\.7\.2 '
 t em_test_noaddr 1 fleet --alert-test; has em_test_noaddr err '--alert-test needs alert-email'
 # no mail command: warning, the run still succeeds and the report is written
 if (( ! SYSMAIL )); then
@@ -839,6 +839,46 @@ chk "mail-timeout 1: stopped quickly ($SECONDS s)" test "$SECONDS" -lt 5; has em
 t em_bad 1 fleet --alert-email 'not-an-address'; has em_bad err 'Invalid --alert-email address: not-an-address'
 t em_bad2 1 fleet --alert-email 'a@b.c;rm'; t em_badon 1 fleet --alert-on sometimes; has em_badon err '--alert-on must be noncompliant or always'
 t em_badfrom 1 fleet --alert-from 'x y@z'; t em_badtmo 1 fleet --mail-timeout 0
+
+echo "== v1.7.2: --dry-run previews keep-reports"
+D2="$OUT/dry2"; mkdir -p "$D2/o"
+OLD2=(rds_backup_compliance_111111111111_20250101_000000.html rds_backup_compliance_111111111111_20250101_000000.csv rds_backup_compliance_111111111111_20250101_000000.json)
+for f in "${OLD2[@]}" other_report.html; do : >"$D2/o/$f"; touch -d '40 days ago' "$D2/o/$f"; done
+: >"$D2/o/rds_backup_compliance_young.html"; touch -d '5 days ago' "$D2/o/rds_backup_compliance_young.html"
+n0="$(ncalls)"; t dry2 0 fleet -P prod -r us-east-1 -o "$D2/o" -F json --keep-reports 30 --dry-run
+chk "dry-run keep-reports: zero AWS calls" test "$(ncalls)" == "$n0"
+for f in "${OLD2[@]}"; do has dry2 err "keep-reports: would delete $f\$"; done
+has dry2 err 'keep-reports: 3 old report file\(s\) would be deleted from .*/dry2/o \(keeping 30 days\); nothing was deleted$'
+hasnt dry2 err 'would delete (other_report|rds_backup_compliance_young)'
+chk "dry-run keep-reports: every file is still there" bash -c "for f in ${OLD2[*]} other_report.html rds_backup_compliance_young.html; do [[ -e '$D2/o/'\$f ]] || exit 1; done"
+t dry2_off 0 fleet -P prod -r us-east-1 -o "$D2/o" -F json --keep-reports 0 --dry-run; hasnt dry2_off err 'keep-reports'
+t dry2_scr 0 fleet -P prod -r us-east-1 -o '' -F json --keep-reports 30 --dry-run; hasnt dry2_scr err 'keep-reports'
+t dry2_real 0 fleet -P prod -r us-east-1 -o "$D2/o" -F json --keep-reports 30
+chk "same run without --dry-run deletes exactly the files that were previewed" bash -c "for f in ${OLD2[*]}; do [[ ! -e '$D2/o/'\$f ]] || exit 1; done; [[ -e '$D2/o/other_report.html' && -e '$D2/o/rds_backup_compliance_young.html' ]]"
+
+echo "== v1.7.2: --non-compliant-only text summary counts every server"
+t nc_all 0 fleet -P prod -r us-east-1 -F text; t nc_only 0 fleet -P prod -r us-east-1 -F text --non-compliant-only
+chk "nc-only text: Compliance and Resources lines equal the full run" bash -c "diff <(grep -E '^(Compliance|Resources) ' '$OUT/nc_all.out') <(grep -E '^(Compliance|Resources) ' '$OUT/nc_only.out')"
+has nc_only out '^Resources 6: compliant [0-9]+, non-compliant 3,'
+chk "nc-only text: only the 3 failing rows are listed" bash -c "test \"\$(grep -c 'NON-COMPLIANT' '$OUT/nc_only.out')\" == 3 && ! grep -E '	COMPLIANT	' '$OUT/nc_only.out'"
+chk "nc-only text: the full run lists all 6 servers" bash -c "test \"\$(grep -cE '	(COMPLIANT|NON-COMPLIANT|NOT YET DUE|UNKNOWN)	' '$OUT/nc_all.out')\" == 6"
+t nc_csv 0 fleet -P prod -r us-east-1 -F csv --non-compliant-only
+chk "nc-only csv: only the failing rows" bash -c "test \"\$(tail -n +2 '$OUT/nc_csv.out' | grep -c .)\" == 3"
+t nc_exc 0 fleet -P prod -A -F text --non-compliant-only --exceptions "$EX/ok.conf"
+has nc_exc out '^Exceptions: [0-9]+ applied'; has nc_exc out 'line 7: 111111111111 gone-db matched no server'
+
+echo "== v1.7.2: -o '' writes no manual-snapshot CSV"
+SC="$OUT/scr2"; mkdir -p "$SC"
+( cd "$SC" && t scr2 0 fleet -P prod -r us-east-1 -F text -o '' --manual-older-than 90 )
+chk "screen only: no file in the current folder" bash -c "test -z \"\$(ls -A '$SC')\""
+has scr2 err 'manual snapshots older than 90 days: 7 \(screen only, no file written\)'
+has scr2 err '^"?account_id"?,.*age_days'; has scr2 err 'legacy-mysql-manual-600d'
+chk "screen only: the report on stdout is untouched (no CSV rows)" bash -c "! grep -q 'legacy-mysql-manual-600d' '$OUT/scr2.out'"
+( cd "$SC" && t scr2_json 0 fleet -P prod -r us-east-1 -F json -o '' --manual-older-than 90 ); jqt scr2_json '.rows | length == 6' "$OUT/scr2_json.out"
+chk "screen only (json): stdout stays valid JSON, folder still empty" bash -c "test -z \"\$(ls -A '$SC')\""
+t scr2_dir 0 fleet -P prod -r us-east-1 -F json -o "$SC/d" --manual-older-than 90
+chk "with -o DIR the CSV is still written there" compgen -G "$SC/d/*_manual_older_than_90d.csv" >/dev/null
+hasnt scr2_dir err 'screen only'
 
 AFTER="$(cd "$HERE/.." && find . -path ./.git -prune -o -print | sort)"
 chk "nothing written into the repo" test "$BEFORE" == "$AFTER"

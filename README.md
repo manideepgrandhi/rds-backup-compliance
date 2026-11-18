@@ -2,7 +2,7 @@
 
 Release history: [What's new](https://manideepgrandhi.github.io/rds-backup-compliance/) · also in [CHANGELOG.md](CHANGELOG.md).
 
-`rds_backup_compliance_report.sh` v1.7.1 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
+`rds_backup_compliance_report.sh` v1.7.2 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
 
 ## Install (CloudShell)
 
@@ -23,11 +23,11 @@ cd rds-backup-compliance
 vi rds_backup_compliance_report.conf                       # profile, region / all-regions, alert-email ...
 ./rds_backup_compliance_report.sh --check-config           # validate it, no AWS calls
 ./rds_backup_compliance_report.sh                          # HTML + CSV into ./reports
-./rds_backup_compliance_report.sh -F text -o '' --non-compliant-only --manual-older-than ''   # quick look on the screen
+./rds_backup_compliance_report.sh -F text -o '' --non-compliant-only   # quick look on the screen
 ./rds_backup_compliance_report.sh --alert-test             # test the e-mail settings
 ```
 
-More, with sample output for each: [Usage examples](EXAMPLES.md#usage-examples-v171). They cover the first run, several accounts, scheduled jobs and exit codes, one-off overrides, `--config`, e-mail, `keep-reports`, the manual snapshot audit, a cron job and the exceptions file.
+More, with sample output for each: [Usage examples](EXAMPLES.md#usage-examples-v172). They cover the first run, several accounts, scheduled jobs and exit codes, one-off overrides, `--config`, e-mail, `keep-reports`, the manual snapshot audit, a cron job and the exceptions file.
 
 ## Policy
 
@@ -133,7 +133,7 @@ The HTML report has two tabs:
 
 ### Manual snapshot audit CSV
 
-`--manual-older-than N` also writes `<prefix>_<account>_<stamp>_manual_older_than_<N>d.csv`. It lists every manual snapshot older than N days, oldest first, with account, region, identifier, type, engine, snapshot, created (UTC and IST), age_days, status and size_gb. It works for live scans and with `--merge`, and is written to `-o DIR` (or the current directory).
+`--manual-older-than N` also writes `<prefix>_<account>_<stamp>_manual_older_than_<N>d.csv`. It lists every manual snapshot older than N days, oldest first, with account, region, identifier, type, engine, snapshot, created (UTC and IST), age_days, status and size_gb. It works for live scans and with `--merge`, and is written to `-o DIR`. With `-o ''` (screen only, v1.7.2) no file is written: the rows are printed on the screen (stderr) instead.
 
 ### Orphaned manual snapshots
 
@@ -301,7 +301,8 @@ The script folder is the real folder of the script (symlinks resolved), not the 
 
 * Only files directly in `output-dir` whose name starts with `prefix` + `_` and ends in `.html`, `.csv`, `.json` or `.txt`, and that are older than N days. Other files, sub-folders, the run log and `--save-data` files (`rds_backup_<account>_<date>.json`) are never touched.
 * Every deleted file is logged: `keep-reports: deleted rds_backup_compliance_111111111111_20250101_000000.html (older than 30 days)`, then a count.
-* `keep-reports=0` keeps everything (as before v1.7.1). No `output-dir` (`-o ''`) or `--dry-run`: nothing is deleted.
+* `keep-reports=0` keeps everything (as before v1.7.1). No `output-dir` (`-o ''`): nothing is deleted.
+* `--dry-run` previews it (v1.7.2): one `keep-reports: would delete <file>` line per file and a count, and nothing is deleted.
 
 ## E-mail: `alert-email` (v1.7.1)
 
@@ -388,6 +389,10 @@ tests/validate_cli.py            # checks that every field read exists in the bu
 
 ## Changelog
 
+- **1.7.2**
+  - `--dry-run` previews `keep-reports` (a `would delete` line per file and a count) and deletes nothing.
+  - With `--non-compliant-only`, the text summary counts every server; the table and CSV still list only the failing rows.
+  - With `-o ''`, `manual-older-than` lists the old manual snapshots on the screen and writes no CSV into the current folder.
 - **1.7.1**
   - One settings file: `rds_backup_compliance_report.conf` ships next to the script with every setting filled in, under headings, with `##` notes. It is required (clear message when missing), every key must be present and listed once, and the script and `lib/` no longer contain setting values. `--config FILE` uses another complete file; `--no-config` was removed. See [The settings file](#the-settings-file-v171).
   - `weekly-window-days` follows `weekly-retention-days` unless set.
