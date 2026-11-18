@@ -2,6 +2,15 @@
 
 Plain-English features for each published release. The What's new page is built from this file.
 
+## 1.7.1
+- One settings file: `rds_backup_compliance_report.conf` now ships next to the script with every setting filled in, grouped under headings with `##` notes, and the script has no built-in values
+- The settings file is required: a missing file, a missing setting or a setting listed twice stops the run with a clear message
+- The weekly window follows `weekly-retention-days` unless you set `weekly-window-days`
+- New `keep-reports` setting (shipped 30) deletes this tool's report files older than N days from the output folder
+- New e-mail summary (`alert-email`, `alert-from`, `alert-on`, `--alert-test`) using mail, mailx or sendmail; sendmail attaches the HTML report
+- `--check-config` shows each setting's source (conf or CLI) and the mail command; `--no-config` was removed
+- With the same settings, reports are identical to 1.7.0
+
 ## 1.7.0
 - A settings file named `rds_backup_compliance_report.conf` next to the script is now loaded automatically, so `--config` is no longer needed (`--config FILE` still overrides it, `--no-config` skips it)
 - New `--check-config` checks the settings and exceptions files and shows where every setting comes from, without calling AWS

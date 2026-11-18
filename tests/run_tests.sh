@@ -13,15 +13,32 @@ unset AWS_REGION AWS_DEFAULT_REGION AWS_PROFILE MOCK_DEFAULT_REGION MOCK_SCENARI
 export AWS_ACCESS_KEY_ID=fake AWS_SECRET_ACCESS_KEY=fake AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null \
        AWS_EC2_METADATA_DISABLED=true AWS_ENDPOINT_URL=http://127.0.0.1:9 TMPDIR="$OUT"
 if [[ "$(command -v aws)" != "$HERE/mock/aws" || "$(aws --version 2>&1)" != *.mock* ]]; then echo "GUARD: aws is not the mock"; exit 2; fi
-for stray in rds_backup_compliance_report.conf compliance_exceptions.conf; do   # both are auto-loaded from the script folder and would change results
-    if [[ -e "$HERE/../$stray" ]]; then echo "GUARD: $HERE/../$stray exists; the tests would load it. Move it away and re-run."; exit 2; fi
-done
+if [[ -e "$HERE/../compliance_exceptions.conf" ]]; then   # auto-loaded from the script folder and would change results
+    echo "GUARD: $HERE/../compliance_exceptions.conf exists; the tests would load it. Move it away and re-run."; exit 2; fi
+SHIPPED="$HERE/../rds_backup_compliance_report.conf"   # v1.7.1: the one settings file, tracked and required
+[[ -r "$SHIPPED" ]] || { echo "GUARD: $SHIPPED is missing (it ships with the script)"; exit 2; }
 BEFORE="$(cd "$HERE/.." && find . -path ./.git -prune -o -print | sort)"
 trap '(( KEEP )) && echo "kept $OUT" || rm -rf -- "$OUT"' EXIT
 ok()  { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
+# BASECONF: the shipped conf with the v1.7.0 behaviour for scope / output (no all-regions, text to the screen, no log,
+# no manual audit, no retention, no exempt engines, no account names), so every older test keeps its meaning.
+# Every run passes --config "$BASECONF" first; a test's own --config (given later) wins.
+BASECONF="$OUT/base.conf"
+sed -E 's/^all-regions=.*/all-regions=no/; s/^format=.*/format=text/; s/^output-dir=.*/output-dir=/; s/^log-file=.*/log-file=/;
+        s/^manual-older-than=.*/manual-older-than=/; s/^keep-reports=.*/keep-reports=0/; s/^replica-exempt-engines=.*/replica-exempt-engines=/;
+        /^[0-9]{12} *=/d' "$SHIPPED" >"$BASECONF"
+# mkconf FILE [crlf] LINE...: a complete settings file = BASECONF with each LINE (key=value in any key spelling, a
+# comment, or an account line) replacing the base line of the same setting; crlf writes Windows line ends.
+mkconf() { local f="$1" l k crlf=0; shift; [[ "${1:-}" == crlf ]] && { crlf=1; shift; }
+           cp "$BASECONF" "$f"
+           for l in "$@"; do
+               if [[ "$l" =~ ^[[:space:]]*([A-Za-z_-]+)[[:space:]]*= ]]; then k="${BASH_REMATCH[1]//_/-}"; k="${k,,}"; sed -i "/^${k}=/d" "$f"; fi
+               printf '%s\n' "$l" >>"$f"
+           done
+           (( crlf )) && sed -i 's/$/\r/' "$f"; return 0; }
 bad() { FAIL=$((FAIL + 1)); printf '  FAIL %s\n' "$1"; }
 t() { local name="$1" exp="$2" scen="$3"; shift 3
-      MOCK_SCENARIO="$scen" "$SCRIPT" "$@" >"$OUT/$name.out" 2>"$OUT/$name.err"; local rc=$?
+      MOCK_SCENARIO="$scen" "$SCRIPT" --config "$BASECONF" "$@" >"$OUT/$name.out" 2>"$OUT/$name.err"; local rc=$?
       if [[ "$rc" == "$exp" ]]; then ok "$name (rc=$rc)"; else bad "$name: rc=$rc expected $exp"; tail -3 "$OUT/$name.err" | sed 's/^/       /'; fi; }
 has()  { grep -qE -- "$3" "$OUT/$1.$2" && ok "$1 $2 has /$3/" || bad "$1 $2 lacks /$3/"; }
 hasnt(){ grep -qE -- "$3" "$OUT/$1.$2" && bad "$1 $2 unexpectedly has /$3/" || ok "$1 $2 lacks /$3/"; }
@@ -32,7 +49,7 @@ rowt() { jq -e --arg i "$2" ".rows[] | select(.identifier == \$i) | $3" "$OUT/$1
 ncalls() { wc -l <"$MOCK_LOG" 2>/dev/null | tr -d ' ' || echo 0; }
 
 echo "== CLI"
-t version 0 fleet --version; has version out '1\.7\.0'
+t version 0 fleet --version; has version out '1\.7\.1'
 t help 0 fleet --help; has help out 'list-recovery-points-by-backup-vault'; has help out 'weekly-days'
 t badopt 1 fleet --nope
 t multifmt 1 fleet -P prod -r us-east-1 -F csv,html
@@ -47,8 +64,10 @@ t noregion 2 fleet -P prod
 
 echo "== fleet (prod, two regions)"
 t fleet 0 fleet -P prod -r us-east-1,us-west-2 -F json
-t confex 0 fleet -P prod -r us-east-1,us-west-2 -F json --config "$(dirname "$SCRIPT")/rds_backup_compliance_report.conf.example"
-chk "conf example: every baseline commented, defaults unchanged" bash -c "! grep -qE '^[a-z-]+=' '$(dirname "$SCRIPT")/rds_backup_compliance_report.conf.example' && diff <(jq -S '{thresholds,totals,rows:[.rows[]|{identifier,status}]}' '$OUT/fleet.out') <(jq -S '{thresholds,totals,rows:[.rows[]|{identifier,status}]}' '$OUT/confex.out')"
+# the shipped conf itself (as --config): with the scope / output values overridden on the CLI, results match the base
+( cd "$OUT" && t shipped 0 fleet -P prod -r us-east-1,us-west-2 -F json -o '' -l '' --manual-older-than '' --replica-exempt-engines '' --config "$SHIPPED" )
+chk "shipped conf: same thresholds and statuses as the v1.7.0 defaults" bash -c "diff <(jq -S '{thresholds,totals,rows:[.rows[]|{identifier,status}]}' '$OUT/fleet.out') <(jq -S '{thresholds,totals,rows:[.rows[]|{identifier,status}]}' '$OUT/shipped.out')"
+jqt shipped '.accounts[0].name == "prod-payments"' "$OUT/shipped.out"
 rowt fleet orders-aurora-pg15 '.status == "COMPLIANT" and .global_role == "primary" and .global_cluster == "orders-global"'
 rowt fleet orders-aurora-pg15 '.daily.have == 7 and .weekly.have == .weekly.need and (.weekly.need | . == 4 or . == 5) and .monthly.have == 12 and .monthly.need == 12 and .yearly.st == "OFF"'
 rowt fleet orders-aurora-pg15 '.warnings == "retention doesn'"'"'t match: 2 recovery points (2555d, never expires) not counted" and .gaps == ""'
@@ -182,7 +201,7 @@ has files err '4 orphaned snapshots, 1.8 TB, ~\$38/month \(estimate\)'
 t price 0 fleet -P prod -r us-east-1 -F json --snapshot-price-per-gb 0.05
 jqt price '[.orphaned_snapshots[] | select(.id == "analytics-aurora-final")][0].est_monthly_usd == 25 and .orphan_totals.price_per_gb_month == 0.05' "$OUT/price.out"
 t pricebad 1 fleet -P prod -r us-east-1 --snapshot-price-per-gb cheap
-printf 'snapshot_price_per_gb = 0.1\r\nregion=us-east-1\r\nformat=json\r\n' >"$OUT/price conf.conf"
+mkconf "$OUT/price conf.conf" crlf 'snapshot_price_per_gb = 0.1' 'region=us-east-1' 'format=json'
 t priceconf 0 fleet -P prod --config "$OUT/price conf.conf"
 jqt priceconf '.orphan_totals.est_monthly_usd == 70' "$OUT/priceconf.out"
 
@@ -243,7 +262,7 @@ rowt wd40 orders-aurora-pg15 '[.recovery_points[] | select(.ret == 35) | .reason
 rowt wdsun hr-aurora-pg '[.recovery_points[] | select(.class == "weekly" and (.counted | not)) | .reason] | all(test("not within ±0d of a checked Sunday"))'
 t daily14 0 fleet -P nonprod -r ap-south-1 --daily 14 -F json; rowt daily14 hr-aurora-pg '.daily.st == "OK"'; rowt daily14 payroll-sqlserver '.daily.st == "FAIL"'
 t age 0 fleet -P prod -r us-east-1 -i legacy-* --daily-max-age 80 -F json; rowt age legacy-mysql '(.gaps | test("last automated") | not)'
-printf 'weekly = 6\r\n# comment\r\nregion=us-east-1\r\nidentifier = orders-*\r\nformat=json\r\n' >"$OUT/my conf.conf"
+mkconf "$OUT/my conf.conf" crlf 'weekly = 6' '# comment' 'region=us-east-1' 'identifier = orders-*' 'format=json'
 t conf 0 fleet -P prod --config "$OUT/my conf.conf"; rowt conf orders-aurora-pg15 '.weekly.need == 6'
 t confcli 0 fleet -P prod --config "$OUT/my conf.conf" --weekly 4; rowt confcli orders-aurora-pg15 '.weekly.need == 4'
 # v1.4.0 strict retention settings (CLI + config, both key spellings)
@@ -252,10 +271,10 @@ t wtol 0 fleet -P prod -r us-east-1 -i orders-* --retention-tolerance-days 5 -F 
 t mret 0 fleet -P prod -r us-east-1 -i orders-* --monthly-retention-days 400 -F json
 rowt mret orders-aurora-pg15 '(.retention_mismatch | test("monthly point has 365d, expected 400d \\(x12\\)")) and .monthly.have == 12 and .status == "COMPLIANT"'
 t dret 0 fleet -P prod -r us-east-1 -i reports-pg --daily-retention-days 2 -F json; rowt dret reports-pg '.retention_mismatch | test("^daily retention 3d, expected 2d")'
-printf 'WEEKLY_RETENTION_DAYS=35\nmonthly_retention_days=365\nretention-tolerance-days=1\nregion=us-east-1\nidentifier=orders-*\nformat=json\n' >"$OUT/ret.conf"
+mkconf "$OUT/ret.conf" 'WEEKLY_RETENTION_DAYS=35' 'monthly_retention_days=365' 'retention-tolerance-days=1' 'region=us-east-1' 'identifier=orders-*' 'format=json'
 t retconf 0 fleet -P prod --config "$OUT/ret.conf"; rowt retconf orders-aurora-pg15 '.retention_mismatch == ""'
 t badret 1 fleet -P prod --weekly-retention-days x
-printf 'bogus=1\n' >"$OUT/bad.conf"; t badconf 1 fleet --config "$OUT/bad.conf"
+mkconf "$OUT/bad.conf" 'bogus=1'; t badconf 1 fleet --config "$OUT/bad.conf"
 t tz 0 fleet -P prod -r us-east-1 --tz UTC -F csv; has tz out 'last_automated_utc"'
 chk "jq: +05:30 timestamps parse to UTC" test "$(jq -n --slurpfile x /dev/null 'include "collect" {search: "'"$HERE"'/../lib"}; 1' 2>/dev/null; jq -rn '"2026-10-01T08:30:00.123000+05:30" | capture("^(?<d>[0-9-]+T[0-9:]+)") | .d + "Z" | fromdateiso8601 - 19800 | todate')" == "2026-10-01T03:00:00Z"
 
@@ -281,7 +300,7 @@ has par4v err 'regions in order: ap-south-1: done \(0 resources\); ca-central-1:
 chk "par4v: slow ap-south-1 reports done after us-east-1" bash -c "grep -n 'us-east-1: 3 clusters' '$OUT/par4v.err' | cut -d: -f1 | { read a; b=\$(grep -n 'ap-south-1: (empty)' '$OUT/par4v.err' | cut -d: -f1); (( a < b )); }"
 MOCK_SLEEP=ap-south-1=1 RDS_BCR_NO_WAIT_N=1 t par2bv 0 fleet -P prod -A --parallel 2 -F json -v
 chk "par2bv: never more than 2 regions started before one finished" bash -c "awk '/: started\$/{r++; if(r>m)m=r} /: [0-9]+ clusters|\\(empty\\)/{r--} END{exit !(m==2)}' '$OUT/par2bv.err'"
-t parconf 0 fleet --config <(printf 'profile = prod\nall-regions = yes\nparallel = 2\nformat = json\n')
+mkconf "$OUT/par.conf" 'profile = prod' 'all-regions = yes' 'parallel = 2' 'format = json'; t parconf 0 fleet --config "$OUT/par.conf"
 has parconf err 'up to 2 at a time'
 t parcrash 0 regioncrash -P prod -A -F json
 jqt parcrash '.regions[] | select(.region == "us-west-2") | .status == "error" and (.errors[0] | startswith("region scan failed"))' "$OUT/parcrash.out"
@@ -291,15 +310,15 @@ has parcrash err '\[ERROR\] \[5/5\] us-west-2: failed'
 has parcrash err '5 regions scanned, 2 empty: ap-south-1, eu-west-1; 1 failed: us-west-2$'
 has parcrash err '1 of 5 region\(s\) failed'
 t parcrashnc 5 regioncrash -P prod -A -F json --fail-on-noncompliant
-mkdir -p "$OUT/ptmp"; TMPDIR="$OUT/ptmp" MOCK_SCENARIO=regioncrash "$SCRIPT" -P prod -A -F json >/dev/null 2>&1
+mkdir -p "$OUT/ptmp"; TMPDIR="$OUT/ptmp" MOCK_SCENARIO=regioncrash "$SCRIPT" --config "$BASECONF" -P prod -A -F json >/dev/null 2>&1
 chk "parallel: temp work dir removed by the trap" bash -c "[[ -z \"\$(ls -A '$OUT/ptmp')\" ]]"
 unset MOCK_NOW
 
 echo "== merge (offline)"
 M="$OUT/merge dir"; mkdir -p "$M"
-MOCK_SCENARIO=fleet "$SCRIPT" -P prod -r us-east-1,us-west-2 --save-data "$M/prod.json" -F json >/dev/null 2>&1
-MOCK_SCENARIO=fleet "$SCRIPT" -P nonprod -r ap-south-1 --save-data "$M/nonprod.json" -F json >/dev/null 2>&1
-MOCK_SCENARIO=fleet "$SCRIPT" -P dev -r eu-west-1 --save-data "$M/dev.json" -F json >/dev/null 2>&1
+MOCK_SCENARIO=fleet "$SCRIPT" --config "$BASECONF" -P prod -r us-east-1,us-west-2 --save-data "$M/prod.json" -F json >/dev/null 2>&1
+MOCK_SCENARIO=fleet "$SCRIPT" --config "$BASECONF" -P nonprod -r ap-south-1 --save-data "$M/nonprod.json" -F json >/dev/null 2>&1
+MOCK_SCENARIO=fleet "$SCRIPT" --config "$BASECONF" -P dev -r eu-west-1 --save-data "$M/dev.json" -F json >/dev/null 2>&1
 jq '.collected_epoch -= 86400 | .accounts[0].collected_epoch -= 86400 | .resources |= .[:2]' "$M/prod.json" >"$OUT/prod_old.json"
 n0="$(ncalls)"
 t merge 0 fleet --merge "$M/prod.json" "$M/nonprod.json" "$M/dev.json" "$OUT/prod_old.json" -F json
@@ -412,7 +431,7 @@ rowt aex orders-aurora-pg15 '.status == "COMPLIANT" and .global_role == "primary
 # without setting, shop-dr still fails daily (existing behaviour)
 rowt fleet shop-dr-mysql '.status == "NON-COMPLIANT" and (.gaps | test("^daily"))'
 # both globs via conf
-printf 'replica-exempt-engines=oracle-*,aurora-*\n' >"$OUT/ex.conf"
+mkconf "$OUT/ex.conf" 'replica-exempt-engines=oracle-*,aurora-*'
 t exconf 0 fleet -P prod -P dev -r us-west-2,eu-west-1 -F json --config "$OUT/ex.conf"
 rowt exconf shop-dr-mysql '.status == "COMPLIANT" and .daily.st == "N/A"'
 rowt exconf erp-oracle-rr '.status == "COMPLIANT" and .daily.st == "N/A"'
@@ -424,7 +443,7 @@ hasnt an_alias err 'AccessDenied|list-account-aliases'
 chk "alias: account_name is the last CSV column and filled" python3 -c 'import csv,sys,glob; fs=[f for f in glob.glob(sys.argv[1]+"/*.csv") if "_backups" not in f and "_orphaned" not in f and "_manual" not in f]; r=list(csv.reader(open(fs[0],encoding="utf-8-sig"))); h=r[0]; i=h.index("account_name"); assert i==len(h)-1; assert ("111111111111","prod-core") in {(x[0],x[i]) for x in r[1:]}, {(x[0],x[i]) for x in r[1:]}' "$AN/a"
 chk "alias: json rows carry account_name" jq -e 'all(.rows[]; has("account_name")) and ([.rows[] | select(.account_id == "111111111111") | .account_name] | unique) == ["prod-core"]' "$AN"/a/*.json
 chk "alias: text file shows name (number)" grep -q 'prod-core (111111111111)' "$AN"/a/*.txt
-printf '111111111111 = prod-payments   # comment\n222222222222 = "np x"\n' >"$AN/n.conf"
+mkconf "$AN/n.conf" '111111111111 = prod-payments   # comment' '222222222222 = "np x"'
 t an_cfg 0 fleet -P prod -P nonprod -r us-east-1,ap-south-1 -F json,html,text -o "$AN/c" --config "$AN/n.conf"
 chk "config map wins over the alias" jq -e '[.accounts[] | .name] | sort == ["np x", "prod-payments"]' "$AN"/c/*.json
 chk "html shows name (number)" grep -q 'prod-payments (111111111111)' "$AN"/c/*.html
@@ -468,7 +487,7 @@ jqt fleet '[.rows[] | select(.account_id == "111111111111") | {id: .identifier, 
 t gsort 0 fleet -P prod -r us-east-1,us-west-2 -F csv,html -o "$OUT/gsort"
 chk "csv: orders primary then secondary consecutive" python3 -c 'import csv,glob,sys; fs=[f for f in glob.glob(sys.argv[1]+"/*.csv") if "_backups" not in f and "_orphaned" not in f and "_manual" not in f]; r=list(csv.DictReader(open(fs[0],encoding="utf-8-sig"))); ids=[x["identifier"] for x in r]; i=ids.index("orders-aurora-pg15"); assert ids[i+1]=="orders-dr-pg15", ids; assert r[i]["global_role"]=="primary" and r[i+1]["global_role"]=="secondary"' "$OUT/gsort"
 chk "html: orders primary row before secondary" python3 -c 'import glob,sys; h=open(glob.glob(sys.argv[1]+"/*.html")[0],encoding="utf-8").read(); assert h.find("orders-aurora-pg15") < h.find("orders-dr-pg15") and "orders-aurora-pg15" in h and "orders-dr-pg15" in h' "$OUT/gsort"
-chk "version is 1.7.0" grep -qF 'SCRIPT_VERSION="1.7.0"' "$SCRIPT"
+chk "version is 1.7.1" grep -qF 'SCRIPT_VERSION="1.7.1"' "$SCRIPT"
 
 echo "== v1.6.0: compliance exceptions (--exceptions FILE / compliance_exceptions.conf)"
 EX="$OUT/exc"; mkdir -p "$EX"; export RDS_BCR_EXC_NOW=1791000000   # "today" for the expiry dates only = 2026-10-03 UTC
@@ -532,19 +551,19 @@ printf '111111111111 | db1 | backup | 2028-02-29 | leap day ok\n111111111111 | d
 t exc_nodup 0 fleet -P prod -r us-east-1 -F json --exceptions "$EX/nodup.conf"
 t exc_nofile 1 fleet -P prod -r us-east-1 --exceptions "$EX/does-not-exist.conf"; has exc_nofile err 'Exceptions file not readable'
 # default: compliance_exceptions.conf next to the script (a copy of the tool), absent = off; config key exceptions =
-TC="$OUT/toolcopy"; mkdir -p "$TC"; cp -r "$HERE/../rds_backup_compliance_report.sh" "$HERE/../lib" "$TC/"
+TC="$OUT/toolcopy"; mkdir -p "$TC"; cp -r "$HERE/../rds_backup_compliance_report.sh" "$HERE/../lib" "$TC/"; cp "$BASECONF" "$TC/rds_backup_compliance_report.conf"
 MOCK_SCENARIO=fleet "$TC/rds_backup_compliance_report.sh" -P prod -A -F json >"$EX/def0.json" 2>/dev/null
 jqt exc_def0 '.totals | has("exceptions") | not' "$EX/def0.json"
 cp "$EX/ok.conf" "$TC/compliance_exceptions.conf"
 MOCK_SCENARIO=fleet "$TC/rds_backup_compliance_report.sh" -P prod -A -F json >"$EX/def1.json" 2>"$EX/def1.err"
 jqt exc_def1 '.totals.exceptions.applied == 3' "$EX/def1.json"
-printf 'exceptions = %s\n' "$EX/all.conf" >"$EX/c.conf"
+mkconf "$EX/c.conf" "exceptions = $EX/all.conf"
 t exc_conf 0 fleet -P prod -A -F json --config "$EX/c.conf"
 jqt exc_conf '.totals.non_compliant == 0 and .totals.exceptions.applied == 4' "$OUT/exc_conf.out"
 # --save-data file is the same with and without exceptions; --merge applies them at report time
 MOCK_NOW="$(date -u +%s)"; export MOCK_NOW
-MOCK_SCENARIO=fleet "$SCRIPT" -P prod -A --save-data "$EX/sd0.json" -F json >/dev/null 2>&1
-MOCK_SCENARIO=fleet "$SCRIPT" -P prod -A --save-data "$EX/sd1.json" -F json --exceptions "$EX/ok.conf" >/dev/null 2>&1
+MOCK_SCENARIO=fleet "$SCRIPT" --config "$BASECONF" -P prod -A --save-data "$EX/sd0.json" -F json >/dev/null 2>&1
+MOCK_SCENARIO=fleet "$SCRIPT" --config "$BASECONF" -P prod -A --save-data "$EX/sd1.json" -F json --exceptions "$EX/ok.conf" >/dev/null 2>&1
 unset MOCK_NOW
 chk "exc: --save-data file identical with and without exceptions" bash -c "diff <(jq -S 'del(.collected_epoch, .collected_at, .accounts[].collected_epoch)' '$EX/sd0.json') <(jq -S 'del(.collected_epoch, .collected_at, .accounts[].collected_epoch)' '$EX/sd1.json')"
 chk "exc: --save-data file has no exception fields" bash -c "! grep -qi exception '$EX/sd1.json'"
@@ -591,60 +610,235 @@ if command -v node >/dev/null 2>&1 && [[ -x "${CHROME:-/usr/bin/google-chrome}" 
     chk "xss: headless Chrome, no payload executed or injected ${res:0:300}" test "$rc" -eq 0
 else echo "  skip xss browser check (node + puppeteer-core on NODE_PATH + Chrome not found)"; fi
 
-echo "== auto-loaded settings file (rds_backup_compliance_report.conf next to the script) and --check-config"
-# every case runs a COPY of the tool in a temp folder, so the repo folder never gets a conf file
+echo "== v1.7.1: one settings file (required, complete, each key once) and --check-config"
+# every case runs a COPY of the tool in a temp folder (cwd = that folder, so ./reports lands there, never in the repo)
 AC="$OUT/autoconf"; mkdir -p "$AC"; cp -r "$HERE/../rds_backup_compliance_report.sh" "$HERE/../lib" "$AC/"
-ACS="$AC/rds_backup_compliance_report.sh"
-act() { local name="$1" exp="$2"; shift 2   # like t, but runs the temp copy (fleet scenario)
-        MOCK_SCENARIO=fleet "$ACS" "$@" >"$OUT/$name.out" 2>"$OUT/$name.err"; local rc=$?
+ACS="$AC/rds_backup_compliance_report.sh"; ACF="$AC/rds_backup_compliance_report.conf"
+act() { local name="$1" exp="$2"; shift 2   # like t, but runs the temp copy (fleet scenario) from its own folder
+        ( cd "$AC" && MOCK_SCENARIO="${SCEN:-fleet}" "$ACS" "$@" >"$OUT/$name.out" 2>"$OUT/$name.err" ); local rc=$?
         if [[ "$rc" == "$exp" ]]; then ok "$name (rc=$rc)"; else bad "$name: rc=$rc expected $exp"; tail -3 "$OUT/$name.err" | sed 's/^/       /'; fi; }
-BASEARGS=(-P prod -r us-east-1 -i 'orders-*' -F json)
-act ac_none 0 "${BASEARGS[@]}"; rowt ac_none orders-aurora-pg15 '.weekly.need == 4 or .weekly.need == 5'; hasnt ac_none err 'loaded automatically'
-printf 'weekly = 6\n111111111111 = auto-named\n' >"$AC/rds_backup_compliance_report.conf"
-act ac_auto 0 "${BASEARGS[@]}"; rowt ac_auto orders-aurora-pg15 '.weekly.need == 6'; has ac_auto err 'Config file loaded automatically: .*/autoconf/rds_backup_compliance_report\.conf'
-jqt ac_auto '[.accounts[] | .name] | index("auto-named") != null' "$OUT/ac_auto.out"
-printf 'weekly = 5\n' >"$AC/other.conf"
-act ac_override 0 "${BASEARGS[@]}" --config "$AC/other.conf"; rowt ac_override orders-aurora-pg15 '.weekly.need == 5'; hasnt ac_override err 'loaded automatically'
-act ac_cli 0 "${BASEARGS[@]}" --weekly 4; rowt ac_cli orders-aurora-pg15 '.weekly.need == 4'
-act ac_cli_over_explicit 0 "${BASEARGS[@]}" --config "$AC/other.conf" --weekly 4; rowt ac_cli_over_explicit orders-aurora-pg15 '.weekly.need == 4'
-act ac_noconf 0 "${BASEARGS[@]}" --no-config; rowt ac_noconf orders-aurora-pg15 '.weekly.need == 4 or .weekly.need == 5'; hasnt ac_noconf err 'loaded automatically'
-jqt ac_noconf '[.accounts[] | .name] | index("auto-named") == null' "$OUT/ac_noconf.out"
-act ac_noconf_explicit 0 "${BASEARGS[@]}" --no-config --config "$AC/other.conf"; rowt ac_noconf_explicit orders-aurora-pg15 '.weekly.need == 5'
-chk "auto-load: a bad auto-loaded conf stops the run with file:line" bash -c "printf 'bogus=1\n' >'$AC/rds_backup_compliance_report.conf'; MOCK_SCENARIO=fleet '$ACS' -P prod >/dev/null 2>'$OUT/ac_bad.err'; [[ \$? -eq 1 ]] && grep -q 'Config .*autoconf/rds_backup_compliance_report.conf:1: unknown key' '$OUT/ac_bad.err'"
-# --check-config: no AWS call at all (the mock log stays empty), sources shown, exit 0
-printf 'daily = 9\nweekly=6\n111111111111 = prod-payments  # main\n222222222222 = "nonprod-shared"\n' >"$AC/rds_backup_compliance_report.conf"
-printf '# account | id | scope | expires | reason\n111111111111 | legacy-mysql | backup | 2027-03-31 | Decommission in Q1\n111111111111 | old-pg | backup | 2026-01-01 | Old\n111111111111 | pg-only | patch | 2027-03-31 | Patch waiver\n' >"$AC/compliance_exceptions.conf"
-: >"$MOCK_LOG"
-RDS_BCR_EXC_NOW=1791000000 act cc_ok 0 --check-config --weekly 4 -P prod
+# the shipped file: notes start with ##, settings are key=value, each key once, keys = the script's required keys
+chk "shipped conf: no single-# lines (notes use ##, settings are plain key=value)" bash -c "! grep -qE '^#([^#]|$)' '$SHIPPED'"
+chk "shipped conf: every line is a ## note, blank, key=value or an account line" bash -c "! grep -vE '^(##.*|[a-z-]+=.*|[0-9]{12} = [a-z-]+)?$' '$SHIPPED' | grep -q ."
+chk "shipped conf: every setting key listed once" bash -c "! grep -E '^[a-z-]+=' '$SHIPPED' | cut -d= -f1 | sort | uniq -d | grep -q ."
+REQ="$(sed -n '/^readonly -a REQUIRED_KEYS=(/,/)$/p' "$SCRIPT" | sed 's/.*(//; s/)//' | tr -s ' \n' '\n' | grep -v '^$' | sort)"
+chk "shipped conf: keys are exactly the script's REQUIRED_KEYS ($(wc -l <<<"$REQ") keys)" test "$(grep -E '^[a-z-]+=' "$SHIPPED" | cut -d= -f1 | sort)" == "$REQ"
+chk "shipped conf: headings in the agreed order" test "$(grep -oE '^## =+ [A-Z][^=]+' "$SHIPPED" | sed -E 's/^## =+ //; s/ +$//' | paste -sd'|')" == "Accounts and regions|Schedule|Output|Snapshot audit|Report retention|Email|Account names (display only)|Advanced (rarely changed)"
+chk "shipped conf: main values as agreed" bash -c "for kv in profile= all-regions=yes daily=7 daily-max-age=26 weekly-weekday=sat weekly-retention-days=30 monthly-rule=first-sun monthly=12 monthly-retention-days=365 'replica-exempt-engines=oracle-*,aurora-*' format=html,csv output-dir=./reports tz=Asia/Kolkata non-compliant-only=no log-file=./reports/run.log manual-older-than=90 snapshot-price-per-gb=0.021 keep-reports=30 alert-email= alert-on=noncompliant weekly-window-days= daily-retention-days=; do grep -qxF \"\$kv\" '$SHIPPED' || { echo \"missing \$kv\"; exit 1; }; done"
+chk "shipped conf: only fake account numbers" bash -c "! grep -E '^[0-9]{12} ' '$SHIPPED' | grep -vqE '^(111111111111|222222222222|333333333333) '"
+chk "repo: the .example file is gone and the conf is not git-ignored" bash -c "[[ ! -e '$HERE/../rds_backup_compliance_report.conf.example' ]] && ! git -C '$HERE/..' check-ignore -q rds_backup_compliance_report.conf 2>/dev/null"
+# --check-config with the shipped file next to the script: every setting from "conf", no AWS call
+cp "$SHIPPED" "$ACF"; : >"$MOCK_LOG"
+act cc_ship 0 --check-config
+has cc_ship out '^Config file: +.*autoconf/rds_backup_compliance_report\.conf \(next to the script\)$'
+has cc_ship out '^  daily +7 +conf$'; has cc_ship out '^  weekly-window-days += weekly-retention-days \(30\) +conf$'
+has cc_ship out '^  daily-retention-days += daily \(7\) +conf$'; has cc_ship out '^  keep-reports +30 days +conf$'
+has cc_ship out '^  alert-email +\(empty = off\) +conf$'; has cc_ship out '^  111111111111 = prod-payments$'
+has cc_ship out '^E-mail: off \(alert-email is empty\)$'; has cc_ship out '^OK: configuration is valid \(no AWS calls made\)$'
+chk "check-config writes nothing (no ./reports, no run.log)" test ! -e "$AC/reports"
+chk "check-config lists every required key once" test "$(grep -cE '^  [a-z-]+ ' "$OUT/cc_ship.out" | tr -d ' ')" -ge "$(wc -l <<<"$REQ")"
+act cc_cli 0 --check-config --daily 9 -P prod --alert-email dba@example.com
+has cc_cli out '^  daily +9 +CLI$'; has cc_cli out '^  profile +prod +CLI$'; has cc_cli out '^E-mail: to dba@example.com when NON-COMPLIANT or AWS errors$'
+if ! command -v mail mailx sendmail >/dev/null 2>&1 && [[ ! -x /usr/sbin/sendmail ]]; then has cc_cli out 'mail command: none found'; fi
 chk "check-config: zero AWS calls" test "$(ncalls)" -eq 0
-has cc_ok out '^Config file: +.*autoconf/rds_backup_compliance_report\.conf \(auto-loaded from the script folder\)'
-has cc_ok out '^Exceptions file: +.*autoconf/compliance_exceptions\.conf \(auto-loaded from the script folder\)'
-has cc_ok out '^  daily +9 +config .*autoconf/rds_backup_compliance_report\.conf$'
-has cc_ok out '^  weekly +4 +CLI$'; has cc_ok out '^  profile +prod +CLI$'; has cc_ok out '^  monthly +12 +default$'
-has cc_ok out '^  111111111111 = prod-payments$'; has cc_ok out '^  222222222222 = nonprod-shared$'
-has cc_ok out '^Exceptions \(3\); today is 2026-10-03 UTC'; has cc_ok out 'line 3: 111111111111 old-pg scope=backup expires 2026-01-01 EXPIRED'
-has cc_ok out 'line 4: .* \(patch only: not applied by this script\)'; has cc_ok out '^OK: configuration is valid \(no AWS calls made\)'
-# explicit files: --config / --exceptions are named as such; --no-config shows defaults
-printf 'exceptions = %s\nweekly=5\n' "$AC/compliance_exceptions.conf" >"$AC/other.conf"
-act cc_explicit 0 --check-config --config "$AC/other.conf"; has cc_explicit out '\(--config\)$'; has cc_explicit out 'compliance_exceptions\.conf \(exceptions key in config\)'
-has cc_explicit out '^  weekly +5 +config .*other\.conf$'
-act cc_nocfg 0 --check-config --no-config --exceptions "$AC/compliance_exceptions.conf"; has cc_nocfg out '^Config file: +none \(--no-config\)'
-has cc_nocfg out '\(--exceptions\)$'; has cc_nocfg out '^  daily +7 +default$'; hasnt cc_nocfg out 'prod-payments'
-chk "check-config: no AWS calls after all runs" test "$(ncalls)" -eq 0
 chk "check-config: works without the aws CLI" bash -c "PATH='$(dirname "$(command -v jq)")':/usr/bin:/bin; command -v aws >/dev/null 2>&1 && exit 0; '$ACS' --check-config >/dev/null 2>&1"
-# errors: exit 1 naming file:line (existing messages), still no AWS call
-printf 'daily = 9\nweekly = x\n' >"$AC/rds_backup_compliance_report.conf"
-act cc_badconf 1 --check-config; has cc_badconf err 'Config .*autoconf/rds_backup_compliance_report\.conf:2: --weekly must be a whole number'
-printf 'daily = 9\nbogus = 1\n' >"$AC/rds_backup_compliance_report.conf"
-act cc_badconf2 1 --check-config; has cc_badconf2 err 'Config .*autoconf/rds_backup_compliance_report\.conf:2: unknown key .bogus.'
-printf 'daily = 9\n' >"$AC/rds_backup_compliance_report.conf"
-printf '111111111111 | legacy-mysql | backup | 2027-03-31 | ok\n111111111111 | bad | backup | 2027-02-29 | bad date\n' >"$AC/compliance_exceptions.conf"
-act cc_badexc 1 --check-config; has cc_badexc err 'Exceptions .*autoconf/compliance_exceptions\.conf:2: expires '"'"'2027-02-29'"'"' is not a valid date'
-act cc_badexc_explicit 1 --check-config --no-config --exceptions "$AC/nope.conf"; has cc_badexc_explicit err 'Exceptions file not readable'
-chk "check-config errors: no AWS calls" test "$(ncalls)" -eq 0
-rm -f "$AC/rds_backup_compliance_report.conf" "$AC/compliance_exceptions.conf"
-act cc_empty 0 --check-config; has cc_empty out '^Config file: +none \(defaults and CLI only\)'; has cc_empty out '^Exceptions file: +none'; has cc_empty out '^Account names \(0\)'
-t cc_help 0 fleet --help; has cc_help out '--no-config'; has cc_help out '--check-config'
+# missing file: clear message, exit 1, even for --check-config; --help / --version still work
+rm -f "$ACF"
+act noconf 1 -P prod; has noconf err 'Settings file not readable: .*autoconf/rds_backup_compliance_report\.conf'; has noconf err 'Put the shipped file next to the script'
+act noconf_cc 1 --check-config; has noconf_cc err 'Settings file not readable'
+act noconf_help 0 --help; has noconf_help out 'settings file not loaded'; act noconf_ver 0 --version; has noconf_ver out '1\.7\.1'
+chk "missing conf: no AWS calls" test "$(ncalls)" -eq 0
+# missing keys (e.g. a v1.7.0 partial conf): exit 1 listing every missing key
+grep -vE '^(daily|weekly-weekday|alert-on)=' "$SHIPPED" >"$ACF"
+act misskey 1 --check-config; has misskey err 'rds_backup_compliance_report\.conf is missing 3 required setting\(s\): daily, weekly-weekday, alert-on$'
+printf 'daily = 9\nweekly = 4\n' >"$AC/old170.conf"
+act partial 1 -P prod --config "$AC/old170.conf"; has partial err 'old170\.conf is missing [0-9]+ required setting\(s\): profile, region, all-regions'
+grep -vE '^daily=' "$SHIPPED" >"$AC/nodaily.conf"   # log-file=./reports/run.log, but ./reports does not exist: no shell noise
+act partial2 1 -P prod --config "$AC/nodaily.conf"; hasnt partial2 err 'No such file or directory'; has partial2 err 'missing 1 required setting\(s\): daily$'
+# each key once (any spelling), each account once; bad lines name file:line
+{ cat "$SHIPPED"; echo 'daily=8'; } >"$ACF"; act dupkey 1 --check-config; has dupkey err 'conf:[0-9]+: .daily. is set twice \(also on line [0-9]+\); keep one line$'
+{ cat "$SHIPPED"; echo 'DAILY_MAX_AGE = 20'; } >"$ACF"; act dupkey2 1 --check-config; has dupkey2 err '.daily-max-age. is set twice'
+{ cat "$SHIPPED"; echo '111111111111 = again'; } >"$ACF"; act dupacct 1 --check-config; has dupacct err 'account 111111111111 is listed twice'
+sed 's/^weekly=auto$/weekly=x/' "$SHIPPED" >"$ACF"; act badval 1 --check-config; has badval err 'Config .*autoconf/rds_backup_compliance_report\.conf:[0-9]+: --weekly must be a whole number'
+{ cat "$SHIPPED"; echo 'bogus = 1'; } >"$ACF"; act badkey 1 --check-config; has badkey err 'Config .*\.conf:[0-9]+: unknown key .bogus.'
+sed 's/^all-regions=yes$/all-regions=maybe/' "$SHIPPED" >"$ACF"; act badbool 1 --check-config; has badbool err '--all-regions must be yes or no'
+sed 's/^alert-email=$/alert-email=dba@example.com,bad address/' "$SHIPPED" >"$ACF"; act bademail 1 --check-config; has bademail err 'conf:[0-9]+: Invalid --alert-email address: bad'
+sed 's/^keep-reports=30$/keep-reports=-1/' "$SHIPPED" >"$ACF"; act badkeep 1 --check-config; has badkeep err '--keep-reports must be a whole number'
+sed 's/^format=html,csv$/format=/' "$SHIPPED" >"$ACF"; act emptyfmt 1 --check-config; has emptyfmt err 'format is empty'
+# --no-config was removed (the file is required now)
+cp "$SHIPPED" "$ACF"
+act nocfgflag 1 --check-config --no-config; has nocfgflag err '--no-config was removed in v1.7.1'
+# --config FILE replaces the shipped file (no mixing); CLI overrides both
+mkconf "$AC/other.conf" 'weekly=5' 'region=us-east-1' 'identifier=orders-*' 'format=json'
+act cfgother 0 -P prod --config "$AC/other.conf"; rowt cfgother orders-aurora-pg15 '.weekly.need == 5'
+jqt cfgother '.accounts[0].name == "prod-core"' "$OUT/cfgother.out"
+act cfgother_cli 0 -P prod --config "$AC/other.conf" --weekly 4; rowt cfgother_cli orders-aurora-pg15 '.weekly.need == 4'
+act cc_other 0 --check-config --config "$AC/other.conf"; has cc_other out '\(--config\)$'; has cc_other out '^  weekly +5 +conf$'
+# the shipped file as is: all regions, html + csv + manual audit into ./reports, a run log, account names
+act shiprun 0 -P prod
+chk "shipped run: html, csv, backups csv, orphaned csv, manual audit csv in ./reports" bash -c "cd '$AC/reports' && compgen -G 'rds_backup_compliance_111111111111_*[0-9].html' && compgen -G 'rds_backup_compliance_111111111111_*[0-9].csv' && compgen -G '*_backups.csv' && compgen -G '*_orphaned_snapshots.csv' && compgen -G '*_manual_older_than_90d.csv'" >/dev/null
+chk "shipped run: log-file ./reports/run.log written" grep -q 'resources: 8, non-compliant: [0-9]' "$AC/reports/run.log"
+has shiprun err '5 regions scanned'; has shiprun err 'keep-reports: 0 old report file\(s\) deleted'
+chk "shipped run: HTML uses the conf account name" grep -q 'prod-payments (111111111111)' "$(ls "$AC"/reports/*.html | head -1)"
+# -r on the CLI replaces all-regions from the conf; -o '' / -l '' turn the conf output off for one run
+rm -rf "$AC/reports"; act rcli 0 -P prod -r us-east-1 -F json -o '' -l ''
+jqt rcli '.regions | map(.region) == ["us-east-1"]' "$OUT/rcli.out"; chk "rcli: nothing written (-o '' -l '')" test ! -e "$AC/reports"
+# list settings: the first CLI use replaces the conf list
+mkconf "$AC/plist.conf" 'profile=prod' 'region=us-east-1,ap-south-1' 'format=json'
+act plist 0 --config "$AC/plist.conf" -P nonprod; jqt plist '[.accounts[].account] == ["222222222222"]' "$OUT/plist.out"
+act plist2 0 --config "$AC/plist.conf" -P nonprod -P prod; jqt plist2 '[.accounts[].account] | sort == ["111111111111", "222222222222"]' "$OUT/plist2.out"
+# --merge ignores the conf scope (all-regions=yes) and still works offline
+n0="$(ncalls)"; act shipmerge 0 --merge "$M/prod.json" -F json -o '' -l ''; chk "merge with the shipped conf: zero AWS calls" test "$(ncalls)" == "$n0"
+jqt shipmerge '.totals.resources == 8' "$OUT/shipmerge.out"
+act shipmergeA 1 --merge "$M/prod.json" -A; has shipmergeA err 'do not combine it with -P / -r / -A'
+t cc_help 0 fleet --help; has cc_help out '--check-config'; has cc_help out '--keep-reports'; has cc_help out '--alert-email'; hasnt cc_help out '--no-config'
+has cc_help out '--daily N .*\[7\]$'; has cc_help out '--weekly-retention-days N .*\[30\]$'
+
+echo "== v1.7.1: no setting values in the code (all from the conf)"
+LIBD="$HERE/../lib"
+chk "jq: no \$cfg fallbacks (\$cfg.x // value)" bash -c "! grep -nE '\\\$cfg\\.[a-z_]+\\)? *//' '$LIBD'/*.jq"
+chk "page js: no cfg fallbacks (cfg.x || value)" bash -c "! grep -nE 'cfg\\.[a-z_]+ *\\|\\|' '$LIBD/backup_page.js'"
+chk "jq / js: unit numbers only inside named constants" bash -c "! grep -nE '(^|[^0-9.])(86400|3600|1073741824|365\\.25)([^0-9]|$)' '$LIBD'/*.jq '$LIBD'/*.js | grep -vE ':def [A-Z_]+: |var SECONDS_PER_DAY = '"
+chk "page js: no default price / retention literals" bash -c "! grep -nE '0\\.021|\\|\\| *(30|365)\\b' '$LIBD/backup_page.js'"
+SETBLK="$(sed -n '/^# Settings: empty on purpose/,/^CONFIG_FILE=/p' "$SCRIPT")"
+chk "shell: the settings block assigns no values" bash -c "! grep -vE '^#|^CONFIG_FILE=' <<<'$SETBLK' | grep -qE '[A-Z_]+=(\"[^\"]+\"|[^\"(; ][^;]*)'"
+CODE="$(sed -e '/cat <<USAGE/,/^USAGE$/d' "$SCRIPT" | grep -vE '^[[:space:]]*#|^readonly ')"
+chk "shell: no shipped default values outside comments, --help and named constants" bash -c "! grep -nE '(^|[^0-9.a-z_-])(7|26|30|365|0\\.021|25-40|300-400)([^0-9.]|$)|Asia/Kolkata|first-sun|=sat\\b|=auto\\b|timeout 60|\"rds_backup_compliance\"' <<<\"\$1\" | grep -vE '\\\$\\{?[A-Za-z_]+|% 100|% 4 |% 400|[0-9]{4}|dim=|3[01]\\b ;;|y >= 2000'" _ "$CODE"
+chk "shell: the old built-in defaults are gone" bash -c "! grep -qE '^(DAILY=7|SNAP_PRICE=\"0\\.021\"|.*DISPLAY_TZ=\"Asia/Kolkata\"|.*WEEKLY_RETENTION_DAYS=30)' '$SCRIPT'"
+chk "shellcheck clean" bash -c "command -v shellcheck >/dev/null || exit 0; shellcheck '$SCRIPT'"
+
+echo "== v1.7.1: results identical to v1.7.0 (same settings, frozen clock)"
+if git -C "$HERE/.." rev-parse -q --verify 'v1.7.0^{commit}' >/dev/null 2>&1; then
+    V170="$OUT/v170"; FD="$OUT/fakedate"; mkdir -p "$V170" "$FD" "$OUT/idcwd"; git -C "$HERE/.." archive v1.7.0 | tar -x -C "$V170"
+    # date shim: "now" frozen at FAKE_NOW for date calls without -d, so both versions evaluate the same instant
+    printf '#!/usr/bin/env bash\nfor a in "$@"; do case "$a" in -d|-d*|--date*) exec /bin/date "$@" ;; esac; done\nexec /bin/date -d "@$FAKE_NOW" "$@"\n' >"$FD/date"; chmod +x "$FD/date"
+    FN="$(( $(date -u +%s) / 3600 * 3600 + 1234 ))"
+    same() { local name="$1" scen="$2" fmt="$3"; shift 3; local o="$OUT/id_$name"
+        cd "$OUT/idcwd" || return   # --manual-older-than without -o writes into the current folder
+        PATH="$FD:$PATH" FAKE_NOW="$FN" MOCK_NOW="$FN" MOCK_SCENARIO="$scen" "$V170/rds_backup_compliance_report.sh" "$@" -F "$fmt" >"$o.old" 2>/dev/null
+        PATH="$FD:$PATH" FAKE_NOW="$FN" MOCK_NOW="$FN" MOCK_SCENARIO="$scen" "$SCRIPT" --config "$BASECONF" "$@" -F "$fmt" >"$o.new" 2>/dev/null
+        if [[ "$fmt" == json ]]; then
+            chk "same as v1.7.0: $name" cmp -s <(jq -S 'walk(if type == "object" then del(.version, .tool_version) else . end)' "$o.old") <(jq -S 'walk(if type == "object" then del(.version, .tool_version) else . end)' "$o.new")
+        else chk "same as v1.7.0: $name" cmp -s <(sed 's/1\.7\.0/1.7.x/g' "$o.old") <(sed 's/1\.7\.1/1.7.x/g' "$o.new"); fi
+        [[ -s "$o.new" ]] || bad "same as v1.7.0: $name produced no output"; cd "$HERE" || return; }
+    same fleet_2r fleet json -P prod -r us-east-1,us-west-2
+    same fleet_all fleet json -P prod,nonprod,dev -A
+    same fleet_csv fleet csv -P prod -r us-east-1
+    same fleet_txt fleet text -P prod -r us-east-1,us-west-2
+    same backupdeny backupdeny json -P prod -r us-east-1,us-west-2
+    same globaldeny globaldeny json -P prod -r us-east-1,us-west-2
+    same snapdeny snapdeny json -P prod -r us-east-1
+    same empty empty json -P prod -A
+    same rpquirks rpquirks json -P prod -r us-east-1
+    same weekly6_yearly1 fleet json -P prod -r us-east-1 --weekly 6 --yearly 1 --tolerance-days 0
+    same retention fleet json -P prod -r us-east-1 --weekly-retention-days 35 --weekly-window-days 30 --monthly-retention-days 400 --daily-retention-days 2
+    same window fleet json -P nonprod -r ap-south-1 --weekly-window-days 45 --weekly-weekday sun --monthly-rule first-mon
+    same exempt fleet json -P prod,dev -r us-west-2,eu-west-1 --replica-exempt-engines 'oracle-*,aurora-*'
+    same manual_price fleet json -P prod -A --manual-older-than 90 --snapshot-price-per-gb 0.05
+    same nconly fleet json -P prod -r us-east-1 --non-compliant-only
+    same tz_utc fleet csv -P prod -r us-east-1 --tz UTC
+    same exceptions fleet json -P prod -A --exceptions "$EX/ok.conf"
+    same merge fleet json --merge "$M"
+    # weekly-window-days empty = weekly-retention-days: the same as v1.7.0 with an explicit window of that size
+    PATH="$FD:$PATH" FAKE_NOW="$FN" MOCK_NOW="$FN" MOCK_SCENARIO=fleet "$V170/rds_backup_compliance_report.sh" -P prod -r us-east-1 --weekly-retention-days 42 --weekly-window-days 42 -F json >"$OUT/id_follow.old" 2>/dev/null
+    PATH="$FD:$PATH" FAKE_NOW="$FN" MOCK_NOW="$FN" MOCK_SCENARIO=fleet "$SCRIPT" --config "$BASECONF" -P prod -r us-east-1 --weekly-retention-days 42 -F json >"$OUT/id_follow.new" 2>/dev/null
+    chk "weekly window follows weekly-retention-days (42 = v1.7.0 with window 42)" cmp -s <(jq -S 'walk(if type == "object" then del(.version, .tool_version) else . end)' "$OUT/id_follow.old") <(jq -S 'walk(if type == "object" then del(.version, .tool_version) else . end)' "$OUT/id_follow.new")
+    jqt id_follow '.thresholds.weekly_window_days == 42' "$OUT/id_follow.new"
+else echo "  skip v1.7.0 comparison (no git tag v1.7.0 here)"; fi
+
+echo "== v1.7.1: keep-reports (report retention)"
+KR="$OUT/kr"; mkdir -p "$KR/o/sub" "$KR/o/rds_backup_compliance_dir_20200101.html"
+OLDF=(rds_backup_compliance_111111111111_20250101_000000.html rds_backup_compliance_111111111111_20250101_000000.csv
+      rds_backup_compliance_111111111111_20250101_000000_backups.csv rds_backup_compliance_111111111111_20250101_000000.json
+      rds_backup_compliance_111111111111_20250101_000000.txt)
+KEEPF=(other_report.html rds_backup_compliance_old.log rds_backup_111111111111_20250101.json run.log sub/rds_backup_compliance_old.html)
+for f in "${OLDF[@]}" "${KEEPF[@]}"; do : >"$KR/o/$f"; touch -d '40 days ago' "$KR/o/$f"; done
+touch -d '40 days ago' "$KR/o/rds_backup_compliance_dir_20200101.html"
+: >"$KR/o/rds_backup_compliance_young.html"; touch -d '29 days ago' "$KR/o/rds_backup_compliance_young.html"
+t kr 0 fleet -P prod -r us-east-1 -F html,csv -o "$KR/o" --keep-reports 30
+chk "keep-reports: the 5 old prefixed report files are deleted" bash -c "for f in ${OLDF[*]}; do [[ ! -e '$KR/o/'\$f ]] || exit 1; done"
+chk "keep-reports: other names, other extensions, sub folders, folders, young files and the log are kept" bash -c "for f in ${KEEPF[*]} rds_backup_compliance_young.html; do [[ -e '$KR/o/'\$f ]] || { echo \$f; exit 1; }; done; [[ -d '$KR/o/rds_backup_compliance_dir_20200101.html' ]]"
+chk "keep-reports: this run's reports are kept" compgen -G "$KR/o/rds_backup_compliance_111111111111_2*[0-9].html" >/dev/null
+has kr err 'keep-reports: deleted rds_backup_compliance_111111111111_20250101_000000\.html \(older than 30 days\)$'
+has kr err 'keep-reports: 5 old report file\(s\) deleted from .*/kr/o \(keeping 30 days\)$'
+cp "$OUT/kr.err" "$OUT/keep_reports_log.txt"   # for screenshots
+for f in "${OLDF[@]}"; do : >"$KR/o/$f"; touch -d '40 days ago' "$KR/o/$f"; done
+t kr0 0 fleet -P prod -r us-east-1 -F json -o "$KR/o" --keep-reports 0
+chk "keep-reports 0: nothing deleted" bash -c "for f in ${OLDF[*]}; do [[ -e '$KR/o/'\$f ]] || exit 1; done"; hasnt kr0 err 'keep-reports'
+t krpfx 0 fleet -P prod -r us-east-1 -F json -o "$KR/o" --keep-reports 30 --prefix myrep
+chk "keep-reports: only the configured prefix (myrep_*) is pruned" bash -c "for f in ${OLDF[*]}; do [[ -e '$KR/o/'\$f ]] || exit 1; done"
+( cd "$KR/o" && t krstdout 0 fleet -P prod -r us-east-1 -F json -o '' --keep-reports 1 )
+chk "keep-reports without output-dir: nothing deleted" bash -c "for f in ${OLDF[*]}; do [[ -e '$KR/o/'\$f ]] || exit 1; done"
+t krdry 0 fleet -P prod -r us-east-1 -o "$KR/o" -F json --keep-reports 1 --dry-run
+chk "keep-reports with --dry-run: nothing deleted" bash -c "for f in ${OLDF[*]}; do [[ -e '$KR/o/'\$f ]] || exit 1; done"
+
+echo "== v1.7.1: e-mail (alert-email / alert-on / --alert-test) with fake mail commands"
+FM="$OUT/fakemail"; mkdir -p "$FM/mailx" "$FM/sendmail" "$FM/both" "$FM/slow"
+FAKE='#!/usr/bin/env bash
+# fake mail command for the tests: records its name, arguments and stdin; sends nothing
+{ printf "%s\n" "${0##*/}"; printf "%s\n" "$@"; } >"$MAIL_CAPTURE.args"; cat >"$MAIL_CAPTURE.body"'
+printf '%s\n' "$FAKE" >"$FM/mailx/mailx"; printf '%s\n' "$FAKE" >"$FM/sendmail/sendmail"
+printf '%s\n' "$FAKE" >"$FM/both/mail"; printf '%s\n' "$FAKE" >"$FM/both/sendmail"
+printf '#!/usr/bin/env bash\nsleep 5\n' >"$FM/slow/sendmail"; chmod +x "$FM"/*/*
+SYSMAIL=0; { command -v mail || command -v mailx || command -v sendmail || [[ -x /usr/sbin/sendmail ]]; } >/dev/null 2>&1 && SYSMAIL=1
+EMO="$OUT/em"; mkdir -p "$EMO"
+em() { local name="$1" fake="$2"; shift 2; rm -f "$OUT/$name.cap".*   # t with a fake mailer dir first on PATH
+       PATH="$FM/$fake:$PATH" MAIL_CAPTURE="$OUT/$name.cap" t "$name" "$@"; }
+A2=(--alert-email "dba@example.com,oncall@example.com" --alert-from rds-reports@example.com)
+# alert-on=noncompliant: everything compliant -> nothing sent; always -> sent
+em em_ok_nc mailx 0 fleet -P nonprod -r ap-south-1 -i 'hr-*' -F json "${A2[@]}"
+chk "noncompliant + all compliant: no e-mail" test ! -e "$OUT/em_ok_nc.cap.args"; has em_ok_nc err 'E-mail: not sent \(alert-on=noncompliant'
+em em_ok_always mailx 0 fleet -P nonprod -r ap-south-1 -i 'hr-*' -F json "${A2[@]}" --alert-on always
+has em_ok_always.cap args '^\[rds_backup_compliance\] COMPLIANT: 0 non-compliant of 1, 100% compliant$'
+# mailx: text only, -r from, -s subject, -- recipients
+em em_mailx mailx 0 fleet -P prod -r us-east-1 -F html,csv -o "$EMO/x" "${A2[@]}"
+chk "mailx: argv = mailx -r FROM -s SUBJECT -- TO..." bash -c "diff <(sed -n '1,4p;6,8p' '$OUT/em_mailx.cap.args') <(printf 'mailx\n-r\nrds-reports@example.com\n-s\n--\ndba@example.com\noncall@example.com\n')"
+has em_mailx.cap args '^\[rds_backup_compliance\] NON-COMPLIANT: 3 non-compliant of 6, [0-9]+% compliant$'
+has em_mailx.cap body '^Resources: 6   Compliant: [0-9]+   Non-compliant: 3   Not yet due: [0-9]+   Unknown: 0$'
+has em_mailx.cap body '^NON-COMPLIANT servers \(3\):$'; has em_mailx.cap body '^  - prod-core \(111111111111\) us-east-1 billing-aurora-mysql \(aurora-mysql\): weekly [0-9]/[0-9] missing Sat '
+has em_mailx.cap body '^  - prod-core \(111111111111\) us-east-1 reports-pg \(postgres\): .*retention 3d < 7d'
+has em_mailx.cap body '^Report files:$'; has em_mailx.cap body '\.html$'; hasnt em_mailx.cap body 'Content-Type|^--rds_bcr'
+has em_mailx err 'mailx cannot attach the HTML report'; has em_mailx err 'E-mail sent to dba@example.com oncall@example.com: \[rds_backup_compliance\] NON-COMPLIANT'
+# sendmail: MIME multipart with the written HTML report attached (base64 decodes to the same file)
+em em_sm sendmail 0 fleet -P prod -r us-east-1 -F html,csv -o "$EMO/s" "${A2[@]}"
+chk "sendmail: argv = sendmail -t -oi" test "$(paste -sd' ' "$OUT/em_sm.cap.args")" == "sendmail -t -oi"
+has em_sm.cap body '^From: rds-reports@example.com$'; has em_sm.cap body '^To: dba@example.com,oncall@example.com$'
+has em_sm.cap body '^Subject: \[rds_backup_compliance\] NON-COMPLIANT: 3 non-compliant of 6'
+has em_sm.cap body '^MIME-Version: 1\.0$'; has em_sm.cap body '^Content-Type: multipart/mixed; boundary="rds_bcr_[0-9]+_[0-9]+"$'
+has em_sm.cap body '^Content-Disposition: attachment; filename="rds_backup_compliance_111111111111_[0-9_]+\.html"$'
+has em_sm.cap body '^NON-COMPLIANT servers \(3\):$'
+chk "sendmail: the attachment decodes to the written HTML report" bash -c "b=\$(sed -n 's/^Content-Type: multipart.*boundary=\"\\(.*\\)\"/\\1/p' '$OUT/em_sm.cap.body'); awk -v b=\"--\$b\" 'f==2 && \$0==b\"--\"{exit} f==2{print} f==1 && \$0==\"\"{f=2} /^Content-Disposition: attachment/{f=1}' '$OUT/em_sm.cap.body' | base64 -d | cmp -s - \"\$(ls '$EMO'/s/*.html)\""
+em em_smtxt sendmail 0 fleet -P prod -r us-east-1 -F json -o "$EMO/t" "${A2[@]}"
+has em_smtxt.cap body '^Content-Type: text/plain; charset=UTF-8$'; hasnt em_smtxt.cap body 'multipart|attachment'
+# mail + sendmail: sendmail when the HTML is attached, mail for text only
+em em_both both 0 fleet -P prod -r us-east-1 -F html -o "$EMO/b" "${A2[@]}"; has em_both.cap args '^sendmail$'
+em em_both2 both 0 fleet -P prod -r us-east-1 -F json "${A2[@]}"; has em_both2.cap args '^mail$'
+# html printed to the screen: the report is rendered for the e-mail
+em em_stdout sendmail 0 fleet -P prod -r us-east-1 -F html "${A2[@]}"; has em_stdout.cap body 'filename="rds_backup_compliance_report\.html"'
+# exceptions that cover every NON-COMPLIANT server count as compliant: no e-mail with alert-on=noncompliant
+em em_exc mailx 0 fleet -P prod -A -F json --exceptions "$EX/all.conf" "${A2[@]}"; chk "exceptions applied: no e-mail" test ! -e "$OUT/em_exc.cap.args"
+# AWS errors (UNKNOWN rows / failed regions) send even with 0 NON-COMPLIANT
+em em_err mailx 0 backupdeny -P prod -r us-east-1 -i orders-aurora-pg15 -F json "${A2[@]}"
+has em_err.cap args '^\[rds_backup_compliance\] ERRORS: 0 non-compliant of 1'; has em_err.cap body '^UNKNOWN \(an AWS call failed\) \(1\):$'; has em_err.cap body '^Region errors \(1\):$'
+# merge (offline) e-mails too
+em em_merge mailx 0 fleet --merge "$M" -F json "${A2[@]}"; has em_merge.cap body '^Accounts: '
+# --alert-test: one test e-mail, no AWS calls
+n0="$(ncalls)"; em em_test sendmail 0 fleet "${A2[@]}" --alert-test
+chk "--alert-test: zero AWS calls" test "$(ncalls)" == "$n0"
+has em_test.cap body '^Subject: \[rds_backup_compliance\] TEST e-mail from '; has em_test.cap body '^Test e-mail from rds_backup_compliance_report\.sh v1\.7\.1 '
+t em_test_noaddr 1 fleet --alert-test; has em_test_noaddr err '--alert-test needs alert-email'
+# no mail command: warning, the run still succeeds and the report is written
+if (( ! SYSMAIL )); then
+    t em_none 0 fleet -P prod -r us-east-1 -F html -o "$EMO/n" "${A2[@]}"
+    has em_none err 'E-mail: no mail, mailx or sendmail found; e-mail not sent'; chk "no mail command: report still written" compgen -G "$EMO/n/*.html" >/dev/null
+else echo "  skip no-mailer case (this machine has a mail command)"; fi
+# a hung mail command is stopped after mail-timeout seconds; the run still succeeds
+SECONDS=0; em em_slow slow 0 fleet -P prod -r us-east-1 -F json "${A2[@]}" --mail-timeout 1
+chk "mail-timeout 1: stopped quickly ($SECONDS s)" test "$SECONDS" -lt 5; has em_slow err 'E-mail to .* failed or was not sent'
+# validation
+t em_bad 1 fleet --alert-email 'not-an-address'; has em_bad err 'Invalid --alert-email address: not-an-address'
+t em_bad2 1 fleet --alert-email 'a@b.c;rm'; t em_badon 1 fleet --alert-on sometimes; has em_badon err '--alert-on must be noncompliant or always'
+t em_badfrom 1 fleet --alert-from 'x y@z'; t em_badtmo 1 fleet --mail-timeout 0
 
 AFTER="$(cd "$HERE/.." && find . -path ./.git -prune -o -print | sort)"
 chk "nothing written into the repo" test "$BEFORE" == "$AFTER"

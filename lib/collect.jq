@@ -3,12 +3,16 @@
 # orphans = manual / shared snapshots (region-wide) not attached to a current cluster or instance of this account + region:
 # deleted source, shared from / copied from another account, or cross-region copies. Classified later (backup.jq osrc).
 # Args: $acct, $region, $clusters, $instances, $csnaps, $isnaps, $rps, $globals (slurped files), $csnap_ok, $isnap_ok, $backup_ok, $global_ok.
+# Named constants: unit facts (no settings live in this file).
+def SECONDS_PER_HOUR: 3600;
+def SECONDS_PER_MINUTE: 60;
+def BYTES_PER_GB: 1073741824;
 def ts: if . == null or . == "" then null elif type == "number" then floor
   else capture("^(?<d>[0-9-]+T[0-9:]+)(\\.[0-9]+)?(?<z>Z|[+-][0-9]{2}:?[0-9]{2})?$") as $m
     | ($m.d + "Z" | fromdateiso8601) as $e
     | if ($m.z // "Z") == "Z" then $e
       else ($m.z | capture("(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2})")) as $o
-        | (($o.h | tonumber) * 3600 + ($o.m | tonumber) * 60) as $sec | if $o.s == "+" then $e - $sec else $e + $sec end end end;
+        | (($o.h | tonumber) * SECONDS_PER_HOUR + ($o.m | tonumber) * SECONDS_PER_MINUTE) as $sec | if $o.s == "+" then $e - $sec else $e + $sec end end end;
 def skip_engine: test("^(docdb|neptune)");
 def arnp: if type == "string" and startswith("arn:") then split(":") | {region: .[3], account: .[4], name: (.[6:] | join(":"))} else null end;
 ($globals[0].GlobalClusters // []) as $G
@@ -16,7 +20,7 @@ def arnp: if type == "string" and startswith("arn:") then split(":") | {region: 
 | ($rps[0] // []) as $RP
 | def rps($arn): ($arn | ascii_downcase) as $la | [ $RP[] | select((.ResourceArn // "" | ascii_downcase) == $la)
       | {kind: "backup", id: (.RecoveryPointArn | split(":") | last), created_epoch: (.CreationDate | ts), status: .Status,
-         size_gb: (if .BackupSizeInBytes == null then null else ((.BackupSizeInBytes / 1073741824 * 10 | round) / 10) end),
+         size_gb: (if .BackupSizeInBytes == null then null else ((.BackupSizeInBytes / BYTES_PER_GB * 10 | round) / 10) end),
          expires_epoch: (.CalculatedLifecycle.DeleteAt | ts), vault: .BackupVaultName}
       + (if .Lifecycle.DeleteAfterDays != null then {ret_days: .Lifecycle.DeleteAfterDays} else {} end)
       + (if (.RecoveryPointArn // "" | test(":continuous:")) or .BackupType == "CONTINUOUS" then {continuous: true} else {} end)

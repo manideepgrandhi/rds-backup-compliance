@@ -1,8 +1,11 @@
 # Examples
 
 ```bash
-# Current login and region, console summary
+# Everything from rds_backup_compliance_report.conf (shipped: current login, every region, HTML + CSV into ./reports)
 ./rds_backup_compliance_report.sh
+
+# Current login and region only, text summary on the screen (CLI overrides the file for this run)
+./rds_backup_compliance_report.sh -r us-east-1 -F text -o ''
 
 # Every region, HTML and CSV (compliance and backups), and save the data for merging
 ./rds_backup_compliance_report.sh -A -F html,csv --save-data -o ./out
@@ -16,9 +19,8 @@
 # Use it as a CI gate
 ./rds_backup_compliance_report.sh -A --fail-on-noncompliant -F json -o ./out || echo "exit $?"
 
-# Settings file (the CLI overrides it). rds_backup_compliance_report.conf next to the script loads by itself;
-# --config FILE picks another file; --no-config skips the automatic one (see "Settings file and --check-config" below)
-./rds_backup_compliance_report.sh --config rds_backup_compliance_report.conf.example -A
+# Another complete settings file instead of the one next to the script (see "The settings file" below)
+./rds_backup_compliance_report.sh --config /home/cloudshell-user/configs/prod.conf
 
 # Validate the settings and exceptions files without calling AWS
 ./rds_backup_compliance_report.sh --check-config
@@ -94,10 +96,10 @@ The same table is in the HTML report: click a row to open it. CSV columns per ch
 ```bash
 # Strict retention is on by default (weekly 30d, monthly 365d, daily 7, ±1d). Your weekly plan keeps 35 days on purpose:
 ./rds_backup_compliance_report.sh -A --weekly-retention-days 35
-# or in the conf file
-#   WEEKLY_RETENTION_DAYS=35
-#   MONTHLY_RETENTION_DAYS=365
-#   RET_TOLERANCE_DAYS=1
+# or in rds_backup_compliance_report.conf (v1.7.1: change the existing lines; each key appears once)
+#   weekly-retention-days=35
+#   monthly-retention-days=365
+#   retention-tolerance-days=1
 
 # Which resources have the wrong retention, too many backups, or old automated backups?
 ./rds_backup_compliance_report.sh -A -F json \
@@ -141,11 +143,11 @@ HTML Account filters and the Per-region / Backups Account columns show `name (nu
 # Oracle replicas and Aurora global secondaries: always COMPLIANT (no backup counts)
 ./rds_backup_compliance_report.sh -A --replica-exempt-engines oracle-*,aurora-* -F html,csv -o ./out
 
-# Same via conf (also set friendly account names)
-# replica-exempt-engines=oracle-*,aurora-*
-# 111111111111 = prod-core
-# 222222222222 = nonprod-shared
-./rds_backup_compliance_report.sh --config my.conf -A -F html,csv -o ./out
+# Same via rds_backup_compliance_report.conf (shipped value since v1.7.1), with friendly account names
+#   replica-exempt-engines=oracle-*,aurora-*
+#   111111111111 = prod-core
+#   222222222222 = nonprod-shared
+./rds_backup_compliance_report.sh -A -F html,csv -o ./out
 ```
 
 Account names show as `name (number)` when set (config wins over the IAM alias). The compliance CSV ends with an `account_name` column.
@@ -181,73 +183,140 @@ account_id    identifier            type      engine              global_cluster
 
 If a script or spreadsheet filtered on `global_role = none`, change it to `primary`. To find only members of an Aurora global database, filter on a non-empty `global_cluster`. Reports merged from older saved data (`--merge`) also show `primary` where that data says `none`. An instance that replicates from a Multi-AZ cluster now shows `replica`.
 
-## Settings file and --check-config (v1.7.0)
+## The settings file (v1.7.1)
 
-Where the files go: in the **same folder as `rds_backup_compliance_report.sh`**. Both are loaded automatically; no `--config` or `--exceptions` needed.
+One file holds every setting: `rds_backup_compliance_report.conf`, in the **same folder as `rds_backup_compliance_report.sh`**. It comes in the zip with every value filled in, is loaded automatically, and is required.
 
-### 1. Put the files next to the script
+### 1. Edit the shipped file
 
 ```bash
 cd /home/cloudshell-user/rds-backup-compliance
-cp rds_backup_compliance_report.conf.example rds_backup_compliance_report.conf   # settings + account names
-cp compliance_exceptions.conf.example compliance_exceptions.conf                 # exceptions (optional)
-vi rds_backup_compliance_report.conf compliance_exceptions.conf
+cp rds_backup_compliance_report.conf rds_backup_compliance_report.conf.mine   # keep a copy for upgrades
+vi rds_backup_compliance_report.conf
 ```
+
+Only change values; keep every key. For example, three accounts, a 35-day weekly plan, e-mail to the DBA team (fake account numbers):
 
 ```text
-# rds_backup_compliance_report.conf
-daily-max-age=26
+## ============================== Accounts and regions ==============================
+profile=prod,nonprod,dev
+all-regions=yes
+...
 weekly-retention-days=35
-replica-exempt-engines=oracle-*,aurora-*
+...
+## ============================== Email ==============================
+alert-email=dba-team@example.com
+alert-from=rds-reports@example.com
+alert-on=noncompliant
+## ============================== Account names (display only) ==============================
 111111111111 = prod-payments
 222222222222 = nonprod-shared
+333333333333 = dev-sandbox
 ```
 
-### 2. Run as usual
+`weekly-window-days` is empty in the shipped file, so the weekly check now looks back 35 days too.
 
-```bash
-./rds_backup_compliance_report.sh -A -F html,csv -o ./out
-# [INFO] Config file loaded automatically: /home/cloudshell-user/rds-backup-compliance/rds_backup_compliance_report.conf (--no-config skips it)
-```
-
-### 3. Overrides
-
-```bash
-./rds_backup_compliance_report.sh -A --weekly 4                      # CLI beats the config file
-./rds_backup_compliance_report.sh -A --config /home/cloudshell-user/configs/prod.conf   # use another file instead
-./rds_backup_compliance_report.sh -A --no-config                     # ignore the automatic file (defaults + CLI)
-```
-
-### 4. Check before you run (no AWS calls)
+### 2. Check it (no AWS calls)
 
 ```bash
 ./rds_backup_compliance_report.sh --check-config
-./rds_backup_compliance_report.sh --check-config --weekly 4 -P prod
+./rds_backup_compliance_report.sh --check-config --weekly 4 -P prod     # CLI values show source CLI
 ```
 
 Sample (abridged; the full list has every setting):
 
 ```text
-Config file:     /home/cloudshell-user/rds-backup-compliance/rds_backup_compliance_report.conf (auto-loaded from the script folder)
+Config file:     /home/cloudshell-user/rds-backup-compliance/rds_backup_compliance_report.conf (next to the script)
 Exceptions file: /home/cloudshell-user/rds-backup-compliance/compliance_exceptions.conf (auto-loaded from the script folder)
+Script folder:   /home/cloudshell-user/rds-backup-compliance
 
-Settings in effect (name, value, source):
-  profile                    prod                     CLI
-  daily-max-age              26                       config /home/cloudshell-user/rds-backup-compliance/rds_backup_compliance_report.conf
-  weekly                     4                        CLI
-  monthly                    12                       default
+Settings in effect (name, value, source: conf = the config file above, CLI = command line):
+  profile                    prod                           CLI
+  all-regions                yes                            conf
+  daily                      7                              conf
+  daily-max-age              26                             conf
+  weekly-retention-days      35                             conf
+  weekly                     4                              CLI
+  weekly-window-days         = weekly-retention-days (35)   conf
+  keep-reports               30 days                        conf
+  alert-email                dba-team@example.com           conf
 
-Account names (2):
+Account names (3):
   111111111111 = prod-payments
   222222222222 = nonprod-shared
+  333333333333 = dev-sandbox
 
-Exceptions (1); today is 2026-11-17 UTC:
+Exceptions (1); today is 2026-11-18 UTC:
   line 1: 111111111111 legacy-mysql scope=backup expires 2027-03-31 - Decommission in Q1
+
+E-mail: to dba-team@example.com when NON-COMPLIANT or AWS errors
+  mail command: /usr/sbin/sendmail (HTML report attached when html is a format)
 
 OK: configuration is valid (no AWS calls made)
 ```
 
-An error stops with exit 1 and `file:line`, for example `Config /home/cloudshell-user/rds-backup-compliance/rds_backup_compliance_report.conf:3: unknown key 'bogus'`.
+Errors stop with exit 1:
+
+```text
+[ERROR] Settings file not readable: /home/cloudshell-user/rds-backup-compliance/rds_backup_compliance_report.conf
+    Every setting comes from rds_backup_compliance_report.conf. Put the shipped file next to the script (...),
+    or point --config at a complete copy. A fresh copy is in the release zip.
+[ERROR] Config .../rds_backup_compliance_report.conf is missing 3 required setting(s): daily, weekly-weekday, alert-on
+[ERROR] Config .../rds_backup_compliance_report.conf:41: 'daily' is set twice (also on line 27); keep one line
+[ERROR] Config .../rds_backup_compliance_report.conf:90: --weekly must be a whole number (got 'x')
+```
+
+### 3. Run
+
+```bash
+./rds_backup_compliance_report.sh                                   # everything from the file
+./rds_backup_compliance_report.sh --daily 14 -P prod                 # CLI wins for this run
+./rds_backup_compliance_report.sh -r us-east-1 -F text -o '' -l ''   # one region, text on the screen, no files
+./rds_backup_compliance_report.sh --config /home/cloudshell-user/configs/prod.conf   # another complete file
+```
+
+A v1.7.0-style partial file (only a few keys) now stops with the list of missing keys: copy them from the shipped file. `--no-config` no longer exists.
+
+### 4. Report retention
+
+With `keep-reports=30`, each run ends by deleting this tool's report files older than 30 days from `output-dir`:
+
+```text
+[INFO] keep-reports: deleted rds_backup_compliance_111111111111_20251001_020000.html (older than 30 days)
+[INFO] keep-reports: deleted rds_backup_compliance_111111111111_20251001_020000.csv (older than 30 days)
+[INFO] keep-reports: 2 old report file(s) deleted from /home/cloudshell-user/rds-backup-compliance/reports (keeping 30 days)
+```
+
+Files with another name, sub-folders, `run.log` and `--save-data` files are never deleted. `keep-reports=0` keeps everything.
+
+### 5. E-mail
+
+```bash
+./rds_backup_compliance_report.sh --alert-test                       # one test e-mail, no AWS calls
+./rds_backup_compliance_report.sh --alert-on always                  # e-mail even when all compliant
+```
+
+Sample e-mail (fake accounts):
+
+```text
+Subject: [rds_backup_compliance] NON-COMPLIANT: 3 non-compliant of 6, 25% compliant
+
+RDS backup compliance report from jumpbox-01 (rds_backup_compliance_report.sh v1.7.1)
+Accounts: prod-payments (111111111111)
+
+Resources: 6   Compliant: 1   Non-compliant: 3   Not yet due: 2   Unknown: 0
+Compliance: 25% (1 of 4; not yet due not counted)
+
+NON-COMPLIANT servers (3):
+  - prod-payments (111111111111) us-east-1 billing-aurora-mysql (aurora-mysql): weekly 3/4 missing Sat 07 Nov
+  - prod-payments (111111111111) us-east-1 legacy-mysql (mysql): daily: last automated 74h ago; daily 4/7 missing Sun 15 Nov, Mon 16 Nov, Tue 17 Nov
+  - prod-payments (111111111111) us-east-1 reports-pg (postgres): daily: retention 3d < 7d; daily 3/7 missing Wed 11 Nov, Thu 12 Nov, Fri 13 Nov, Sat 14 Nov
+
+Report files:
+  /home/cloudshell-user/rds-backup-compliance/reports/rds_backup_compliance_111111111111_20261118_011013.html
+  ...
+Attachment (sendmail only): rds_backup_compliance_111111111111_20261118_011013.html
+```
 
 ## Exceptions (v1.6.0)
 
