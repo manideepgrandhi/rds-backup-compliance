@@ -44,9 +44,9 @@
 
 Sample outputs from the mock fleet are in `samples/`, and screenshots are in `docs/`.
 
-## Usage examples (v1.7.1)
+## Usage examples (v1.7.2)
 
-Ready-to-copy commands for everyday jobs, each with a short sample of real output. Every sample was produced by running v1.7.1 against the test mock in `tests/mock/aws`, so the numbers come from the mock fleet. Accounts are fake: `111111111111` (profile `prod`), `222222222222` (`nonprod`) and `333333333333` (`dev`). The script folder is `/home/dba/rds-backup-compliance` on a jump box named `jumpbox-01`. Timestamps are IST; report file names use UTC. Long outputs are cut where you see `...`.
+Ready-to-copy commands for everyday jobs, each with a short sample of real output. Every sample was produced by running v1.7.2 against the test mock in `tests/mock/aws`, so the numbers come from the mock fleet. Accounts are fake: `111111111111` (profile `prod`), `222222222222` (`nonprod`) and `333333333333` (`dev`). The script folder is `/home/dba/rds-backup-compliance` on a jump box named `jumpbox-01`. Timestamps are IST; report file names use UTC. Long outputs are cut where you see `...`.
 
 ### 1. First run after unzip: edit the conf, check it, run
 
@@ -148,8 +148,8 @@ For one run only, keep the conf as it is and use `-P prod,nonprod,dev -A`.
 
 `--non-compliant-only` lists only the NON-COMPLIANT servers. `--fail-on-noncompliant` makes the script exit with code 5 when it finds one, so a scheduler or CI job can alert on it. Both can also be set in the conf (`non-compliant-only=yes`, `fail-on-noncompliant=yes`).
 ```bash
-# A quick look on the screen: text, no files (-o ''), manual snapshot audit off for this run
-./rds_backup_compliance_report.sh --non-compliant-only -F text -o '' --manual-older-than '' 2>/dev/null | grep -v -e '^Rule:' -e '^Orphaned' | cut -f3,10,11
+# A quick look on the screen: text, no files (-o '')
+./rds_backup_compliance_report.sh --non-compliant-only -F text -o '' 2>/dev/null | grep -v -e '^Rule:' -e '^Orphaned' | cut -f3,10,11
 
 # Scheduled: exit code 5 = something is NON-COMPLIANT
 ./rds_backup_compliance_report.sh --non-compliant-only --fail-on-noncompliant -l ./reports/scheduled.log >/dev/null 2>&1
@@ -157,13 +157,13 @@ echo $?
 ```
 ```text
 RDS backup compliance - account prod-payments (111111111111)
-Generated 2026-11-18 02:24 UTC / 2026-11-18 07:54 IST
-Compliance: 0% (0 of 3)
-Resources 3: compliant 0, non-compliant 3, not yet due 0, unknown 0
+Generated 2026-11-18 02:42 UTC / 2026-11-18 08:12 IST
+Compliance: 25% (1 of 4), 2 not yet due not counted
+Resources 6: compliant 1, non-compliant 3, not yet due 2, unknown 0
 
 IDENTIFIER	STATUS	GAPS
 billing-aurora-mysql	NON-COMPLIANT	weekly 3/4 missing Sat 07 Nov
-legacy-mysql	NON-COMPLIANT	daily: last automated 75.4h ago; daily 4/7 missing Sun 15 Nov, Mon 16 Nov, Tue 17 Nov
+legacy-mysql	NON-COMPLIANT	daily: last automated 74h ago; daily 5/7 missing Mon 16 Nov, Tue 17 Nov
 reports-pg	NON-COMPLIANT	daily: retention 3d < 7d; daily 3/7 missing Wed 11 Nov, Thu 12 Nov, Fri 13 Nov, Sat 14 Nov
 
 $ ./rds_backup_compliance_report.sh --non-compliant-only --fail-on-noncompliant -l ./reports/scheduled.log >/dev/null 2>&1
@@ -177,15 +177,15 @@ $ ./rds_backup_compliance_report.sh -P nonprod -r ap-south-1 -i 'hr-*' --fail-on
 $ echo $?
 0
 ```
-With `--non-compliant-only`, the text summary counts only the rows it lists (3 here). The log line `resources: 6, non-compliant: 3` always has the full totals. Other exit codes: 1 = settings error, 2 = pre-check failed (aws, jq, credentials, region), 4 = output error (see README, Exit codes).
+With `--non-compliant-only`, the table lists only the 3 failing rows, but the summary lines (`Compliance`, `Resources 6`) count every server, as `--help` says. Other exit codes: 1 = settings error, 2 = pre-check failed (aws, jq, credentials, region), 4 = output error (see README, Exit codes).
 
 ### 4. One-off override without editing the conf
 
 Any setting can be changed for one run with its `--` option. `--check-config` shows `CLI` as the source, and the conf file stays as it is.
 ```bash
 ./rds_backup_compliance_report.sh --check-config --weekly-retention-days 35 | grep -E 'weekly-(retention|window)'
-./rds_backup_compliance_report.sh -F text -o '' --manual-older-than '' 2>/dev/null | grep billing-aurora-mysql | cut -f3,8,12
-./rds_backup_compliance_report.sh --weekly-retention-days 35 -F text -o '' --manual-older-than '' 2>/dev/null | grep billing-aurora-mysql | cut -f3,8,12
+./rds_backup_compliance_report.sh -F text -o '' 2>/dev/null | grep billing-aurora-mysql | cut -f3,8,12
+./rds_backup_compliance_report.sh --weekly-retention-days 35 -F text -o '' 2>/dev/null | grep billing-aurora-mysql | cut -f3,8,12
 grep -n '^weekly-retention-days=' rds_backup_compliance_report.conf
 ```
 ```text
@@ -252,10 +252,10 @@ sed -i 's/^alert-email=.*/alert-email=dba-team@example.com,oncall@example.com/; 
 E-mail: to dba-team@example.com oncall@example.com when NON-COMPLIANT or AWS errors
   mail command: /home/dba/bin/sendmail (HTML report attached when html is a format)
 
-2026-11-18 07:52:40 [INFO] E-mail sent to dba-team@example.com oncall@example.com: [rds_backup_compliance] TEST e-mail from jumpbox-01
-2026-11-18 07:52:42 [INFO] E-mail sent to dba-team@example.com oncall@example.com: [rds_backup_compliance] NON-COMPLIANT: 3 non-compliant of 6, 25% compliant
-2026-11-18 07:52:42 [INFO] E-mail: not sent (alert-on=noncompliant and everything is compliant)
-2026-11-18 07:52:43 [INFO] E-mail sent to dba-team@example.com oncall@example.com: [rds_backup_compliance] COMPLIANT: 0 non-compliant of 1, 100% compliant
+2026-11-18 08:12:44 [INFO] E-mail sent to dba-team@example.com oncall@example.com: [rds_backup_compliance] TEST e-mail from jumpbox-01
+2026-11-18 08:12:45 [INFO] E-mail sent to dba-team@example.com oncall@example.com: [rds_backup_compliance] NON-COMPLIANT: 3 non-compliant of 6, 25% compliant
+2026-11-18 08:12:46 [INFO] E-mail: not sent (alert-on=noncompliant and everything is compliant)
+2026-11-18 08:12:47 [INFO] E-mail sent to dba-team@example.com oncall@example.com: [rds_backup_compliance] COMPLIANT: 0 non-compliant of 1, 100% compliant
 ```
 The NON-COMPLIANT e-mail (text part; the HTML report follows as an attachment):
 ```text
@@ -263,7 +263,7 @@ From: rds-reports@example.com
 To: dba-team@example.com,oncall@example.com
 Subject: [rds_backup_compliance] NON-COMPLIANT: 3 non-compliant of 6, 25% compliant
 
-RDS backup compliance report from jumpbox-01 (rds_backup_compliance_report.sh v1.7.1)
+RDS backup compliance report from jumpbox-01 (rds_backup_compliance_report.sh v1.7.2)
 Accounts: prod-payments (111111111111)
 
 Resources: 6   Compliant: 1   Non-compliant: 3   Not yet due: 2   Unknown: 0
@@ -271,45 +271,43 @@ Compliance: 25% (1 of 4; not yet due not counted)
 
 NON-COMPLIANT servers (3):
   - prod-payments (111111111111) us-east-1 billing-aurora-mysql (aurora-mysql): weekly 3/4 missing Sat 07 Nov
-  - prod-payments (111111111111) us-east-1 legacy-mysql (mysql): daily: last automated 75.4h ago; daily 4/7 missing Sun 15 Nov, Mon 16 Nov, Tue 17 Nov
+  - prod-payments (111111111111) us-east-1 legacy-mysql (mysql): daily: last automated 74h ago; daily 5/7 missing Mon 16 Nov, Tue 17 Nov
   - prod-payments (111111111111) us-east-1 reports-pg (postgres): daily: retention 3d < 7d; daily 3/7 missing Wed 11 Nov, Thu 12 Nov, Fri 13 Nov, Sat 14 Nov
 
 Report files:
-  ./reports/rds_backup_compliance_111111111111_20261118_022240.html
+  ./reports/rds_backup_compliance_111111111111_20261118_024244.html
   ...
-Content-Disposition: attachment; filename="rds_backup_compliance_111111111111_20261118_022240.html"
+Content-Disposition: attachment; filename="rds_backup_compliance_111111111111_20261118_024244.html"
 ```
-The test e-mail body: `Test e-mail from rds_backup_compliance_report.sh v1.7.1 on jumpbox-01 at 2026-11-18 07:52:40 IST. No AWS calls were made.`
+The test e-mail body: `Test e-mail from rds_backup_compliance_report.sh v1.7.2 on jumpbox-01 at 2026-11-18 08:12:44 IST. No AWS calls were made.`
 
 ### 7. `keep-reports=30` and checking what it will delete
 
-After each run, files in `output-dir` (top level only) whose names start with the prefix and end in `.html`, `.csv`, `.json` or `.txt` are deleted when they are older than `keep-reports` days. Other files are never touched. `--dry-run` deletes nothing, but it also does not list what would go. To see beforehand which files the next run deletes, run the same `find` the script uses:
+After each run, files in `output-dir` (top level only) whose names start with the prefix and end in `.html`, `.csv`, `.json` or `.txt` are deleted when they are older than `keep-reports` days. Other files are never touched. `--dry-run` previews it: it lists each file the next run would delete, with a count, and deletes nothing (the AWS calls are only printed, not made).
 ```bash
-find ./reports -maxdepth 1 -type f \( -name 'rds_backup_compliance_*.html' -o -name 'rds_backup_compliance_*.csv' -o -name 'rds_backup_compliance_*.json' -o -name 'rds_backup_compliance_*.txt' \) -mmin +$((30*1440)) | sort
-./rds_backup_compliance_report.sh --dry-run >/dev/null 2>&1; ls reports/ | grep -c '_2026100'   # still 6: nothing deleted
+./rds_backup_compliance_report.sh --dry-run 2>&1 | grep keep-reports
+ls reports/ | grep -c '_2026100'   # still 6: nothing deleted
 ./rds_backup_compliance_report.sh 2>&1 | grep keep-reports
 ```
 ```text
 # before: 6 report files from October, notes.txt (old, not a report), one report from 10 Nov
-$ find ./reports -maxdepth 1 -type f \( ... \) -mmin +$((30*1440)) | sort
-./reports/rds_backup_compliance_111111111111_20261001_020000.csv
-./reports/rds_backup_compliance_111111111111_20261001_020000.html
-./reports/rds_backup_compliance_111111111111_20261001_020000_backups.csv
-./reports/rds_backup_compliance_111111111111_20261008_020000.csv
-./reports/rds_backup_compliance_111111111111_20261008_020000.html
-./reports/rds_backup_compliance_111111111111_20261008_020000_backups.csv
-$ ./rds_backup_compliance_report.sh --dry-run >/dev/null 2>&1; ls reports/ | grep -c '_2026100'
+$ ./rds_backup_compliance_report.sh --dry-run 2>&1 | grep keep-reports
+2026-11-18 08:12:37 [INFO] keep-reports: would delete rds_backup_compliance_111111111111_20261001_020000_backups.csv
+2026-11-18 08:12:37 [INFO] keep-reports: would delete rds_backup_compliance_111111111111_20261008_020000.html
+...
+2026-11-18 08:12:37 [INFO] keep-reports: 6 old report file(s) would be deleted from ./reports (keeping 30 days); nothing was deleted
+$ ls reports/ | grep -c '_2026100'
 6
 $ ./rds_backup_compliance_report.sh 2>&1 | grep keep-reports
-2026-11-18 07:52:57 [INFO] keep-reports: deleted rds_backup_compliance_111111111111_20261001_020000_backups.csv (older than 30 days)
-2026-11-18 07:52:57 [INFO] keep-reports: deleted rds_backup_compliance_111111111111_20261008_020000.html (older than 30 days)
+2026-11-18 08:12:38 [INFO] keep-reports: deleted rds_backup_compliance_111111111111_20261001_020000_backups.csv (older than 30 days)
+2026-11-18 08:12:38 [INFO] keep-reports: deleted rds_backup_compliance_111111111111_20261008_020000.html (older than 30 days)
 ...
-2026-11-18 07:52:57 [INFO] keep-reports: 6 old report file(s) deleted from ./reports (keeping 30 days)
+2026-11-18 08:12:38 [INFO] keep-reports: 6 old report file(s) deleted from ./reports (keeping 30 days)
 
 # after: notes.txt, the 10 Nov report, today's 5 files and run.log are still there
 2026-10-01 notes.txt
 2026-11-10 rds_backup_compliance_111111111111_20261110_020000.html
-2026-11-18 rds_backup_compliance_111111111111_20261118_022256.csv
+2026-11-18 rds_backup_compliance_111111111111_20261118_024237.csv
 ...
 2026-11-18 run.log
 ```
@@ -338,7 +336,16 @@ Output (4 files):
 2026-11-18 07:53:22 [INFO] manual snapshots older than 365 days: 3
   /home/dba/rds-backup-compliance/reports/rds_backup_compliance_111111111111_20261118_022321_manual_older_than_365d.csv
 ```
-Set `manual-older-than=` (empty) to turn the audit off. With `-o ''` (print to the screen) the audit CSV is written to the current folder, so add `--manual-older-than ''` to such runs.
+Set `manual-older-than=` (empty) to turn the audit off. With `-o ''` (print to the screen) no CSV is written: the rows are printed on the screen (stderr) and the report on stdout stays clean:
+```bash
+./rds_backup_compliance_report.sh -F text -o '' --manual-older-than 365 2>&1 >/dev/null | grep -E 'manual|^"' | head -4
+```
+```text
+2026-11-18 08:12:56 [INFO] manual snapshots older than 365 days: 3 (screen only, no file written)
+"account_id","region","identifier","type","engine","snapshot","created_utc","created_ist","age_days","status","size_gb","source_status"
+"111111111111","us-east-1","legacy-mysql","instance","mysql","legacy-mysql-manual-600d","2025-03-28 02:42 UTC","2025-03-28 08:12 IST","600","available","100","EXISTING"
+"111111111111","us-east-1","analytics-aurora","cluster","aurora-postgresql","analytics-aurora-final","2025-10-14 02:42 UTC","2025-10-14 08:12 IST","400","available","500","ORPHANED"
+```
 
 ### 9. Daily cron job on a Linux jump box
 
@@ -370,7 +377,7 @@ Add `alert-email` (example 6) so someone hears about exit 5 without reading the 
 grep -v '^[0-9]' compliance_exceptions.conf.example > compliance_exceptions.conf      # keep the notes, drop the sample lines
 echo '111111111111 | legacy-mysql | backup | 2027-03-31 | Decommission in Q1, CHG-2001 (owner: dba-team)' >> compliance_exceptions.conf
 ./rds_backup_compliance_report.sh --check-config | grep -E '^Exceptions|^  line |^OK'
-./rds_backup_compliance_report.sh -F text -o '' --manual-older-than '' 2>/dev/null | grep -E '^(Compliance|Resources)|^prod-payments.*legacy-mysql' | cut -f1-3,10
+./rds_backup_compliance_report.sh -F text -o '' 2>/dev/null | grep -E '^(Compliance|Resources)|^prod-payments.*legacy-mysql' | cut -f1-3,10
 ```
 ```text
 Exceptions file: /home/dba/rds-backup-compliance/compliance_exceptions.conf (auto-loaded from the script folder)
@@ -653,7 +660,7 @@ Sample e-mail (fake accounts):
 ```text
 Subject: [rds_backup_compliance] NON-COMPLIANT: 3 non-compliant of 6, 25% compliant
 
-RDS backup compliance report from jumpbox-01 (rds_backup_compliance_report.sh v1.7.1)
+RDS backup compliance report from jumpbox-01 (rds_backup_compliance_report.sh v1.7.2)
 Accounts: prod-payments (111111111111)
 
 Resources: 6   Compliant: 1   Non-compliant: 3   Not yet due: 2   Unknown: 0

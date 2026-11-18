@@ -2,6 +2,12 @@
 
 Plain-English features for each published release. The What's new page is built from this file.
 
+## 1.7.2
+- `--dry-run` now previews `keep-reports`: it lists each old report it would delete and a count, and deletes nothing
+- With `--non-compliant-only`, the text summary (Compliance, Resources) counts every server, as `--help` says; the table and CSV still list only the failing rows
+- With `-o ''` (screen only), `manual-older-than` no longer writes a CSV into the current folder; the old manual snapshots are listed on the screen instead
+- Reports are otherwise identical to 1.7.1
+
 ## 1.7.1
 - One settings file: `rds_backup_compliance_report.conf` now ships next to the script with every setting filled in, grouped under headings with `##` notes, and the script has no built-in values
 - The settings file is required: a missing file, a missing setting or a setting listed twice stops the run with a clear message

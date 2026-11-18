@@ -35,7 +35,7 @@ set -Eeuo pipefail
 umask 077
 
 readonly SCRIPT_NAME="${0##*/}"
-readonly SCRIPT_VERSION="1.7.1"
+readonly SCRIPT_VERSION="1.7.2"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_DIR
 LIBDIR="${RDS_BCR_LIB:-$SCRIPT_DIR/lib}"
@@ -152,7 +152,7 @@ Report:
       --tz ZONE             Second time zone shown next to UTC                                          [$DISPLAY_TZ]
   -l, --log-file FILE       Append log lines to FILE; empty = no log file                               [$LOG_FILE]
       --manual-older-than N Also write <name>_manual_older_than_<N>d.csv: manual snapshots older than N days;
-                            empty = off                                                                 [$MANUAL_OLDER]
+                            with -o '' they are listed on the screen, no file; empty = off              [$MANUAL_OLDER]
       --snapshot-price-per-gb USD  Price per GB-month for the orphaned-snapshot cost estimate           [$SNAP_PRICE]
       --keep-reports N      After the run, delete <prefix>_* report files (.html .csv .json .txt) older than
                             N days from the output dir; 0 = keep everything                             [$KEEP_REPORTS]
@@ -179,7 +179,7 @@ Behaviour:
       --aws-timeout SEC     AWS CLI connect/read timeout                                                [$AWS_TIMEOUT]
       --max-attempts N      AWS CLI retry attempts                                                      [$MAX_ATTEMPTS]
       --keep-workdir        Keep raw AWS responses for debugging
-      --dry-run             Print the AWS calls that would run; call nothing
+      --dry-run             Print the AWS calls that would run and the reports keep-reports would delete; do neither
   -v, --verbose             Print every region line (empty regions too) and debug logs
   -h, --help / -V, --version
 
@@ -555,16 +555,18 @@ check_config() {
 # ---------------------------------------------------------------------------- report retention (keep-reports)
 # prune_reports: delete files in the output dir older than keep-reports days whose names start with the prefix and
 # end in a report extension. Never touches other files or folders; logs every deletion; 0 = keep all.
+# --dry-run only previews: one "would delete" line per file and a count, nothing is removed.
 prune_reports() {
     (( KEEP_REPORTS > 0 )) && [[ -n "$OUTPUT_DIR" && -d "$OUTPUT_DIR" ]] || return 0
     local f e n=0; local -a names=()
     for e in $REPORT_EXTS; do names+=(-o -name "${PREFIX}_*.$e"); done
     while IFS= read -r -d '' f; do
-        if (( DRY_RUN )); then log_info "keep-reports: would delete ${f##*/}"; continue; fi
+        if (( DRY_RUN )); then n=$((n + 1)); log_info "keep-reports: would delete ${f##*/}"; continue; fi
         if rm -f -- "$f"; then n=$((n + 1)); log_info "keep-reports: deleted ${f##*/} (older than $KEEP_REPORTS days)"
         else log_warn "keep-reports: cannot delete $f"; fi
     done < <(find "$OUTPUT_DIR" -maxdepth 1 -type f \( "${names[@]:1}" \) -mmin +$(( KEEP_REPORTS * MINUTES_PER_DAY )) -print0 2>/dev/null)
-    log_info "keep-reports: $n old report file(s) deleted from $OUTPUT_DIR (keeping $KEEP_REPORTS days)"
+    if (( DRY_RUN )); then log_info "keep-reports: $n old report file(s) would be deleted from $OUTPUT_DIR (keeping $KEEP_REPORTS days); nothing was deleted"
+    else log_info "keep-reports: $n old report file(s) deleted from $OUTPUT_DIR (keeping $KEEP_REPORTS days)"; fi
 }
 
 # ---------------------------------------------------------------------------- e-mail (alert-email)
@@ -966,7 +968,7 @@ main() {
     else
         (( ${#PROFILES[@]} )) || PROFILES=("")
         local p ok=0; for p in "${PROFILES[@]}"; do scan_profile "$p" && ok=$((ok + 1)); done
-        (( DRY_RUN )) && exit 0
+        if (( DRY_RUN )); then prune_reports; exit 0; fi   # preview of keep-reports, then stop
         (( ok )) || die 2 "No profile could be scanned"
         jqv -s --arg s "$DATA_SCHEMA" --argjson v "$DATA_SCHEMA_VERSION" --argjson now "$NOW" \
             '{schema: $s, schema_version: $v, collected_epoch: $now, accounts: [.[].accounts[]], regions: [.[].regions[]], resources: [.[].resources[]], orphans: [.[].orphans[]]}' \
@@ -990,6 +992,9 @@ main() {
         # exc_ids: every scanned server, so an exception is not reported as unmatched only because its server is hidden
         jqv --slurpfile k "$WORK/nc.json" '.exc_ids = [ .resources[] | {account_id, identifier: .id} ]
             | .resources |= [ .[] | select("\(.account_id)|\(.region)|\(.id)" as $x | $k[0] | index([$x])) ]' "$data" >"$WORK/data_nc.json"
+        # all_totals: the text summary counts every scanned server, not only the rows listed
+        render totals "$WORK/data.json" | jqv -c . >"$WORK/all_totals.json"
+        jqv --slurpfile t "$WORK/all_totals.json" '.all_totals = $t[0]' "$WORK/data_nc.json" >"$WORK/data_nc2.json" && mv -- "$WORK/data_nc2.json" "$WORK/data_nc.json"
         data="$WORK/data_nc.json"
     fi
     # file name tag: account numbers, or merged_<N>_accounts for more than 3 accounts
@@ -1008,8 +1013,14 @@ main() {
         else render "$f" "$data" || die 4 "render failed"; fi
     done
     if [[ -n "$MANUAL_OLDER" ]]; then   # manual-snapshot audit (all resources, ignores --non-compliant-only)
-        write_out "${OUTPUT_DIR:-.}/${PREFIX}_${tag}_${STAMP}_manual_older_than_${MANUAL_OLDER}d.csv" render mcsv "$WORK/data.json"
-        log_info "manual snapshots older than ${MANUAL_OLDER} days: $(render mcsv "$WORK/data.json" | tail -n +2 | grep -c . || true)"
+        if [[ -n "$OUTPUT_DIR" ]]; then   # file in the output dir; screen-only runs (-o '') write no file
+            write_out "$OUTPUT_DIR/${PREFIX}_${tag}_${STAMP}_manual_older_than_${MANUAL_OLDER}d.csv" render mcsv "$WORK/data.json"
+            log_info "manual snapshots older than ${MANUAL_OLDER} days: $(render mcsv "$WORK/data.json" | tail -n +2 | grep -c . || true)"
+        else
+            render mcsv "$WORK/data.json" >"$WORK/manual.csv"
+            log_info "manual snapshots older than ${MANUAL_OLDER} days: $(tail -n +2 "$WORK/manual.csv" | grep -c . || true) (screen only, no file written)"
+            cat -- "$WORK/manual.csv" >&2
+        fi
     fi
     # summary: counts and exception notes in the log, then the exit code (5 only with --fail-on-noncompliant)
     local nc; nc="$(render rows "$WORK/data.json" | jqv '[.[] | select(.status == "NON-COMPLIANT")] | length')"

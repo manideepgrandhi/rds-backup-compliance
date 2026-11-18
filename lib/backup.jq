@@ -444,6 +444,7 @@ def osumtxt($t): "\($t.orphaned) orphaned snapshot\(if $t.orphaned == 1 then "" 
 # totals_all: totals of $R, with unmatched exceptions checked against every scanned server
 | def totals_all: totals($R) | if .exceptions then .exceptions.unmatched = exc_unmatched("backup"; ($D.exc_ids // $R)) else . end;
   if $mode == "rows" then $R
+  elif $mode == "totals" then totals_all   # --non-compliant-only: totals of every server, stored as .all_totals
   elif $mode == "osum" then osumtxt($OT)
   elif $mode == "exclog" then   # script log lines (tab: W = warning, I = info); @FILE@ = exceptions file name
     if exc_on then totals_all.exceptions as $e
@@ -487,7 +488,7 @@ def osumtxt($t): "\($t.orphaned) orphaned snapshot\(if $t.orphaned == 1 then "" 
      | [.r.account_id, .r.region, .r.id, .r.type, .r.engine, .s.id, (.s.created_epoch | utc), (.s.created_epoch | loc),
         (($now - .s.created_epoch) / SECONDS_PER_DAY | floor), .s.status, .s.size_gb, .o] | csvrow)
   elif $mode == "txt" then
-    totals_all as $t
+    ($D.all_totals // totals_all) as $t   # with --non-compliant-only the totals still count every server
     | "RDS backup compliance - account \($D | accounts_label)",
       "Generated \($now | utc) / \($now | loc)",
       "Rule: \(ruletxt)",
