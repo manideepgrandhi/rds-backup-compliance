@@ -1,0 +1,864 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RDS backup compliance - how the script decides</title>
+<style>
+:root{--bg:#eaf3fc;--card:#fff;--line:#c9dcf0;--ink:#142c48;--mute:#5a7592;--blue:#1f6fd0;--blue2:#e3effc;
+ --ok:#16794a;--okbg:#e2f5ea;--bad:#c42b2b;--badbg:#fde7e7;--unk:#5b46a8;--unkbg:#ece8fa;--due:#946200;--duebg:#fff2d2;--na:#6b7f94;--nabg:#edf1f5}
+*{box-sizing:border-box}
+html{font-size:16px}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Segoe UI",system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;line-height:1.45}
+header{padding:18px 28px 6px}
+h1{margin:0;font-size:28px;letter-spacing:-.3px}
+.sub{color:var(--mute);font-size:16px;margin-top:2px}
+.wrap{max-width:1500px;margin:0 auto;padding:0 20px 30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:16px;box-shadow:0 1px 3px rgba(31,111,208,.07)}
+.card h2{margin:0 0 10px;font-size:19px;display:flex;align-items:center;gap:10px}
+.card h2 .n{background:var(--blue);color:#fff;border-radius:50%;width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;font-size:15px}
+.card h3{margin:14px 0 6px;font-size:16px;color:var(--blue)}
+.presets{display:flex;flex-wrap:wrap;gap:8px;padding:0 0 6px}
+.presets button{font:inherit;font-size:15px;border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:20px;padding:7px 14px;cursor:pointer}
+.presets button:hover{border-color:var(--blue);background:var(--blue2)}
+.presets button.on{background:var(--blue);color:#fff;border-color:var(--blue)}
+#pdesc{background:#fff;border:1px dashed var(--line);border-radius:10px;padding:8px 14px;margin:8px 0 12px;color:var(--ink);min-height:40px}
+#bar{position:sticky;top:0;z-index:20;background:rgba(234,243,252,.96);padding:8px 0 10px;backdrop-filter:blur(3px)}
+#barin{background:#fff;border:1px solid var(--line);border-radius:12px;padding:10px 16px;display:flex;flex-wrap:wrap;gap:12px;align-items:center;box-shadow:0 2px 6px rgba(31,111,208,.12)}
+.badge{display:inline-block;border-radius:8px;padding:3px 12px;font-weight:700;font-size:15px;letter-spacing:.3px;white-space:nowrap}
+.badge.big{font-size:22px;padding:6px 18px;border-radius:10px}
+.s-ok,.s-COMPLIANT{background:var(--okbg);color:var(--ok);border:1px solid #9ad3b4}
+.s-bad,.s-NON-COMPLIANT,.s-FAIL{background:var(--badbg);color:var(--bad);border:1px solid #efa6a6}
+.s-unk,.s-UNKNOWN{background:var(--unkbg);color:var(--unk);border:1px solid #bdb1ea}
+.s-due,.s-NOT-YET-DUE,.s-DUE{background:var(--duebg);color:var(--due);border:1px solid #ecc86a}
+.s-na,.s-N-A,.s-OFF{background:var(--nabg);color:var(--na);border:1px solid #cdd7e1}
+.s-OK{background:var(--okbg);color:var(--ok);border:1px solid #9ad3b4}
+.pill{display:inline-flex;align-items:center;gap:6px;font-size:15px}
+.pill b{color:var(--mute);font-weight:600}
+.grid{display:grid;grid-template-columns:minmax(380px,460px) 1fr;gap:20px;align-items:start}
+@media(max-width:1000px){.grid{grid-template-columns:1fr}}
+label{font-size:15px}
+.row{display:grid;grid-template-columns:1fr 128px;gap:4px 10px;align-items:center;padding:6px 8px;border-left:4px solid transparent;border-radius:6px}
+.row.chg{border-left-color:#f0a020;background:#fff8ea}
+.row.wide{grid-template-columns:1fr}
+.row .lab{font-size:15px}
+.row .key{font-family:Consolas,"SF Mono",Menlo,monospace;font-size:13px;background:var(--blue2);color:#154f98;border-radius:5px;padding:1px 6px;display:inline-block;margin-top:2px}
+.row .def{font-size:12.5px;color:#a56800;margin-left:6px}
+input,select{font:inherit;font-size:15px;border:1px solid #aac4e2;border-radius:7px;padding:5px 8px;background:#fff;color:var(--ink);width:100%}
+input[type=checkbox]{width:20px;height:20px;padding:0}
+input:focus,select:focus{outline:2px solid #79aef0;border-color:var(--blue)}
+.f2{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px}
+.f2 .full{grid-column:1/3}
+.fl{display:flex;flex-direction:column;gap:3px;font-size:14px;color:var(--mute)}
+.fl input,.fl select{color:var(--ink)}
+.hint{font-size:13.5px;color:var(--mute)}
+button.mini{font:inherit;font-size:14px;border:1px solid var(--line);background:#fff;border-radius:7px;padding:4px 10px;cursor:pointer;color:var(--ink)}
+button.mini:hover{background:var(--blue2);border-color:var(--blue)}
+details{margin:8px 0}
+summary{cursor:pointer;font-weight:600;color:var(--blue);padding:3px 0}
+table{border-collapse:collapse;width:100%;font-size:14.5px}
+th,td{text-align:left;padding:5px 8px;border-bottom:1px solid #e3edf8;vertical-align:top}
+th{color:var(--mute);font-weight:600;font-size:13.5px}
+td.dis,tr.dis td{color:#9db0c4}
+.tier{border:1px solid var(--line);border-radius:12px;margin-bottom:14px;overflow:hidden;background:#fff}
+.tier .th{display:flex;align-items:center;gap:12px;padding:10px 16px;background:var(--blue2);border-bottom:1px solid var(--line)}
+.tier .th .t{font-size:19px;font-weight:700}
+.tier .th .cnt{margin-left:auto;font-size:16px;color:var(--ink)}
+.tier .tb{padding:12px 16px}
+.rule{font-size:14.5px;color:var(--mute);margin-bottom:8px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 10px}
+.chip{font-size:14px;border-radius:16px;padding:3px 11px;border:1px solid;white-space:nowrap}
+.chip.ok{background:var(--okbg);color:var(--ok);border-color:#9ad3b4}
+.chip.bad{background:var(--badbg);color:var(--bad);border-color:#efa6a6;font-weight:600}
+.chip.pre{background:#f1f4f8;color:#8294a8;border-color:#d6dee7}
+.chip.pend{background:#fff;color:#7d90a5;border:1px dashed #a9b9ca}
+.why{border-left:4px solid var(--line);padding:2px 0 2px 12px;margin:8px 0}
+.why.ok{border-color:#53b17f}.why.bad{border-color:#e06a6a}.why.due{border-color:#e2b341}.why.unk{border-color:#8f7bd6}.why.na{border-color:#b8c6d4}.why.note{border-color:#e9b44c;background:#fffaf0}
+.why p{margin:3px 0;font-size:16px}
+code.k{font-family:Consolas,"SF Mono",Menlo,monospace;font-size:13.5px;background:var(--blue2);color:#154f98;border-radius:5px;padding:1px 6px;white-space:nowrap}
+.ladder{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:10px 0 4px}
+.ladder .lb{font-size:14.5px;border-radius:8px;padding:5px 10px;border:1px solid #cdd9e6;color:#8294a8;background:#f6f9fc}
+.ladder .lb.win{color:#fff;font-weight:700;border-width:2px}
+.ladder .lb.win.s-NON-COMPLIANT{background:var(--bad);border-color:var(--bad)}
+.ladder .lb.win.s-UNKNOWN{background:var(--unk);border-color:var(--unk)}
+.ladder .lb.win.s-NOT-YET-DUE{background:#c88a00;border-color:#c88a00}
+.ladder .lb.win.s-COMPLIANT{background:var(--ok);border-color:var(--ok)}
+.ladder .gt{color:var(--mute);font-weight:700}
+.legend{display:flex;flex-wrap:wrap;gap:14px;font-size:13.5px;color:var(--mute);margin:4px 0 8px}
+.legend span{display:inline-flex;align-items:center;gap:5px}
+svg text{font-family:inherit}
+.err{background:var(--badbg);border:1px solid #efa6a6;color:#7d1d1d;border-radius:12px;padding:14px 18px;margin-bottom:16px;font-size:16px}
+.err pre{margin:6px 0 0;font-family:Consolas,monospace;font-size:14px;white-space:pre-wrap}
+ul.rules{margin:4px 0 0;padding-left:20px;font-size:15px}
+ul.rules li{margin:3px 0}
+footer{color:var(--mute);font-size:13.5px;text-align:center;padding:6px 20px 28px;max-width:1100px;margin:0 auto}
+.warnc{color:#8a5a00}
+.exbox{border:1px dashed #9bb8dc;border-radius:10px;padding:10px 14px;margin-top:8px;background:#f6faff}
+@media print{#bar{position:static}}
+</style></head><body>
+<header>
+ <h1>How the backup compliance script decides: COMPLIANT or NON-COMPLIANT</h1>
+ <div class="sub">Pick a cluster creation date, change the conf settings, and watch the verdict change. Simulates <code class="k">rds_backup_compliance_report.sh</code> v1.7.2 exactly as <code class="k">lib/backup.jq</code> evaluates it. No AWS calls, works offline.</div>
+</header>
+<div class="wrap">
+ <div class="presets" id="presets"></div>
+ <div id="pdesc"></div>
+ <div id="bar"><div id="barin"></div></div>
+ <div class="grid">
+  <div id="left">
+   <div class="card"><h2><span class="n">1</span>The cluster</h2>
+    <div class="f2">
+     <label class="fl full">Cluster name<input id="s_id" value="orders-aurora"></label>
+     <label class="fl">Engine<input id="s_engine" value="aurora-postgresql"></label>
+     <label class="fl">Role<select id="s_role"><option value="primary">Normal cluster (primary)</option><option value="replica">Read replica</option><option value="secondary">Global-database secondary</option></select></label>
+     <label class="fl"><b style="color:var(--ink)">Cluster creation date (UTC)</b><input type="date" id="s_created"></label>
+     <label class="fl">Creation time (UTC)<input type="time" id="s_ctime" value="09:30"></label>
+     <label class="fl"><b style="color:var(--ink)">Report run date (UTC)</b><input type="date" id="s_run"></label>
+     <label class="fl">Run time (UTC)<input type="time" id="s_rtime" value="12:00"></label>
+     <label class="fl full">RDS automated-backup retention set on the cluster (days)<input type="number" min="0" id="s_ret" value="7"></label>
+    </div>
+    <div class="hint" style="margin-top:6px"><button class="mini" id="b_now">Run date = now</button> <span id="s_age"></span></div>
+    <label style="display:flex;gap:8px;align-items:center;margin-top:10px"><input type="checkbox" id="s_snapfail"> Simulate: AWS call to read automated snapshots failed</label>
+    <label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="s_bkfail"> Simulate: AWS call to read AWS Backup points failed</label>
+   </div>
+
+   <div class="card"><h2><span class="n">2</span>Conf settings <span class="hint" style="font-weight:400">rds_backup_compliance_report.conf</span></h2>
+    <div class="hint">Prefilled with the repo defaults. Orange = changed. The other settings in the file (regions, output, email, ...) do not affect the verdict.</div>
+    <div id="conf"></div>
+    <details id="adv"><summary>Advanced settings (rarely changed)</summary><div id="confadv"></div></details>
+    <button class="mini" id="b_reset">Reset conf to repo defaults</button>
+    <div class="hint" id="confdiff" style="margin-top:8px"></div>
+   </div>
+
+   <div class="card"><h2><span class="n">3</span>What really runs in AWS</h2>
+    <div class="hint">The AWS Backup plan that produces the weekly / monthly points. Compare it with the conf: a mismatch is what the script catches.</div>
+    <div class="f2" style="margin-top:8px">
+     <label class="fl">Weekly rule runs on<select id="p_wd"></select></label>
+     <label class="fl">Weekly points kept (days)<input type="number" min="1" id="p_wret" value="30"></label>
+     <label class="fl">Monthly rule: first ...<select id="p_md"></select></label>
+     <label class="fl">Monthly points kept (days)<input type="number" min="1" id="p_mret" value="365"></label>
+     <label class="fl">RDS backup time (UTC)<input type="time" id="p_dtime" value="03:00"></label>
+     <label class="fl">AWS Backup run time (UTC)<input type="time" id="p_atime" value="05:00"></label>
+    </div>
+    <h3>Extra AWS Backup points (optional)</h3>
+    <div id="extras"></div>
+    <div class="f2" style="grid-template-columns:1fr 100px auto;align-items:end">
+     <label class="fl">Date<input type="date" id="x_date"></label><label class="fl">Kept (days)<input type="number" id="x_ret" value="730"></label><button class="mini" id="x_add">Add point</button>
+    </div>
+   </div>
+
+   <div class="card"><h2><span class="n">4</span>Fine-tune single snapshots</h2>
+    <div class="hint">Untick a snapshot to make it missing, shift it by a few days, or give one point a different retention.</div>
+    <details><summary>Daily (RDS automated)</summary><div id="t_daily"></div></details>
+    <details><summary>Weekly (AWS Backup)</summary><div id="t_weekly"></div></details>
+    <details><summary>Monthly (AWS Backup)</summary><div id="t_monthly"></div></details>
+   </div>
+
+   <div class="card"><h2><span class="n">5</span>Compliance exception (optional)</h2>
+    <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="e_on"> Add this line to <code class="k">compliance_exceptions.conf</code></label>
+    <div class="f2" style="margin-top:8px">
+     <label class="fl">Scope<select id="e_scope"><option value="backup">backup</option><option value="patch,backup">patch,backup</option><option value="patch">patch (not used by this script)</option></select></label>
+     <label class="fl"><b style="color:var(--ink)">Expires (mandatory, last valid day, UTC)</b><input type="date" id="e_exp"></label>
+     <label class="fl full">Reason<input id="e_reason" value="CHG-1234 vendor migration, owner dba-team"></label>
+    </div>
+    <div class="hint" id="e_line" style="margin-top:6px;font-family:Consolas,monospace"></div>
+   </div>
+  </div>
+
+  <div id="right"></div>
+ </div>
+</div>
+<footer>This page is a simulator of the rules in <b>rds_backup_compliance_report.sh v1.7.2</b> (<code class="k">lib/backup.jq</code>, repo <code class="k">manideepgrandhi/rds-backup-compliance</code> @ 7af1c15); it is not the script and it never calls AWS. Dates are UTC, like the script. The real report is the source of truth.</footer>
+
+<script>
+/* ===== CORE: a JavaScript port of evaluate / sched / rp_class / exceptions from lib/backup.jq (script v1.7.2) ===== */
+var SPD = 86400, SPH = 3600, SPARE_SLOTS = 2, MONTHS_AHEAD = 14, EPOCH_WEEKDAY = 4;
+var DOW = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+var WDNAME = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+var MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+var WD_CODE = {sun:0,mon:1,tue:2,wed:3,thu:4,fri:5,sat:6};
+
+/* repo defaults: rds_backup_compliance_report.conf (settings that affect classification) */
+var DEFAULT_CONF = {
+  "daily":"7", "daily-max-age":"26",
+  "weekly-weekday":"sat", "weekly-retention-days":"30",
+  "monthly-rule":"first-sun", "monthly":"12", "monthly-retention-days":"365",
+  "replica-exempt-engines":"oracle-*,aurora-*",
+  "weekly":"auto", "weekly-window-days":"", "weekly-days":"25-40", "monthly-days":"300-400",
+  "tolerance-days":"1", "daily-retention-days":"", "retention-tolerance-days":"1", "yearly":"0"
+};
+
+/* ---- day-number helpers (days since 1970-01-01, UTC) ---- */
+function dayOf(epoch){ return Math.floor(epoch / SPD); }
+function dow(d){ return (((d + EPOCH_WEEKDAY) % 7) + 7) % 7; }
+function dgm(d){ var x = new Date(d * SPD * 1000); return [x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate()]; }
+function p2(n){ return n < 10 ? "0" + n : "" + n; }
+function dshort(d){ var g = dgm(d); return DOW[dow(d)] + " " + p2(g[2]) + " " + MON[g[1]]; }
+function dlong(d){ var g = dgm(d); return p2(g[2]) + " " + MON[g[1]] + " " + g[0]; }
+function dfull(d){ var g = dgm(d); return DOW[dow(d)] + " " + p2(g[2]) + " " + MON[g[1]] + " " + g[0]; }
+function diso(d){ var g = dgm(d); return g[0] + "-" + p2(g[1] + 1) + "-" + p2(g[2]); }
+function mlabel(d){ var g = dgm(d); return MON[g[1]] + " " + g[0]; }
+function monthIndex(epoch){ var x = new Date(epoch * 1000); return x.getUTCFullYear() * 12 + x.getUTCMonth(); }
+function firstdow(mi, wd){
+  var d1 = Date.UTC(Math.floor(mi / 12), ((mi % 12) + 12) % 12, 1) / 1000 / SPD;
+  return d1 + (((wd - dow(d1) + 7) % 7));
+}
+function r1(x){ return Math.round(x * 10) / 10; }
+function jqIdx(a, i){ if (i < 0) i += a.length; return (i >= 0 && i < a.length) ? a[i] : null; }
+function isoToDay(s){ return dayOf(Date.parse(s + "T00:00:00Z") / 1000); }
+function isoToEpoch(date, time){ return Date.parse(date + "T" + (time || "00:00") + ":00Z") / 1000; }
+
+/* ---- conf -> $cfg (the same mapping as cfg_json / set_opt_apply in the shell script) ---- */
+function parseConf(c){
+  var errs = [], cfg = {};
+  function intOk(key){ var v = String(c[key] == null ? "" : c[key]).trim(); if (!/^[0-9]+$/.test(v)) { errs.push(key + " must be a whole number (got '" + v + "')"); return 0; } return parseInt(v, 10); }
+  function intOrEmpty(key){ var v = String(c[key] == null ? "" : c[key]).trim(); if (v === "") return null; return intOk(key); }
+  function range(key){ var v = String(c[key] == null ? "" : c[key]).trim(); var m = /^([0-9]+)-([0-9]+)$/.exec(v); if (!m) { errs.push(key + " must be MIN-MAX (got '" + v + "')"); return [0, 0]; } return [parseInt(m[1], 10), parseInt(m[2], 10)]; }
+  cfg.daily = intOk("daily"); cfg.daily_max_age_h = intOk("daily-max-age");
+  var w = String(c["weekly"] == null ? "" : c["weekly"]).trim();
+  cfg.weekly = (w === "auto") ? "auto" : intOk("weekly");
+  cfg.monthly = intOk("monthly"); cfg.yearly = intOk("yearly");
+  var wr = range("weekly-days"), mr = range("monthly-days");
+  cfg.weekly_min_days = wr[0]; cfg.weekly_max_days = wr[1]; cfg.monthly_min_days = mr[0]; cfg.monthly_max_days = mr[1];
+  var wd = String(c["weekly-weekday"] || "").trim().toLowerCase();
+  if (!(wd in WD_CODE)) { errs.push("weekly-weekday must be sun, mon, tue, wed, thu, fri or sat (got '" + wd + "')"); wd = "sat"; }
+  cfg.weekly_weekday = WD_CODE[wd];
+  var mrule = String(c["monthly-rule"] || "").trim().toLowerCase();
+  var mm = /^first-(sun|mon|tue|wed|thu|fri|sat)$/.exec(mrule);
+  if (!mm) { errs.push("monthly-rule must be first-sun .. first-sat (got '" + mrule + "')"); mm = [0, "sun"]; }
+  cfg.monthly_weekday = WD_CODE[mm[1]];
+  cfg.tolerance_days = intOk("tolerance-days");
+  if (cfg.tolerance_days > 3) errs.push("tolerance-days must be 0-3 (got '" + cfg.tolerance_days + "')");
+  var wwd = intOrEmpty("weekly-window-days");
+  if (wwd !== null && wwd < 7) errs.push("weekly-window-days must be at least 7 (or empty = weekly-retention-days)");
+  cfg.weekly_retention_days = intOk("weekly-retention-days"); cfg.monthly_retention_days = intOk("monthly-retention-days");
+  cfg.weekly_window_days = (wwd === null) ? cfg.weekly_retention_days : wwd;
+  var dr = intOrEmpty("daily-retention-days"); cfg.daily_retention_days = (dr === null) ? cfg.daily : dr;
+  cfg.ret_tolerance_days = intOk("retention-tolerance-days");
+  cfg.replica_exempt_engines = String(c["replica-exempt-engines"] || "").split(",").map(function(s){ return s.trim(); }).filter(function(s){ return s !== ""; });
+  if (!(cfg.weekly_min_days <= cfg.weekly_max_days && cfg.weekly_max_days < cfg.monthly_min_days && cfg.monthly_min_days <= cfg.monthly_max_days))
+    errs.push("Need weekly-days MIN <= MAX < monthly-days MIN <= MAX (got weekly " + cfg.weekly_min_days + "-" + cfg.weekly_max_days + ", monthly " + cfg.monthly_min_days + "-" + cfg.monthly_max_days + ")");
+  return { errors: errs, cfg: cfg };
+}
+
+/* ---- retention classes ---- */
+function rpRet(p){ if (p.expires_epoch != null && p.created_epoch != null) return Math.round((p.expires_epoch - p.created_epoch) / SPD); return (p.ret_days != null) ? p.ret_days : null; }
+function rpLive(p){ return (p.status === "COMPLETED" || p.status === "AVAILABLE") && !p.continuous; }
+function rpClass(p, cfg){
+  var d = rpRet(p);
+  if (d != null && d >= cfg.weekly_min_days && d <= cfg.weekly_max_days) return "weekly";
+  if (d != null && d >= cfg.monthly_min_days && d <= cfg.monthly_max_days) return "monthly";
+  if (cfg.yearly > 0 && (d == null || d > cfg.monthly_max_days)) return "yearly";
+  return "mismatch";
+}
+function expRet(cl, cfg){ return cl === "weekly" ? cfg.weekly_retention_days : (cl === "monthly" ? cfg.monthly_retention_days : null); }
+function rmisNote(cl, ret, cfg){ var e = expRet(cl, cfg); return (e != null && ret != null && Math.abs(ret - e) > cfg.ret_tolerance_days) ? (cl + " point has " + ret + "d, expected " + e + "d") : null; }
+function glob2re(g){ return new RegExp("^" + g.replace(/\*/g, "`").replace(/\./g, "\\.").replace(/`/g, ".*") + "$"); }
+function engExempt(eng, cfg){ var e = (eng || "").toLowerCase(); return cfg.replica_exempt_engines.some(function(g){ return glob2re(g.toLowerCase()).test(e); }); }
+function roleExempt(r, cfg){ return (r.global_role === "secondary" || r.global_role === "replica") && engExempt(r.engine, cfg); }
+
+/* ---- sched / stx: the heart of the check (same arguments and order as backup.jq) ---- */
+function sched(cand, pts, tol, n, low, cday, now){
+  var c = [];
+  cand.forEach(function(d){
+    var hit = pts.some(function(p){ return p >= (d - tol) * SPD && p < (d + 1 + tol) * SPD; });
+    var closed = ((d + 1 + tol) * SPD) <= now;
+    if (hit || closed) c.push({ d: d, hit: hit, closed: closed });
+  });
+  var full = (n == null) ? c.filter(function(x){ return x.d > low; }) : c.slice(0, Math.max(0, n));
+  var exp = full.filter(function(x){ return x.d > cday; });
+  var droppedOpen = cand.filter(function(d){ return !c.some(function(x){ return x.d === d; }); });
+  return { have: exp.filter(function(x){ return x.hit; }).length, need: exp.length, target: full.length,
+           _days: exp.map(function(x){ return x.d; }),
+           missing: exp.filter(function(x){ return !x.hit; }).map(function(x){ return x.d; }).reverse(),
+           _full: full, _exp: exp, _open: droppedOpen };
+}
+function stx(c){ return c.have < c.need ? "FAIL" : (c.need < c.target ? "DUE" : "OK"); }
+
+/* ---- evaluate: one resource -> one row (status, per-schedule results, gaps) ---- */
+function evaluate(r, cfg, now){
+  var today = dayOf(now);
+  var cday = (r.created_epoch == null) ? -1 : dayOf(r.created_epoch);
+  var age = (now - (r.created_epoch == null ? now : r.created_epoch)) / SPD;
+  var tol = cfg.tolerance_days;
+  var snaps = r.snapshots || [];
+  var auto = snaps.filter(function(s){ return s.kind === "automated" && (s.status == null ? "available" : s.status) === "available"; });
+  var lastAuto = auto.length ? Math.max.apply(null, auto.map(function(s){ return s.created_epoch; })) : null;
+  var rps = snaps.filter(function(s){ return s.kind === "backup" && rpLive(s) && (s.expires_epoch == null || s.expires_epoch > now); })
+                 .map(function(s){ return Object.assign({}, s, { cls: rpClass(s, cfg), ret: rpRet(s) }); });
+  var autoEp = auto.map(function(s){ return s.created_epoch; });
+  var retention = (r.retention == null ? 0 : r.retention);
+  var daily, i;
+  if (roleExempt(r, cfg)) daily = { st: "N/A", have: null, need: null, gap: "", missing: [] };
+  else if (r.snap_ok === false) daily = { st: "UNKNOWN", have: null, need: cfg.daily, gap: "snapshots unreadable", missing: [] };
+  else {
+    var cand = []; for (i = 0; i < cfg.daily + SPARE_SLOTS; i++) cand.push(today - i);
+    var s = sched(cand, autoEp, 0, cfg.daily, null, cday, now);
+    var h = (lastAuto == null) ? null : r1((now - lastAuto) / SPH);
+    var g = [];
+    if (retention < cfg.daily) g.push("daily: retention " + retention + "d < " + cfg.daily + "d");
+    if (h == null) { if (age * 24 > cfg.daily_max_age_h) g.push("daily: no automated backup"); }
+    else if (h > cfg.daily_max_age_h) g.push("daily: last automated " + h + "h ago");
+    if (stx(s) === "FAIL") g.push("daily " + s.have + "/" + s.need + " missing " + s.missing.map(dshort).join(", "));
+    daily = Object.assign({}, s, { last_h: h, gap: g.join("; "),
+      full_d: (s.need < s.target) ? (cday + s.target) : null,
+      st: g.length > 0 ? "FAIL" : ((stx(s) === "DUE" || h == null) ? "DUE" : "OK") });
+  }
+  var wd = cfg.weekly_weekday, md = cfg.monthly_weekday;
+  var wn = (cfg.weekly === "auto") ? null : cfg.weekly;
+  var lastw = today - (((dow(today) - wd + 7) % 7));
+  var mi = monthIndex(now);
+  var wmy;
+  if (r.global_role === "secondary" || r.global_role === "replica") wmy = { weekly: { st: "N/A" }, monthly: { st: "N/A" }, yearly: { st: "N/A" } };
+  else if (r.backup_ok === false) wmy = { weekly: { st: "UNKNOWN" }, monthly: { st: "UNKNOWN" }, yearly: { st: "UNKNOWN" } };
+  else {
+    var wp = rps.filter(function(p){ return p.cls === "weekly"; }).map(function(p){ return p.created_epoch; });
+    var mp = rps.filter(function(p){ return p.cls === "monthly"; }).map(function(p){ return p.created_epoch; });
+    var wc = [], nw = (wn == null ? Math.floor(cfg.weekly_window_days / 7) : wn) + SPARE_SLOTS + 1;
+    for (i = 0; i < nw; i++) wc.push(lastw - 7 * i);
+    var w = sched(wc, wp, tol, wn, today - cfg.weekly_window_days, cday, now);
+    var mc = []; for (i = 0; i < cfg.monthly + SPARE_SLOTS; i++) mc.push(firstdow(mi - i, md));
+    var m = sched(mc, mp, tol, cfg.monthly, null, cday, now);
+    var wfull = null, mfull = null;
+    if (w.need < w.target) {
+      if (wn == null) wfull = cday + cfg.weekly_window_days;
+      else { var f = cday + 1; wfull = f + (((wd - dow(f) + 7) % 7)) + 7 * (wn - 1); }
+    }
+    if (m.need < m.target) {
+      var cm = monthIndex(r.created_epoch), lst = [];
+      for (i = 0; i < cfg.monthly + MONTHS_AHEAD; i++) { var fd = firstdow(cm + i, md); if (fd > cday) lst.push(fd); }
+      mfull = jqIdx(lst, cfg.monthly - 1);
+    }
+    var yearly;
+    if (cfg.yearly > 0) {
+      var yrs = {}; rps.forEach(function(p){ if (p.cls === "yearly") yrs[new Date(p.created_epoch * 1000).getUTCFullYear()] = 1; });
+      var y = Object.keys(yrs).length;
+      yearly = { have: y, need: cfg.yearly, target: cfg.yearly, missing: [], st: y >= cfg.yearly ? "OK" : (age < cfg.yearly * 365.25 ? "DUE" : "FAIL") };
+    } else yearly = { st: "OFF" };
+    wmy = { weekly: Object.assign({}, w, { st: stx(w), dfmt: "week", full_d: wfull }),
+            monthly: Object.assign({}, m, { st: stx(m), dfmt: "month", full_d: mfull }), yearly: yearly };
+  }
+  function mtxt(k, c){ return (c.missing || []).map(k === "monthly" ? mlabel : dshort).join(", "); }
+  var gaps = [];
+  if (daily.st === "FAIL") gaps.push(daily.gap);
+  if (daily.st === "UNKNOWN") gaps.push("daily: snapshots unreadable");
+  ["weekly", "monthly", "yearly"].forEach(function(k){
+    var v = wmy[k];
+    if (v.st === "FAIL") gaps.push(k + " " + v.have + "/" + v.need + ((v.missing || []).length > 0 ? " missing " + mtxt(k, v) : ""));
+  });
+  if (wmy.weekly.st === "UNKNOWN") gaps.push("AWS Backup recovery points unreadable");
+  var mis = rps.filter(function(p){ return p.cls === "mismatch"; });
+  var sts = [daily.st]; ["weekly", "monthly", "yearly"].forEach(function(k){ if (wmy[k].st !== "OFF") sts.push(wmy[k].st); });
+  var any = function(x){ return sts.indexOf(x) >= 0; };
+  var status = any("FAIL") ? "NON-COMPLIANT" : (any("UNKNOWN") ? "UNKNOWN" : (any("DUE") ? "NOT YET DUE" : "COMPLIANT"));
+  /* per recovery point: counted or not, and why (the HTML row detail of the real report) */
+  function wtxt(){ return "the weekly range " + cfg.weekly_min_days + "-" + cfg.weekly_max_days + "d (expected " + cfg.weekly_retention_days + "d)"; }
+  function mtxt2(){ return "the monthly range " + cfg.monthly_min_days + "-" + cfg.monthly_max_days + "d (expected " + cfg.monthly_retention_days + "d)"; }
+  function hitday(k, ep){ var ds = (wmy[k] && wmy[k]._days) || []; for (var j = 0; j < ds.length; j++) if (ep >= (ds[j] - tol) * SPD && ep < (ds[j] + 1 + tol) * SPD) return ds[j]; return null; }
+  var bk = snaps.filter(function(s){ return s.kind === "backup"; }).slice().sort(function(a, b){ return (b.created_epoch || 0) - (a.created_epoch || 0); });
+  var diag = bk.map(function(p){
+    var ret = rpRet(p), cl = rpClass(p, cfg), o;
+    if (p.continuous) o = { counted: false, reason: "continuous backup (point-in-time restore), not a snapshot: never counted" };
+    else if (!(p.status === "COMPLETED" || p.status === "AVAILABLE")) o = { counted: false, reason: "status " + (p.status || "unknown") + ": only COMPLETED / AVAILABLE count" };
+    else if (p.expires_epoch != null && p.expires_epoch <= now) o = { counted: false, reason: "expired" };
+    else if (roleExempt(r, cfg)) o = { counted: false, reason: "not evaluated: replica/secondary exempt (replica-exempt-engines)" };
+    else if (wmy.weekly.st === "N/A") o = { counted: false, reason: "not evaluated: global secondary / replica (daily only)" };
+    else if (wmy.weekly.st === "UNKNOWN") o = { counted: false, reason: "not evaluated: recovery points unreadable" };
+    else if (cl === "mismatch") o = { counted: false, reason: ret == null ? "no expiry (never expires): not weekly or monthly" + (cfg.yearly > 0 ? "" : "; yearly check is off") : "retention " + ret + "d is outside " + wtxt() + " and " + mtxt2() };
+    else if (cl === "yearly") o = { counted: true, reason: "yearly (" + new Date(p.created_epoch * 1000).getUTCFullYear() + "), retention " + (ret == null ? "never expires" : ret + "d") };
+    else {
+      var hd = hitday(cl, p.created_epoch), rn = rmisNote(cl, ret, cfg);
+      if (hd != null) o = { counted: true, for_day: hd, ret_mismatch: rn != null, reason: cl + ": counts for " + (cl === "monthly" ? dshort(hd) + " (first " + WDNAME[md] + ")" : dshort(hd)) + ", " + (rn != null ? "but " + rn : "retention " + ret + "d as expected") };
+      else o = { counted: false, reason: "retention " + ret + "d = " + cl + ", but " + dshort(dayOf(p.created_epoch)) + " is not within \u00b1" + tol + "d of a checked " + (cl === "weekly" ? WDNAME[wd] : "first " + WDNAME[md]) +
+                 (((wmy[cl]._days || []).length > 0) ? " (" + wmy[cl]._days.map(dshort).join(", ") + ")" : "") };
+    }
+    return Object.assign({ id: p.id, c: p.created_epoch, ret: ret, cls: cl, date_day: dayOf(p.created_epoch) }, o);
+  });
+  /* warnings: retention doesn't match (never counted) + retention highlight (counted, differs from expected) */
+  var warnings = mis.length === 0 ? "" : "retention doesn't match: " + mis.length + " recovery point" + (mis.length === 1 ? "" : "s") + " (" +
+    Object.keys(mis.reduce(function(a, p){ a[p.ret == null ? "never expires" : p.ret + "d"] = 1; return a; }, {})).sort().join(", ") + ") not counted";
+  var notes = [];
+  if (retention > cfg.daily_retention_days && r.snap_ok !== false) notes.push("daily retention " + retention + "d, expected " + cfg.daily_retention_days + "d");
+  diag.forEach(function(d){ if (d.ret_mismatch === true) notes.push(rmisNote(d.cls, d.ret, cfg)); });
+  var cnt = {}; notes.forEach(function(n){ cnt[n] = (cnt[n] || 0) + 1; });
+  var rmt = Object.keys(cnt).sort().map(function(n){ return cnt[n] > 1 ? n + " (x" + cnt[n] + ")" : n; });
+  var nyd = [];
+  [["daily", daily], ["weekly", wmy.weekly], ["monthly", wmy.monthly], ["yearly", wmy.yearly]].forEach(function(kv){
+    var v = kv[1], fd = v.full_d;
+    if (fd != null) { v.full_on = dlong(fd); v.full_on_iso = diso(fd) + " " + DOW[dow(fd)]; nyd.push(kv[0] + " full on " + v.full_on); }
+  });
+  return { identifier: r.id, account_id: r.account_id, status: status, daily: daily, weekly: wmy.weekly, monthly: wmy.monthly, yearly: wmy.yearly,
+           gaps: gaps.join("; "), not_yet_due: nyd.join("; "), warnings: warnings, retention_mismatch: rmt.join("; "),
+           age_days: r.created_epoch == null ? null : Math.floor(age), last_automated: lastAuto, diag: diag, today: today, cday: cday,
+           lastw: lastw, rps: rps };
+}
+
+/* ---- compliance exceptions (backup scope) ---- */
+function excLeft(expires, now){ return isoToDay(expires) - dayOf(now); }
+function applyException(row, exc, now){
+  var out = Object.assign({}, row, { exception: "no", exception_reason: "", exception_expires: "", exception_flag: "", actual_status: row.status });
+  if (!exc || exc.account !== row.account_id || exc.identifier.toLowerCase() !== row.identifier.toLowerCase() || exc.scopes.indexOf("backup") < 0) return out;
+  var d = excLeft(exc.expires, now), ok = row.status === "COMPLIANT";
+  out.exception = d < 0 ? "expired" : "yes"; out.exception_reason = exc.reason; out.exception_expires = exc.expires; out.exception_left = d;
+  out.exception_flag = d < 0 ? "exception expired" : [ok ? "no longer needed" : null, d <= 14 ? "expiring soon" : null].filter(Boolean).join(", ");
+  if (out.exception === "yes") out.status = "COMPLIANT";
+  return out;
+}
+
+/* ---- simulator world: what exists in AWS for the cluster -> a resource document (collect.jq format) ---- */
+function parseHM(s){ var m = /^(\d{1,2}):(\d{2})$/.exec(s || "00:00"); return m ? (parseInt(m[1], 10) * 3600 + parseInt(m[2], 10) * 60) : 0; }
+function buildResource(st, now){
+  var created = isoToEpoch(st.created, st.createdTime);
+  var today = dayOf(now), snaps = [], ov = st.ov || {}, n = 0;
+  var dsec = parseHM(st.dailyTime), asec = parseHM(st.awsTime);
+  var ret = parseInt(st.rdsRetention, 10); if (isNaN(ret)) ret = 0;
+  function add(o){ snaps.push(o); }
+  var d, t;
+  for (d = today - 60; d <= today; d++) {                       /* RDS automated backups: one a day at the backup time, kept for the retention period */
+    t = d * SPD + dsec;
+    if (t > created && t <= now && (now - t) <= ret * SPD && !(ov["d:" + diso(d)] && ov["d:" + diso(d)].off))
+      add({ kind: "automated", id: "rds:" + st.id + "-" + diso(d), created_epoch: t, status: "available", expires_epoch: null });
+  }
+  function point(kind, key, dd, defRet){
+    var o = ov[kind + ":" + diso(dd)] || {};
+    if (o.off) return;
+    var tt = dd * SPD + asec + (o.offset ? parseInt(o.offset, 10) * SPD : 0);
+    if (tt <= created || tt > now) return;
+    var rr = (o.ret != null && o.ret !== "") ? parseInt(o.ret, 10) : defRet;
+    add({ kind: "backup", id: "awsbackup:" + kind + "-" + diso(dd), created_epoch: tt, status: "COMPLETED", expires_epoch: tt + rr * SPD, vault: "Default" });
+  }
+  for (d = today - 130; d <= today; d++) if (dow(d) === st.planWeekday) point("w", "w", d, parseInt(st.planWeeklyRet, 10));
+  var mi = monthIndex(now);
+  for (var k = 0; k <= 40; k++) point("m", "m", firstdow(mi - k, st.planMonthWeekday), parseInt(st.planMonthlyRet, 10));
+  (st.extra || []).forEach(function(e, i){
+    var tt = isoToEpoch(e.date, st.awsTime), rr = parseInt(e.ret, 10);
+    if (isNaN(tt) || isNaN(rr) || tt <= created || tt > now) return;
+    add({ kind: "backup", id: "awsbackup:extra-" + i, created_epoch: tt, status: "COMPLETED", expires_epoch: tt + rr * SPD, vault: "Default" });
+  });
+  return { account_id: "111111111111", region: "us-east-1", id: st.id || "my-aurora-cluster", type: "cluster", engine: st.engine,
+           engine_version: "15.4", created_epoch: created, retention: ret, global_cluster: null,
+           global_role: st.role === "primary" ? "primary" : st.role, snap_ok: st.snapOk !== false, backup_ok: st.backupOk !== false, snapshots: snaps };
+}
+/* ===== END CORE ===== */
+
+</script>
+<script>
+(function(){
+"use strict";
+var $ = function(id){ return document.getElementById(id); };
+function esc(s){ return String(s).replace(/[&<>"']/g, function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]; }); }
+function K(k){ return '<code class="k">' + esc(k) + '</code>'; }
+function plural(n, w){ return n + " " + w + (n === 1 ? "" : "s"); }
+var WD3 = ["sun","mon","tue","wed","thu","fri","sat"];
+
+/* ---------- conf form ---------- */
+var SPEC = [
+ {k:"daily", lab:"Days of daily backups required (RDS automated)", t:"int"},
+ {k:"daily-max-age", lab:"Newest automated backup may be this many hours old", t:"int"},
+ {k:"weekly-weekday", lab:"Day the weekly AWS Backup should run", t:"wd"},
+ {k:"weekly-retention-days", lab:"Expected keep-time of weekly points (also the weekly look-back, in days)", t:"int"},
+ {k:"monthly-rule", lab:"Monthly backup day (first <weekday> of the month)", t:"mr"},
+ {k:"monthly", lab:"Number of months of monthly points to check", t:"int"},
+ {k:"monthly-retention-days", lab:"Expected keep-time of monthly points (days)", t:"int"},
+ {k:"replica-exempt-engines", lab:"Replicas / secondaries of these engines are always COMPLIANT", t:"text"}
+];
+var ADV = [
+ {k:"weekly", lab:"Weekly points expected: auto = every weekday in the window, or a number", t:"text"},
+ {k:"weekly-window-days", lab:"Weekly look-back in days (empty = weekly-retention-days)", t:"int?"},
+ {k:"weekly-days", lab:"Keep-time range (days) that makes a point count as weekly", t:"text"},
+ {k:"monthly-days", lab:"Keep-time range (days) that makes a point count as monthly", t:"text"},
+ {k:"tolerance-days", lab:"A point may be this many days before / after its scheduled day (0-3)", t:"int"},
+ {k:"daily-retention-days", lab:"Expected RDS retention (empty = same as daily); highlight only", t:"int?"},
+ {k:"retention-tolerance-days", lab:"Allowed keep-time difference before a point is highlighted", t:"int"},
+ {k:"yearly", lab:"Yearly AWS Backup points expected (0 = off)", t:"int"}
+];
+function buildConf(){
+  function mk(list){
+    return list.map(function(s){
+      var inp;
+      if (s.t === "wd") inp = '<select id="c_' + s.k + '">' + WD3.map(function(w){ return '<option value="' + w + '">' + w + '</option>'; }).join("") + '</select>';
+      else if (s.t === "mr") inp = '<select id="c_' + s.k + '">' + WD3.map(function(w){ return '<option value="first-' + w + '">first-' + w + '</option>'; }).join("") + '</select>';
+      else inp = '<input id="c_' + s.k + '" ' + (s.t.indexOf("int") === 0 ? 'inputmode="numeric"' : '') + '>';
+      return '<div class="row' + (s.k === "replica-exempt-engines" ? " wide" : "") + '" id="r_' + s.k + '"><div><div class="lab">' + esc(s.lab) + '</div><span class="key">' + s.k + '</span><span class="def" id="d_' + s.k + '"></span></div>' + inp + '</div>';
+    }).join("");
+  }
+  $("conf").innerHTML = mk(SPEC); $("confadv").innerHTML = mk(ADV);
+}
+function setConf(c){ Object.keys(DEFAULT_CONF).forEach(function(k){ $("c_" + k).value = (c && c[k] != null) ? c[k] : DEFAULT_CONF[k]; }); }
+function readConf(){ var c = {}; Object.keys(DEFAULT_CONF).forEach(function(k){ c[k] = $("c_" + k).value; }); return c; }
+
+/* ---------- state ---------- */
+var S = { ov: {}, extra: [] };
+function utcToday(){ var n = new Date(); return { date: n.toISOString().slice(0, 10), time: n.toISOString().slice(11, 16) }; }
+function dayStr(d){ return diso(d); }
+function readState(){
+  S.id = $("s_id").value.trim() || "my-cluster"; S.engine = $("s_engine").value.trim() || "aurora-postgresql"; S.role = $("s_role").value;
+  S.created = $("s_created").value; S.createdTime = $("s_ctime").value || "00:00"; S.run = $("s_run").value; S.runTime = $("s_rtime").value || "00:00";
+  S.rdsRetention = $("s_ret").value === "" ? "0" : $("s_ret").value;
+  S.snapOk = !$("s_snapfail").checked; S.backupOk = !$("s_bkfail").checked;
+  S.planWeekday = parseInt($("p_wd").value, 10); S.planMonthWeekday = parseInt($("p_md").value, 10);
+  S.planWeeklyRet = $("p_wret").value || "30"; S.planMonthlyRet = $("p_mret").value || "365";
+  S.dailyTime = $("p_dtime").value || "03:00"; S.awsTime = $("p_atime").value || "05:00";
+  S.excOn = $("e_on").checked; S.excScope = $("e_scope").value; S.excExpires = $("e_exp").value; S.excReason = $("e_reason").value;
+}
+function writeState(st){
+  $("s_id").value = st.id; $("s_engine").value = st.engine; $("s_role").value = st.role; $("s_created").value = st.created; $("s_ctime").value = st.createdTime;
+  $("s_run").value = st.run; $("s_rtime").value = st.runTime; $("s_ret").value = st.rdsRetention;
+  $("s_snapfail").checked = !st.snapOk; $("s_bkfail").checked = !st.backupOk;
+  $("p_wd").value = st.planWeekday; $("p_md").value = st.planMonthWeekday; $("p_wret").value = st.planWeeklyRet; $("p_mret").value = st.planMonthlyRet;
+  $("p_dtime").value = st.dailyTime; $("p_atime").value = st.awsTime;
+  $("e_on").checked = st.excOn; $("e_scope").value = st.excScope; $("e_exp").value = st.excExpires; $("e_reason").value = st.excReason;
+  S.ov = JSON.parse(JSON.stringify(st.ov || {})); S.extra = JSON.parse(JSON.stringify(st.extra || []));
+}
+function baseState(t){
+  t = t || utcToday(); var td = isoToDay(t.date);
+  return { id: "orders-aurora", engine: "aurora-postgresql", role: "primary", created: dayStr(td - 1100), createdTime: "09:30", run: t.date, runTime: t.time,
+    rdsRetention: "7", snapOk: true, backupOk: true, planWeekday: 6, planMonthWeekday: 0, planWeeklyRet: "30", planMonthlyRet: "365", dailyTime: "03:00", awsTime: "05:00",
+    excOn: false, excScope: "backup", excExpires: dayStr(td + 60), excReason: "CHG-1234 vendor migration, owner dba-team", ov: {}, extra: [] };
+}
+
+/* ---------- presets (all dates are relative to the run date) ---------- */
+function lastDow(d, wd){ return d - (((dow(d) - wd + 7) % 7)); }
+var PRESETS = [
+ {n:"All good", d:"A three-year-old cluster with every backup in place. Every tier is OK, so the cluster is COMPLIANT.", f:function(st){}},
+ {n:"Brand-new cluster", d:"Created today: it has not had time to produce the full history. Every tier is NOT YET DUE and each shows the date it becomes due. It is left out of the compliance %.", f:function(st,td){ st.created = dayStr(td); st.createdTime = "08:00"; st.runTime = "12:00"; }},
+ {n:"Young cluster (10 days)", d:"Ten days old: 7 daily backups already exist (OK) but only one or two Saturdays and no first-Sunday yet, so weekly and monthly are NOT YET DUE.", f:function(st,td){ st.created = dayStr(td - 10); }},
+ {n:"45-day-old cluster", d:"Weekly history is now complete (30-day window, OK), but the 12 monthly points will not exist for another year, so the cluster stays NOT YET DUE because of monthly.", f:function(st,td){ st.created = dayStr(td - 45); }},
+ {n:"Missing weekly", d:"The Saturday two weeks ago was never backed up. Weekly = FAIL, so the cluster is NON-COMPLIANT even though daily and monthly are fine.", f:function(st,td){ st.ov["w:" + dayStr(lastDow(td, 6) - 14)] = { off: true }; }},
+ {n:"Missing daily + young cluster", d:"A 45-day-old cluster (monthly NOT YET DUE) that also lost a daily backup two days ago. FAIL beats NOT YET DUE: NON-COMPLIANT.", f:function(st,td){ st.created = dayStr(td - 45); st.ov["d:" + dayStr(td - 2)] = { off: true }; }},
+ {n:"Weekly 1 day late (tolerance)", d:"Last week's point was taken on Sunday instead of Saturday. With tolerance-days=1 it still counts: COMPLIANT. Set tolerance-days to 0 and watch it fail.", f:function(st,td){ st.ov["w:" + dayStr(lastDow(td, 6) - 7)] = { offset: 1 }; }},
+ {n:"Monthly retention too short", d:"The AWS Backup plan keeps monthly points for only 90 days. 90 is outside monthly-days (300-400) so those points are ignored: monthly = FAIL, NON-COMPLIANT.", f:function(st){ st.planMonthlyRet = "90"; }},
+ {n:"Retention drift (highlight only)", d:"Weekly points are kept 35 days instead of 30. 35 is still inside weekly-days (25-40) so they count. Only a yellow highlight, status stays COMPLIANT.", f:function(st){ st.planWeeklyRet = "35"; }},
+ {n:"Covered by exception", d:"Same missing Saturday as 'Missing weekly', but an unexpired exception line exists. The real status is kept as actual_status, the shown status is COMPLIANT (EXCEPTION).", f:function(st,td){ st.ov["w:" + dayStr(lastDow(td, 6) - 14)] = { off: true }; st.excOn = true; st.excExpires = dayStr(td + 60); }},
+ {n:"Expired exception", d:"The exception ran out 3 days ago. It no longer protects the cluster: it is evaluated normally (NON-COMPLIANT) and flagged 'exception expired'.", f:function(st,td){ st.ov["w:" + dayStr(lastDow(td, 6) - 14)] = { off: true }; st.excOn = true; st.excExpires = dayStr(td - 3); }},
+ {n:"AWS call failed", d:"The script could not read the AWS Backup points. It cannot prove anything, so weekly and monthly are UNKNOWN and the cluster is UNKNOWN (not a pass).", f:function(st){ st.backupOk = false; }},
+ {n:"Read replica (exempt)", d:"An Aurora read replica. Its engine matches replica-exempt-engines (aurora-*), so no backups are expected: always COMPLIANT. Clear that setting to see daily-only checking.", f:function(st){ st.role = "replica"; st.created = dayStr(isoToDay(st.run) - 400); st.rdsRetention = "1"; }}
+];
+var curPreset = -1;
+function applyPreset(i, t){
+  var st = baseState(t), td = isoToDay(st.run);
+  PRESETS[i].f(st, td);
+  writeState(st); setConf(null); curPreset = i; $("adv").open = false; renderPresetBar(); render();
+}
+function renderPresetBar(){
+  $("presets").innerHTML = PRESETS.map(function(p, i){ return '<button data-i="' + i + '" class="' + (i === curPreset ? "on" : "") + '">' + esc(p.n) + '</button>'; }).join("");
+  $("pdesc").innerHTML = curPreset >= 0 ? "<b>" + esc(PRESETS[curPreset].n) + ":</b> " + esc(PRESETS[curPreset].d) : "Custom scenario. Change any input; the verdict updates instantly. Click a scenario above for a ready-made demo.";
+}
+
+/* ---------- helpers for output ---------- */
+function tierLabel(st){ return st === "OK" ? "OK" : (st === "FAIL" ? "FAIL" : (st === "DUE" ? "NOT YET DUE" : st)); }
+function sclass(st){ return "s-" + String(st).replace(/ /g, "-").replace("/", "-"); }
+function badge(st, label, big){ return '<span class="badge ' + (big ? "big " : "") + sclass(st) + '">' + esc(label || tierLabel(st)) + '</span>'; }
+function dlab(d, now){ var y = dgm(d)[0], ty = dgm(dayOf(now))[0]; return dshort(d) + (y !== ty ? " " + y : ""); }
+function mlab(d, now){ var g = dgm(d); return dow(d) !== undefined ? DOW[dow(d)] + " " + p2(g[2]) + " " + MON[g[1]] + " " + g[0] : ""; }
+
+function hintsFor(row, d, cfg, tier){
+  var tol = cfg.tolerance_days, lo = (d - tol) * SPD, hi = (d + 1 + tol) * SPD;
+  var near = row.diag.filter(function(x){ return x.c >= lo && x.c < hi; });
+  if (!near.length) return "no AWS Backup point exists within \u00b1" + tol + " day" + (tol === 1 ? "" : "s");
+  return near.map(function(x){
+    if (x.counted && x.cls !== tier) return "the point from " + dshort(x.date_day) + " is kept " + x.ret + " days, which makes it a " + x.cls + " point, not a " + tier + " one";
+    return "a point from " + dshort(x.date_day) + " exists but was not counted: " + x.reason; }).join("; ");
+}
+
+function explain(tier, row, cfg, st, now){
+  var r = row[tier], out = [];   // {cls, html}
+  var cdate = dfull(row.cday);
+  function add(cls, html){ out.push({ cls: cls, html: html }); }
+  if (tier === "daily") {
+    if (r.st === "N/A") { add("na", "This cluster is a " + esc(st.role === "secondary" ? "global secondary" : "read replica") + " and its engine <b>" + esc(st.engine) + "</b> matches " + K("replica-exempt-engines") + " (" + esc(cfg.replica_exempt_engines.join(", ")) + "). No backups are expected, so every schedule is N/A and the cluster is always COMPLIANT."); return out; }
+    if (r.st === "UNKNOWN") { add("unk", "The AWS call that lists the automated snapshots failed, so the script cannot judge the daily backups. A failed call is never treated as a pass."); return out; }
+    var parts = (r.gap || "").split("; ").filter(Boolean);
+    var retention = parseInt(st.rdsRetention, 10) || 0;
+    if (retention < cfg.daily) add("bad", "RDS keeps automated backups for only <b>" + retention + " days</b> on this cluster, but the script requires at least <b>" + cfg.daily + " days</b>. " + K("daily"));
+    var m = (r.gap || "").match(/last automated ([0-9.]+)h ago/);
+    if (m) add("bad", "The newest automated backup is <b>" + m[1] + " hours</b> old; the limit is <b>" + cfg.daily_max_age_h + " hours</b>. " + K("daily-max-age"));
+    if (parts.indexOf("daily: no automated backup") >= 0) add("bad", "No automated backup exists and the cluster is older than " + cfg.daily_max_age_h + " hours. " + K("daily-max-age"));
+    if (r.missing && r.missing.length && r.st === "FAIL") add("bad", "Expected one backup on each of the last <b>" + cfg.daily + "</b> days (after the creation day); found <b>" + r.have + " of " + r.need + "</b>. Missing: <b>" + r.missing.map(dshort).join(", ") + "</b>. " + K("daily"));
+    if (r.st === "DUE") {
+      if (r.need < r.target) add("due", "Cluster created <b>" + cdate + "</b>: only " + r.need + " of the last " + r.target + " days come after creation, so the daily history is incomplete until <b>" + r.full_on + "</b>. A young cluster is never failed for days before it existed. " + K("daily"));
+      else add("due", "No automated backup has been taken yet, and the cluster is younger than " + K("daily-max-age") + " (" + cfg.daily_max_age_h + " h), so the script waits.");
+    }
+    if (r.st === "OK") add("ok", "All <b>" + r.have + " of " + r.need + "</b> days have an automated backup, the newest is " + r.last_h + " h old (limit " + cfg.daily_max_age_h + " h) and retention " + retention + "d is at least " + cfg.daily + "d. " + K("daily") + " " + K("daily-max-age"));
+    if (retention > cfg.daily_retention_days && st.snapOk !== false) add("note", "Highlight only (never fails): RDS retention is " + retention + "d but " + K("daily-retention-days") + " expects " + cfg.daily_retention_days + "d.");
+    return out;
+  }
+  var isW = tier === "weekly", name = isW ? "weekly" : "monthly";
+  if (tier === "yearly") {
+    if (r.st === "OFF") return out;
+    if (r.st === "N/A") { add("na", "Replicas / secondaries are checked for daily backups only."); return out; }
+    if (r.st === "UNKNOWN") { add("unk", "AWS Backup points could not be read."); return out; }
+    add("na", "Yearly check is on: " + K("yearly") + "=" + cfg.yearly + " point(s) with keep-time above the monthly range (> " + cfg.monthly_max_days + "d or never expiring), from different calendar years.");
+    if (r.st === "OK") add("ok", "Found " + r.have + " yearly point year(s), need " + r.need + ".");
+    if (r.st === "FAIL") add("bad", "Found " + r.have + " of " + r.need + " yearly point years and the cluster is older than " + cfg.yearly + " year(s).");
+    if (r.st === "DUE") add("due", "Found " + r.have + " of " + r.need + "; the cluster is younger than " + cfg.yearly + " year(s), so not yet due.");
+    return out;
+  }
+  if (r.st === "N/A") { add("na", "This cluster is a replica / secondary: only the daily check applies, weekly and monthly are N/A."); return out; }
+  if (r.st === "UNKNOWN") { add("unk", "The AWS call that lists AWS Backup recovery points failed, so the script cannot judge the " + name + " points. Never treated as a pass."); return out; }
+  var tol = cfg.tolerance_days, tolTxt = tol === 0 ? "the exact day only" : "\u00b1" + plural(tol, "day");
+  if (isW) add("na", "Rule: a weekly AWS Backup point (keep-time " + cfg.weekly_min_days + "-" + cfg.weekly_max_days + " days) for every <b>" + WDNAME[cfg.weekly_weekday] + "</b> " +
+      (cfg.weekly === "auto" ? "in the last <b>" + cfg.weekly_window_days + " days</b>" : "for the last <b>" + cfg.weekly + "</b> " + WDNAME[cfg.weekly_weekday] + "s") + ", " + tolTxt + ". " +
+      K("weekly-weekday") + " " + K(cfg.weekly === "auto" ? (document.getElementById("c_weekly-window-days").value === "" ? "weekly-retention-days" : "weekly-window-days") : "weekly") + " " + K("weekly-days") + " " + K("tolerance-days"));
+  else add("na", "Rule: a monthly AWS Backup point (keep-time " + cfg.monthly_min_days + "-" + cfg.monthly_max_days + " days) on the <b>first " + WDNAME[cfg.monthly_weekday] + "</b> of each of the last <b>" + cfg.monthly + " months</b>, " + tolTxt + ". " +
+      K("monthly-rule") + " " + K("monthly") + " " + K("monthly-days") + " " + K("tolerance-days"));
+  if (r.st === "FAIL") {
+    add("bad", "Found <b>" + r.have + " of " + r.need + "</b> expected points. Missing: <b>" + r.missing.map(function(d){ return isW ? dshort(d) : mlabel(d); }).join(", ") + "</b>.");
+    r.missing.slice(0, 4).forEach(function(d){ add("bad", "<b>" + (isW ? dshort(d) : mlabel(d)) + "</b>: " + esc(hintsFor(row, d, cfg, name)) + "."); });
+    if (r.missing.length > 4) add("bad", "... and " + (r.missing.length - 4) + " more.");
+    var gone = r.missing.some(function(d){ return row.diag.some(function(x){ return x.reason === "expired" && x.c >= (d - tol) * SPD && x.c < (d + 1 + tol) * SPD; }); });
+    if (gone) add("note", "Heads-up: a missing point was taken but AWS has already deleted it because its keep-time ended. The oldest date the script still expects is older than the keep-time of the point (" + K(isW ? "weekly-retention-days" : "monthly-retention-days") + " / " + K(isW ? "weekly" : "monthly") + "), so it is reported as missing. For monthly this happens in the first days of a month, before this month's first " + WDNAME[cfg.monthly_weekday] + " is due, with the default 12 months and 365 days.");
+  }
+  if (r.st === "DUE") add("due", "Cluster created <b>" + cdate + "</b>: only " + r.need + " of the " + r.target + " expected " + (isW ? WDNAME[cfg.weekly_weekday] + "s" : "first-" + WDNAME[cfg.monthly_weekday] + "s") + " fall after creation. The script does not fail a cluster for dates before it existed; it is <b>NOT YET DUE until " + r.full_on + "</b>. " +
+      (isW ? (cfg.weekly === "auto" ? K("weekly-window-days") + " / " + K("weekly-retention-days") : K("weekly")) : K("monthly")));
+  if (r.st === "OK") add("ok", "All <b>" + r.have + " of " + r.need + "</b> expected points are present and counted.");
+  row.diag.forEach(function(x){ if (x.counted && x.for_day != null && x.date_day !== x.for_day && x.cls === name) add("ok", "The point from " + dshort(x.date_day) + " is counted for " + dshort(x.for_day) + " because of " + K("tolerance-days") + "=" + tol + "."); });
+  var hl = row.diag.filter(function(x){ return x.ret_mismatch === true && x.cls === name; });
+  if (hl.length) add("note", "Highlight only (still counted): " + esc(rmisNote(name, hl[0].ret, cfg)) + (hl.length > 1 ? " (" + hl.length + " points)" : "") + ". " + K(name + "-retention-days") + " " + K("retention-tolerance-days"));
+  return out;
+}
+
+/* ---------- timeline strips ---------- */
+function strip(row, res, cfg, now, from, to, title, showCreate){
+  var W = 700, G = 70, R = 16, lanes = [], i;
+  ["daily", "weekly", "monthly"].forEach(function(k){ lanes.push({ k: k, name: k[0].toUpperCase() + k.slice(1), r: row[k] }); });
+  var hasIgn = row.rps.some(function(p){ return p.cls === "mismatch" || p.cls === "yearly"; });
+  if (hasIgn) lanes.push({ k: "ign", name: "Ignored" });
+  var laneH = 44, top = 8, bot = 46, height = top + lanes.length * laneH + bot;
+  var span = Math.max(1, to - from), ppd = (W - G - R) / span;
+  function X(d){ return G + (d - from) * ppd; }
+  var rad = Math.max(3.5, Math.min(8, ppd * 0.42));
+  var s = '<svg viewBox="0 0 ' + W + ' ' + height + '" width="100%" role="img" aria-label="' + esc(title) + '">';
+  lanes.forEach(function(l, li){
+    var y = top + li * laneH + laneH / 2;
+    s += '<rect x="' + G + '" y="' + (y - 17) + '" width="' + (W - G - R) + '" height="34" rx="6" fill="' + (li % 2 ? "#f6faff" : "#eef5fd") + '"/>';
+    s += '<text x="' + (G - 8) + '" y="' + (y + 5) + '" text-anchor="end" font-size="14" fill="#33506f" font-weight="600">' + l.name + '</text>';
+  });
+  /* axis */
+  var ay = top + lanes.length * laneH + 4, d;
+  s += '<line x1="' + G + '" y1="' + ay + '" x2="' + (W - R) + '" y2="' + ay + '" stroke="#9db6d1"/>';
+  if (span <= 45) {
+    for (d = from; d <= to; d++) {
+      var x = X(d), g = dgm(d);
+      s += '<line x1="' + x + '" y1="' + ay + '" x2="' + x + '" y2="' + (ay + 5) + '" stroke="#9db6d1"/>';
+      s += '<text x="' + x + '" y="' + (ay + 18) + '" text-anchor="middle" font-size="' + (ppd > 22 ? 12 : 10) + '" fill="' + (dow(d) === 0 || dow(d) === 6 ? "#b0502c" : "#5a7592") + '">' + (ppd > 22 ? DOW[dow(d)].slice(0, 2) : "") + '</text>';
+      s += '<text x="' + x + '" y="' + (ay + 31) + '" text-anchor="middle" font-size="' + (ppd > 22 ? 12 : 10) + '" fill="#5a7592">' + (ppd > 14 || g[2] % 2 === 1 ? g[2] : "") + '</text>';
+      if (g[2] === 1 || d === from) s += '<text x="' + x + '" y="' + (ay + 44) + '" text-anchor="' + (d === from ? "start" : "middle") + '" font-size="12" fill="#1f6fd0" font-weight="600">' + MON[g[1]] + " " + g[0] + '</text>';
+    }
+  } else {
+    for (d = from; d <= to; d++) {
+      var g2 = dgm(d);
+      if (g2[2] === 1) {
+        var x2 = X(d);
+        s += '<line x1="' + x2 + '" y1="' + top + '" x2="' + x2 + '" y2="' + (ay + 5) + '" stroke="#d3e2f2" stroke-dasharray="2 3"/>';
+        s += '<text x="' + x2 + '" y="' + (ay + 20) + '" text-anchor="middle" font-size="12" fill="#5a7592">' + MON[g2[1]] + (g2[1] === 0 ? " " + g2[0] : "") + '</text>';
+      }
+    }
+  }
+  function mark(l, li, d, kind){
+    if (d < from - 0.5 || d > to + 0.5) return "";
+    var cx = X(d + 0.5), cy = top + li * laneH + laneH / 2, o = "";
+    if (kind === "ok") o = '<circle cx="' + cx + '" cy="' + cy + '" r="' + rad + '" fill="none" stroke="#16794a" stroke-width="2.2"/>';
+    else if (kind === "bad") o = '<circle cx="' + cx + '" cy="' + cy + '" r="' + rad + '" fill="#fde7e7" stroke="#c42b2b" stroke-width="2.2"/><path d="M' + (cx - rad * .55) + ' ' + (cy - rad * .55) + 'L' + (cx + rad * .55) + ' ' + (cy + rad * .55) + 'M' + (cx + rad * .55) + ' ' + (cy - rad * .55) + 'L' + (cx - rad * .55) + ' ' + (cy + rad * .55) + '" stroke="#c42b2b" stroke-width="2"/>';
+    else if (kind === "pre") o = '<circle cx="' + cx + '" cy="' + cy + '" r="' + rad + '" fill="#f1f4f8" stroke="#b8c6d4" stroke-width="1.5"/>';
+    else if (kind === "pend") o = '<circle cx="' + cx + '" cy="' + cy + '" r="' + rad + '" fill="none" stroke="#9aaabb" stroke-dasharray="3 2.5" stroke-width="1.6"/>';
+    return o;
+  }
+  lanes.forEach(function(l, li){
+    if (!l.r) return;
+    var r = l.r;
+    if (r.st === "N/A" || r.st === "UNKNOWN") {
+      s += '<text x="' + (G + 12) + '" y="' + (top + li * laneH + laneH / 2 + 5) + '" font-size="14" fill="#6b7f94">' + (r.st === "N/A" ? "N/A for this cluster" : "UNKNOWN: AWS call failed") + '</text>'; return;
+    }
+    var expSet = {}; (r._exp || []).forEach(function(x){ expSet[x.d] = x; });
+    (r._open || []).forEach(function(d){ if (d <= to && d >= from) s += mark(l, li, d, "pend"); });
+    (r._full || []).forEach(function(x){ s += mark(l, li, x.d, expSet[x.d] ? (x.hit ? "ok" : "bad") : "pre"); });
+  });
+  /* actual points in AWS: small blue dots */
+  function dot(li, ep, col){ var d = dayOf(ep); if (d < from || d > to + 1) return ""; return '<circle cx="' + X(d + 0.5) + '" cy="' + (top + li * laneH + laneH / 2) + '" r="' + Math.max(2, rad * .38) + '" fill="' + col + '"/>'; }
+  res.snapshots.forEach(function(p){
+    if (p.kind === "automated") s += dot(0, p.created_epoch, "#1f6fd0");
+  });
+  row.rps.forEach(function(p){
+    if (p.cls === "weekly") s += dot(1, p.created_epoch, "#1f6fd0");
+    else if (p.cls === "monthly") s += dot(2, p.created_epoch, "#1f6fd0");
+    else if (hasIgn) s += dot(lanes.length - 1, p.created_epoch, "#d98a00");
+  });
+  /* creation and run lines */
+  var cd = row.cday;
+  if (showCreate && cd >= from && cd <= to) {
+    s += '<line x1="' + X(cd + 0.5) + '" y1="' + (top - 2) + '" x2="' + X(cd + 0.5) + '" y2="' + (ay) + '" stroke="#1f6fd0" stroke-width="2" stroke-dasharray="5 3"/>';
+    s += '<text x="' + (X(cd + 0.5) + 4) + '" y="' + (top + 9) + '" font-size="12.5" fill="#1f6fd0" font-weight="700">cluster created</text>';
+  }
+  var tx = X(row.today + (now % SPD) / SPD);
+  s += '<line x1="' + tx + '" y1="' + (top - 2) + '" x2="' + tx + '" y2="' + ay + '" stroke="#142c48" stroke-width="2"/>';
+  s += '<text x="' + (tx - 4) + '" y="' + (top + 9) + '" text-anchor="end" font-size="12.5" fill="#142c48" font-weight="700">report run</text>';
+  return '<div style="font-weight:600;margin:6px 0 2px">' + esc(title) + '</div>' + s + '</svg>';
+}
+function timeline(row, res, cfg, now){
+  var minD = row.today - 14, lists = [];
+  ["daily", "weekly", "monthly"].forEach(function(k){ var r = row[k]; if (r._full) r._full.forEach(function(x){ if (x.d < minD) minD = x.d; }); });
+  var from = Math.min(minD, row.today - 14) - 3;
+  if (row.cday > from + 3 && row.cday < minD + 400) { from = Math.min(from, row.cday - 3); if (row.cday - 3 > from) from = row.cday - 3; }
+  var to = row.today + 1;
+  var longSpan = (to - from) > 45;
+  var h = strip(row, res, cfg, now, from, to, longSpan ? "Whole history checked by the script" : "Creation date to run date", true);
+  if (longSpan) h += strip(row, res, cfg, now, row.today - 24, to, "Zoom: the last 25 days", true);
+  h += '<div class="legend"><span><svg width="18" height="18"><circle cx="9" cy="9" r="7" fill="none" stroke="#16794a" stroke-width="2.2"/></svg> expected, found</span>' +
+       '<span><svg width="18" height="18"><circle cx="9" cy="9" r="7" fill="#fde7e7" stroke="#c42b2b" stroke-width="2.2"/><path d="M5 5L13 13M13 5L5 13" stroke="#c42b2b" stroke-width="2"/></svg> expected, missing</span>' +
+       '<span><svg width="18" height="18"><circle cx="9" cy="9" r="7" fill="#f1f4f8" stroke="#b8c6d4" stroke-width="1.5"/></svg> before the cluster existed (not expected)</span>' +
+       '<span><svg width="18" height="18"><circle cx="9" cy="9" r="7" fill="none" stroke="#9aaabb" stroke-dasharray="3 2.5" stroke-width="1.6"/></svg> window still open (not expected yet)</span>' +
+       '<span><svg width="14" height="14"><circle cx="7" cy="7" r="3.5" fill="#1f6fd0"/></svg> backup that exists in AWS</span>' +
+       (row.rps.some(function(p){ return p.cls === "mismatch" || p.cls === "yearly"; }) ? '<span><svg width="14" height="14"><circle cx="7" cy="7" r="3.5" fill="#d98a00"/></svg> point ignored (keep-time outside weekly / monthly range)</span>' : "") + '</div>';
+  return h;
+}
+
+/* ---------- fine-tune tables ---------- */
+function slotRows(st, cfg, now, res){
+  var today = dayOf(now), created = isoToEpoch(st.created, st.createdTime), out = { daily: [], weekly: [], monthly: [] }, i, d, t;
+  var dsec = parseHM(st.dailyTime), asec = parseHM(st.awsTime), ret = parseInt(st.rdsRetention, 10) || 0;
+  var nd = Math.min(cfg.daily + 2, 40);
+  for (i = 0; i < nd; i++) {
+    d = today - i; t = d * SPD + dsec; var why = "";
+    if (t <= created) why = "cluster did not exist yet"; else if (t > now) why = "not taken yet today"; else if ((now - t) > ret * SPD) why = "older than RDS retention (" + ret + "d)";
+    out.daily.push({ d: d, key: "d:" + diso(d), why: why });
+  }
+  var win = Math.max(cfg.weekly === "auto" ? cfg.weekly_window_days : cfg.weekly * 7, 21) + 14;
+  for (d = today; d >= today - win; d--) if (dow(d) === st.planWeekday) { t = d * SPD + asec; out.weekly.push({ d: d, key: "w:" + diso(d), why: t <= created ? "cluster did not exist yet" : (t > now ? "not taken yet" : "") }); }
+  var mi = monthIndex(now);
+  for (i = 0; i <= Math.min(cfg.monthly + 1, 40); i++) { d = firstdow(mi - i, st.planMonthWeekday); t = d * SPD + asec; out.monthly.push({ d: d, key: "m:" + diso(d), why: t <= created ? "cluster did not exist yet" : (t > now ? "not taken yet" : "") }); }
+  return out;
+}
+function fineTables(st, cfg, now, res){
+  var sl = slotRows(st, cfg, now, res);
+  function tbl(list, kind){
+    var hdr = kind === "d" ? "<tr><th>Day</th><th>Backup exists</th><th></th></tr>" : "<tr><th>Scheduled day</th><th>Exists</th><th>Taken (days late / early)</th><th>Kept (days)</th></tr>";
+    var defRet = kind === "w" ? st.planWeeklyRet : st.planMonthlyRet;
+    return "<table>" + hdr + list.map(function(x){
+      var o = st.ov[x.key] || {}, dis = x.why !== "";
+      var chk = '<input type="checkbox" data-k="' + x.key + '" data-f="exists" ' + ((!o.off && !dis) ? "checked" : "") + (dis ? " disabled" : "") + '>';
+      if (kind === "d") return '<tr class="' + (dis ? "dis" : "") + '"><td>' + esc(dfull(x.d)) + '</td><td>' + chk + '</td><td>' + esc(x.why) + '</td></tr>';
+      var off = '<select data-k="' + x.key + '" data-f="offset"' + (dis ? " disabled" : "") + '>' + [-3, -2, -1, 0, 1, 2, 3].map(function(v){ return '<option value="' + v + '"' + ((o.offset || 0) === v ? " selected" : "") + '>' + (v > 0 ? "+" + v : v) + '</option>'; }).join("") + '</select>';
+      var rt = '<input type="number" min="1" data-k="' + x.key + '" data-f="ret" placeholder="' + esc(defRet) + '" value="' + (o.ret != null && o.ret !== "" ? esc(o.ret) : "") + '"' + (dis ? " disabled" : "") + '>';
+      return '<tr class="' + (dis ? "dis" : "") + '"><td>' + esc(dfull(x.d)) + (dis ? '<div class="hint">' + esc(x.why) + '</div>' : "") + '</td><td>' + chk + '</td><td>' + off + '</td><td style="width:90px">' + rt + '</td></tr>';
+    }).join("") + "</table>";
+  }
+  $("t_daily").innerHTML = tbl(sl.daily, "d"); $("t_weekly").innerHTML = tbl(sl.weekly, "w"); $("t_monthly").innerHTML = tbl(sl.monthly, "m");
+  $("extras").innerHTML = S.extra.length ? "<table>" + S.extra.map(function(e, i){ return "<tr><td>" + esc(e.date) + "</td><td>kept " + esc(e.ret) + " days</td><td><button class='mini' data-rm='" + i + "'>remove</button></td></tr>"; }).join("") + "</table>" : '<div class="hint">None. Add one to test an off-schedule or yearly point.</div>';
+}
+
+/* ---------- main render ---------- */
+function render(){
+  readState();
+  var conf = readConf(), pc = parseConf(conf), right = $("right"), bar = $("barin");
+  /* conf diff markers */
+  var changed = [];
+  Object.keys(DEFAULT_CONF).forEach(function(k){ var ch = String(conf[k]).trim() !== DEFAULT_CONF[k]; $("r_" + k).classList.toggle("chg", ch); $("d_" + k).textContent = ch ? "(default: " + (DEFAULT_CONF[k] === "" ? "empty" : DEFAULT_CONF[k]) + ")" : ""; if (ch) changed.push(k + "=" + String(conf[k]).trim()); });
+  $("confdiff").innerHTML = changed.length ? "Changed from the repo defaults: " + changed.map(function(c){ return K(c); }).join(" ") : "All conf settings are at the repo defaults.";
+  $("e_line").textContent = "111111111111 | " + S.id + " | " + S.excScope + " | " + (S.excExpires || "<missing: the script refuses a line without expiry>") + " | " + S.excReason;
+  if (!S.created || !S.run) { right.innerHTML = '<div class="err">Enter the cluster creation date and the report run date.</div>'; bar.innerHTML = ""; return; }
+  var now = isoToEpoch(S.run, S.runTime), created = isoToEpoch(S.created, S.createdTime);
+  $("s_age").textContent = created <= now ? "Cluster age on the run date: " + Math.floor((now - created) / SPD) + " days" : "";
+  if (pc.errors.length) {
+    bar.innerHTML = badge("UNKNOWN", "SCRIPT WOULD NOT RUN", true) + '<span class="pill">Conf error: the script stops before checking anything (exit 1).</span>';
+    right.innerHTML = '<div class="err"><b>The real script would refuse to start with these settings:</b><pre>' + esc(pc.errors.join("\n")) + '</pre></div>';
+    fineTables(S, parseConf(DEFAULT_CONF).cfg, now, buildResource(S, now)); return;
+  }
+  if (created > now) { bar.innerHTML = badge("UNKNOWN", "CHECK DATES", true); right.innerHTML = '<div class="err">The cluster creation date is after the report run date. Fix the dates.</div>'; return; }
+  var cfg = pc.cfg, res = buildResource(S, now), row0 = evaluate(res, cfg, now);
+  var exc = null;
+  if (S.excOn) { if (!S.excExpires) { right.innerHTML = '<div class="err"><b>The script refuses this exceptions file:</b><pre>line 1: expires is mandatory (YYYY-MM-DD)</pre></div>'; return; }
+    exc = { account: "111111111111", identifier: S.id, scopes: S.excScope.split(","), expires: S.excExpires, reason: S.excReason }; }
+  var row = applyException(row0, exc, now);
+  var final = row.status, shown = final === "COMPLIANT" && row.exception === "yes" ? "COMPLIANT (EXCEPTION)" : final;
+  /* sticky bar */
+  var tiers = ["daily", "weekly", "monthly"].concat(row.yearly.st !== "OFF" ? ["yearly"] : []);
+  bar.innerHTML = badge(final, shown, true) + tiers.map(function(k){ return '<span class="pill"><b>' + k[0].toUpperCase() + k.slice(1) + '</b>' + badge(row[k].st) + '</span>'; }).join("") +
+    '<span class="pill" style="margin-left:auto;color:var(--mute)">' + esc(S.id) + ' &middot; ' + row.age_days + ' days old &middot; run ' + esc(dfull(row.today)) + '</span>';
+  /* rules in effect */
+  var rules = '<ul class="rules"><li><b>Daily</b>: an RDS automated backup on each of the last ' + cfg.daily + ' days (after creation), newest at most ' + cfg.daily_max_age_h + ' h old, RDS retention at least ' + cfg.daily + ' days.</li>' +
+    '<li><b>Weekly</b>: a point with keep-time ' + cfg.weekly_min_days + '-' + cfg.weekly_max_days + ' days for every ' + WDNAME[cfg.weekly_weekday] + ' ' + (cfg.weekly === "auto" ? "in the last " + cfg.weekly_window_days + " days" : "x" + cfg.weekly) + ', ' + (cfg.tolerance_days === 0 ? "exact day" : "\u00b1" + cfg.tolerance_days + " d") + '.</li>' +
+    '<li><b>Monthly</b>: a point with keep-time ' + cfg.monthly_min_days + '-' + cfg.monthly_max_days + ' days on the first ' + WDNAME[cfg.monthly_weekday] + ' of each of the last ' + cfg.monthly + ' months.</li>' +
+    (cfg.yearly > 0 ? '<li><b>Yearly</b>: ' + cfg.yearly + ' point(s) kept longer than ' + cfg.monthly_max_days + ' days.</li>' : "") + '</ul>';
+  /* overall */
+  var winTiers = tiers.filter(function(k){ var s = row[k].st; return (final === "NON-COMPLIANT" && s === "FAIL") || (final === "UNKNOWN" && s === "UNKNOWN") || (final === "NOT YET DUE" && s === "DUE"); });
+  if (row0.status === "COMPLIANT" || row0.status !== final) winTiers = tiers.filter(function(k){ var s = row[k].st; return (row0.status === "NON-COMPLIANT" && s === "FAIL") || (row0.status === "UNKNOWN" && s === "UNKNOWN") || (row0.status === "NOT YET DUE" && s === "DUE"); });
+  var ladder = ["NON-COMPLIANT", "UNKNOWN", "NOT YET DUE", "COMPLIANT"].map(function(s){ return '<span class="lb ' + (s === row0.status ? "win " + sclass(s) : "") + '">' + s + '</span>'; }).join('<span class="gt">&gt;</span>');
+  var why;
+  if (row0.status === "NON-COMPLIANT") why = "At least one tier FAILED (" + winTiers.join(", ") + "). One failure is enough: it beats everything else.";
+  else if (row0.status === "UNKNOWN") why = "No tier failed, but " + winTiers.join(", ") + " could not be read from AWS. 'Cannot tell' is never a pass.";
+  else if (row0.status === "NOT YET DUE") why = "No tier failed. " + winTiers.join(", ") + " " + (winTiers.length === 1 ? "is" : "are") + " not due yet because the cluster is too young. It is left out of the compliance % until then.";
+  else why = "Every tier that applies is OK (a tier that is N/A or off does not count).";
+  if (row.exception === "yes" && row0.status !== "COMPLIANT") why += " The active exception then overrides this result.";
+  var ov = '<div class="card"><h2>Verdict for <span style="color:var(--blue)">' + esc(S.id) + '</span></h2><div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">' + badge(final, shown, true) + '<div style="flex:1;min-width:240px;font-size:16.5px">' + esc(why) + '</div></div>' +
+    '<div style="margin-top:10px;font-size:14.5px;color:var(--mute)">Precedence used by the script (first match wins):</div><div class="ladder">' + ladder + '</div>';
+  if (row.exception !== "no") {
+    var ex = '<div class="exbox">';
+    if (row.exception === "yes") ex += '<b>Exception applied.</b> The line (expires ' + esc(row.exception_expires) + ', ' + row.exception_left + ' day' + (row.exception_left === 1 ? "" : "s") + ' left) makes the cluster show as <b>COMPLIANT (EXCEPTION)</b> and count as compliant in every %. The real status <b>' + esc(row0.status) + '</b> is kept as <code class="k">actual_status</code>.' + (row.exception_flag ? ' Flags: <b>' + esc(row.exception_flag) + '</b>' + (row.exception_flag.indexOf("no longer needed") >= 0 ? " (the cluster is compliant on its own)" : "") + "." : "");
+    else ex += '<b>Exception expired</b> on ' + esc(row.exception_expires) + ' (the last valid day was ' + (-row.exception_left) + ' day' + (row.exception_left === -1 ? "" : "s") + ' ago). It is ignored: the cluster is evaluated normally, and flagged <b>exception expired</b>.';
+    ov += ex + '</div>';
+  } else if (S.excOn) {
+    ov += '<div class="exbox">An exception line is entered, but it is <b>not applied</b>: ' + (S.excScope === "patch" ? "its scope is <code class='k'>patch</code> only; this script only uses lines whose scope includes <code class='k'>backup</code>." : "no match.") + '</div>';
+  }
+  ov += '<div class="hint" style="margin-top:8px">Counted in the compliance %: <b>' + (final === "NOT YET DUE" ? "no (NOT YET DUE clusters are left out)" : "yes") + '</b>.</div></div>';
+  /* tier cards */
+  var tcards = tiers.map(function(k){
+    var r = row[k], title = { daily: "Daily &middot; RDS automated backups", weekly: "Weekly &middot; AWS Backup", monthly: "Monthly &middot; AWS Backup", yearly: "Yearly &middot; AWS Backup" }[k];
+    var cnt = (r.have != null && r.need != null) ? ("found <b>" + r.have + " of " + r.need + "</b>" + (r.target != null && r.target > r.need ? " <span class='hint'>(full schedule: " + r.target + ")</span>" : "")) : "";
+    var chips = "";
+    if (r._full && (r.st !== "N/A" && r.st !== "UNKNOWN")) {
+      var expSet = {}; r._exp.forEach(function(x){ expSet[x.d] = 1; });
+      var arr = r._full.map(function(x){ return { d: x.d, hit: x.hit, e: !!expSet[x.d] }; }).concat((r._open || []).filter(function(d){ return d > row.cday - 40 && d <= row.today + 7; }).map(function(d){ return { d: d, open: true }; }));
+      arr.sort(function(a, b){ return b.d - a.d; });
+      chips = '<div class="chips">' + arr.map(function(x){
+        var lbl = k === "monthly" ? dshort(x.d) + " " + dgm(x.d)[0] : dlab(x.d, now);
+        if (x.open) return '<span class="chip pend" title="its window is still open, so it is not expected yet">' + esc(lbl) + ' &middot; not due yet</span>';
+        if (!x.e) return '<span class="chip pre" title="before the cluster existed">' + esc(lbl) + ' &middot; before creation</span>';
+        return x.hit ? '<span class="chip ok">&#10003; ' + esc(lbl) + '</span>' : '<span class="chip bad">&#10007; ' + esc(lbl) + ' missing</span>';
+      }).join("") + '</div>';
+    }
+    var ex = explain(k, row, cfg, S, now).map(function(o){ return '<div class="why ' + o.cls + '"><p>' + o.html + '</p></div>'; }).join("");
+    return '<div class="tier"><div class="th"><span class="t">' + title + '</span>' + badge(r.st) + '<span class="cnt">' + cnt + '</span></div><div class="tb">' + chips + ex + '</div></div>';
+  }).join("");
+  /* extra warnings */
+  var warn = "";
+  if (row.warnings) warn += '<div class="why note"><p>Warning (never changes the status): ' + esc(row.warnings) + ". These points are ignored because their keep-time is outside " + K("weekly-days") + " and " + K("monthly-days") + ".</p></div>";
+  /* points table */
+  var pt = row.diag.length ? '<details><summary>Every AWS Backup point and why it was (not) counted (' + row.diag.length + ')</summary><table><tr><th>Taken</th><th>Kept</th><th>Class</th><th>Counted</th><th>Why</th></tr>' +
+    row.diag.slice(0, 80).map(function(x){ return '<tr><td>' + esc(dfull(x.date_day)) + '</td><td>' + (x.ret == null ? "never" : x.ret + "d") + '</td><td>' + esc(x.cls) + '</td><td>' + (x.counted ? "<b style='color:var(--ok)'>yes</b>" : "<b style='color:var(--bad)'>no</b>") + '</td><td>' + esc(x.reason) + '</td></tr>'; }).join("") + '</table></details>' : '<div class="hint">No AWS Backup points exist for this cluster.</div>';
+  right.innerHTML = ov + '<div class="card"><h2>Rules in effect <span class="hint" style="font-weight:400">from your conf</span></h2>' + rules + '</div>' + tcards + warn +
+    '<div class="card"><h2>Timeline: creation date to run date</h2>' + timeline(row, res, cfg, now) + '</div><div class="card"><h2>AWS Backup points</h2>' + pt + '</div>';
+  fineTables(S, cfg, now, res);
+  window.__last = { row: row, row0: row0, cfg: cfg, shown: shown, res: res, now: now, exc: exc };
+}
+
+/* ---------- wiring ---------- */
+function init(){
+  buildConf();
+  var wopts = WDNAME.map(function(n, i){ return '<option value="' + i + '">' + n + '</option>'; }).join("");
+  $("p_wd").innerHTML = wopts; $("p_md").innerHTML = wopts;
+  var st = baseState(); writeState(st); setConf(null); $("x_date").value = dayStr(isoToDay(st.run) - 200);
+  $("left").addEventListener("input", function(e){ if (e.target.closest("#t_daily,#t_weekly,#t_monthly,#extras,#x_date,#x_ret")) return; curPreset = -1; renderPresetBar(); render(); });
+  $("left").addEventListener("change", function(e){
+    var t = e.target; if (t.dataset && t.dataset.k) {
+      var o = S.ov[t.dataset.k] || (S.ov[t.dataset.k] = {});
+      if (t.dataset.f === "exists") { if (t.checked) delete o.off; else o.off = true; }
+      else if (t.dataset.f === "offset") { o.offset = parseInt(t.value, 10) || 0; if (!o.offset) delete o.offset; }
+      else if (t.dataset.f === "ret") { if (t.value === "") delete o.ret; else o.ret = parseInt(t.value, 10); }
+      if (!Object.keys(o).length) delete S.ov[t.dataset.k];
+      curPreset = -1; renderPresetBar(); render();
+    }
+  });
+  $("left").addEventListener("click", function(e){
+    var t = e.target;
+    if (t.dataset && t.dataset.rm != null) { S.extra.splice(parseInt(t.dataset.rm, 10), 1); curPreset = -1; renderPresetBar(); render(); }
+  });
+  $("x_add").addEventListener("click", function(){ if ($("x_date").value && $("x_ret").value) { S.extra.push({ date: $("x_date").value, ret: parseInt($("x_ret").value, 10) }); curPreset = -1; renderPresetBar(); render(); } });
+  $("b_reset").addEventListener("click", function(){ setConf(null); curPreset = -1; renderPresetBar(); render(); });
+  $("b_now").addEventListener("click", function(){ var t = utcToday(); $("s_run").value = t.date; $("s_rtime").value = t.time; render(); });
+  $("presets").addEventListener("click", function(e){ var b = e.target.closest("button"); if (b) applyPreset(parseInt(b.dataset.i, 10)); });
+  applyPreset(0);
+  var hash = (location.hash || "").match(/preset=(\d+)/); if (hash && PRESETS[+hash[1]]) applyPreset(+hash[1]);
+}
+window.__sim = { PRESETS: PRESETS, applyPreset: applyPreset, setConf: function(k, v){ $("c_" + k).value = v; curPreset = -1; render(); }, render: render, setRun: function(d, t){ $("s_run").value = d; if (t) $("s_rtime").value = t; render(); } };
+init();
+})();
+</script></body></html>
