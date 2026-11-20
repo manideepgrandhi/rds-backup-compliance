@@ -166,7 +166,7 @@ footer{color:var(--mute);font-size:13.5px;text-align:center;padding:6px 20px 28p
   <div id="right"></div>
  </div>
 </div>
-<footer>This page is a simulator of the rules in <b>rds_backup_compliance_report.sh v1.7.2</b> (<code class="k">lib/backup.jq</code>, repo <code class="k">manideepgrandhi/rds-backup-compliance</code> @ 7af1c15); it is not the script and it never calls AWS. Dates are UTC, like the script. The real report is the source of truth.</footer>
+<footer>This page is a simulator of the rules in <b>rds_backup_compliance_report.sh v1.7.2</b> (<code class="k">lib/backup.jq</code>, repo <code class="k">manideepgrandhi/rds-backup-compliance</code> @ 1cff549); it is not the script and it never calls AWS. Dates are UTC, like the script. The real report is the source of truth.</footer>
 
 <script>
 /* ===== CORE: a JavaScript port of evaluate / sched / rp_class / exceptions from lib/backup.jq (script v1.7.2) ===== */
@@ -530,6 +530,8 @@ var PRESETS = [
  {n:"Covered by exception", d:"Same missing Saturday as 'Missing weekly', but an unexpired exception line exists. The real status is kept as actual_status, the shown status is COMPLIANT (EXCEPTION).", f:function(st,td){ st.ov["w:" + dayStr(lastDow(td, 6) - 14)] = { off: true }; st.excOn = true; st.excExpires = dayStr(td + 60); }},
  {n:"Expired exception", d:"The exception ran out 3 days ago. It no longer protects the cluster: it is evaluated normally (NON-COMPLIANT) and flagged 'exception expired'.", f:function(st,td){ st.ov["w:" + dayStr(lastDow(td, 6) - 14)] = { off: true }; st.excOn = true; st.excExpires = dayStr(td - 3); }},
  {n:"AWS call failed", d:"The script could not read the AWS Backup points. It cannot prove anything, so weekly and monthly are UNKNOWN and the cluster is UNKNOWN (not a pass).", f:function(st){ st.backupOk = false; }},
+ {n:"Created on first Sunday (1 Nov 2026)", d:"Fixed example, run on Thu 19 Nov 2026. The cluster was created on Sun 1 Nov, itself a first-Sunday. The creation day is never expected, so there is no monthly point to check yet (first one expected Sun 6 Dec 2026, all 12 by 7 Nov 2027). Daily is OK, weekly has only the two Saturdays after creation (7 and 14 Nov), monthly is empty: the cluster is NOT YET DUE.", f:function(st){ st.created = "2026-11-01"; st.createdTime = "09:30"; st.run = "2026-11-19"; st.runTime = "23:51"; }},
+ {n:"Created on last Saturday (31 Oct 2026)", d:"Fixed example, run on Thu 19 Nov 2026. Created on Sat 31 Oct, so the very next day (Sun 1 Nov) is a first-Sunday AFTER creation and the monthly backup is expected straight away. Here that monthly point is missing, so monthly = FAIL and the cluster is NON-COMPLIANT. To see the fix, open step 4 \u2192 Monthly (AWS Backup) and switch the Sun 1 Nov point on: it becomes NOT YET DUE (1 of 12, all 12 by 3 Oct 2027). A Saturday-created cluster needs its AWS Backup plan attached on day one.", f:function(st){ st.created = "2026-10-31"; st.createdTime = "09:30"; st.run = "2026-11-19"; st.runTime = "23:51"; st.ov["m:2026-11-01"] = { off: true }; }},
  {n:"Read replica (exempt)", d:"An Aurora read replica. Its engine matches replica-exempt-engines (aurora-*), so no backups are expected: always COMPLIANT. Clear that setting to see daily-only checking.", f:function(st){ st.role = "replica"; st.created = dayStr(isoToDay(st.run) - 400); st.rdsRetention = "1"; }}
 ];
 var curPreset = -1;
