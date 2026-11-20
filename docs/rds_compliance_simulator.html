@@ -93,12 +93,60 @@ footer{color:var(--mute);font-size:13.5px;text-align:center;padding:6px 20px 28p
 .warnc{color:#8a5a00}
 .exbox{border:1px dashed #9bb8dc;border-radius:10px;padding:10px 14px;margin-top:8px;background:#f6faff}
 @media print{#bar{position:static}}
+.tabs{max-width:1500px;margin:6px auto 12px;padding:0 20px;display:flex;gap:6px;flex-wrap:wrap;border-bottom:2px solid var(--line)}
+.tabs button{font:inherit;font-size:16px;font-weight:600;border:1px solid var(--line);border-bottom:none;background:#f3f8fe;color:var(--mute);border-radius:10px 10px 0 0;padding:9px 20px;cursor:pointer;margin-bottom:-2px}
+.tabs button:hover{background:var(--blue2);color:var(--blue)}
+.tabs button[aria-selected=true]{background:#fff;color:var(--blue);border-bottom:2px solid #fff;box-shadow:0 -2px 0 var(--blue) inset}
+.tabpane[hidden]{display:none}
+.reftools{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:4px 0 12px}
+.reftools input{max-width:360px}
+.reftools select{width:auto;max-width:260px}
+.refcount{color:var(--mute);font-size:14px}
+.toc{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 14px}
+.toc a{font-size:14px;border:1px solid var(--line);background:#fff;border-radius:16px;padding:3px 12px;color:var(--blue);text-decoration:none}
+.toc a:hover{background:var(--blue2)}
+.refgrp .intro{color:var(--mute);margin:0 0 10px;font-size:15px}
+.set{border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin-bottom:10px;background:#fcfdff}
+.set .hd{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:4px}
+.set .hd code.key{font-family:Consolas,"SF Mono",Menlo,monospace;font-size:16px;font-weight:700;background:var(--blue2);color:#154f98;border-radius:6px;padding:2px 9px}
+.set .hd .dflt{color:var(--mute);font-size:14.5px}
+.set dl{display:grid;grid-template-columns:130px 1fr;gap:3px 12px;margin:6px 0 0;font-size:15px}
+.set dt{color:var(--mute);font-weight:600;font-size:14px}
+.set dd{margin:0}
+.set code{font-family:Consolas,"SF Mono",Menlo,monospace;font-size:13.5px;background:var(--blue2);color:#154f98;border-radius:5px;padding:1px 6px}
+.tag{font-size:12.5px;font-weight:700;border-radius:12px;padding:2px 10px;border:1px solid;white-space:nowrap}
+.k-status{background:var(--badbg);color:#8c1f1f;border-color:#efa6a6}
+.k-warn{background:var(--duebg);color:var(--due);border-color:#ecc86a}
+.k-scope{background:#e6f0ff;color:#1d4f9c;border-color:#aac8f2}
+.k-output{background:var(--nabg);color:#4b6075;border-color:#cdd7e1}
+.k-ops{background:#ece8fa;color:var(--unk);border-color:#bdb1ea}
+.tryb{font:inherit;font-size:13.5px;border:1px solid var(--blue);background:#fff;color:var(--blue);border-radius:14px;padding:2px 12px;cursor:pointer}
+.tryb:hover{background:var(--blue);color:#fff}
+.flash{animation:flash 2.2s ease-out}
+@keyframes flash{0%,40%{background:#fff0b8;box-shadow:0 0 0 3px #f0a020}100%{box-shadow:0 0 0 0 transparent}}
+.legendk{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px;font-size:14px;align-items:center}
+.note{border-left:4px solid #e9b44c;background:#fffaf0;border-radius:6px;padding:4px 14px 6px;margin:0 0 12px}
+.note h3{margin:8px 0 4px;color:var(--ink)}
+.note p{margin:6px 0;font-size:15.5px}
+.ex{border:1px solid var(--line);border-radius:10px;margin-bottom:12px;background:#fcfdff;overflow:hidden}
+.ex .eh{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:8px 14px;background:var(--blue2);border-bottom:1px solid var(--line)}
+.ex .eh b{font-size:16.5px}
+.ex .eb{padding:8px 14px 10px}
+.ex p{margin:4px 0;font-size:15px}
+.ex .lbl{color:var(--mute);font-weight:600;font-size:13.5px}
+.codewrap{position:relative;margin:6px 0}
+.codewrap pre{margin:0;background:#10253f;color:#e8f1fc;border-radius:8px;padding:10px 90px 10px 14px;font-family:Consolas,"SF Mono",Menlo,monospace;font-size:13.5px;white-space:pre-wrap;word-break:break-word}
+.copyb{position:absolute;top:6px;right:6px;font:inherit;font-size:13px;border:1px solid #6d8fb8;background:#1b3a5e;color:#fff;border-radius:6px;padding:3px 10px;cursor:pointer}
+.copyb:hover{background:var(--blue)}
+.runintro{color:var(--mute);font-size:15px;margin:0 0 10px}
+@media(max-width:700px){.set dl{grid-template-columns:1fr}}
 </style></head><body>
 <header>
  <h1>How the backup compliance script decides: COMPLIANT or NON-COMPLIANT</h1>
  <div class="sub">Pick a cluster creation date, change the conf settings, and watch the verdict change. Simulates <code class="k">rds_backup_compliance_report.sh</code> v1.7.2 exactly as <code class="k">lib/backup.jq</code> evaluates it. No AWS calls, works offline.</div>
 </header>
-<div class="wrap">
+<nav class="tabs" id="tabbar" role="tablist" aria-label="Pages"><button role="tab" id="tb-sim" data-tab="sim" aria-selected="true">Simulator</button><button role="tab" id="tb-settings" data-tab="settings" aria-selected="false" tabindex="-1">Settings reference</button><button role="tab" id="tb-examples" data-tab="examples" aria-selected="false" tabindex="-1">Run examples</button></nav>
+<div class="wrap tabpane" id="tab-sim" role="tabpanel" aria-labelledby="tb-sim">
  <div class="presets" id="presets"></div>
  <div id="pdesc"></div>
  <div id="bar"><div id="barin"></div></div>
@@ -166,7 +214,9 @@ footer{color:var(--mute);font-size:13.5px;text-align:center;padding:6px 20px 28p
   <div id="right"></div>
  </div>
 </div>
-<footer>This page is a simulator of the rules in <b>rds_backup_compliance_report.sh v1.7.2</b> (<code class="k">lib/backup.jq</code>, repo <code class="k">manideepgrandhi/rds-backup-compliance</code> @ 1cff549); it is not the script and it never calls AWS. Dates are UTC, like the script. The real report is the source of truth.</footer>
+<div class="wrap tabpane" id="tab-ref" role="tabpanel" aria-labelledby="tb-settings" hidden></div>
+<div class="wrap tabpane" id="tab-run" role="tabpanel" aria-labelledby="tb-examples" hidden></div>
+<footer>This page is a simulator of the rules in <b>rds_backup_compliance_report.sh v1.7.2</b> (<code class="k">lib/backup.jq</code>, repo <code class="k">manideepgrandhi/rds-backup-compliance</code> @ 3b1a389); it is not the script and it never calls AWS. Dates are UTC, like the script. The real report is the source of truth.</footer>
 
 <script>
 /* ===== CORE: a JavaScript port of evaluate / sched / rp_class / exceptions from lib/backup.jq (script v1.7.2) ===== */
@@ -863,4 +913,344 @@ function init(){
 window.__sim = { PRESETS: PRESETS, applyPreset: applyPreset, setConf: function(k, v){ $("c_" + k).value = v; curPreset = -1; render(); }, render: render, setRun: function(d, t){ $("s_run").value = d; if (t) $("s_rtime").value = t; render(); } };
 init();
 })();
+</script>
+<script>
+/* Reference content for the "Settings reference" and "Run examples" tabs.
+   Sources: rds_backup_compliance_report.conf (keys, defaults, sections), the script's set_opt_apply / parse_args validation,
+   --help, README and lib/backup.jq. Every example command was run against the repo's mock aws (tests/mock/aws). */
+var KINDS = {
+  status: { t: "Can change a server's status", c: "k-status" },
+  warn:   { t: "Warning / highlight only", c: "k-warn" },
+  scope:  { t: "Which servers are scanned", c: "k-scope" },
+  output: { t: "Output and display only", c: "k-output" },
+  ops:    { t: "How the run behaves", c: "k-ops" }
+};
+var BOOL = "yes or no. The script also accepts 1, y, true, on / 0, n, false, off (any case).";
+var REF_GROUPS = [
+ { id: "accounts", title: "Accounts and regions", intro: "Which AWS accounts, regions and databases the script reads. Nothing here changes how a server is judged; it only decides which servers end up in the report.", items: [
+  { k: "profile", def: "(empty)", kind: "scope", what: "AWS CLI profile names, one per account (for example <code>prod,nonprod,dev</code>). Each profile is scanned in turn and gets its own report. Empty = the account you are logged in to (for example the jump box IAM role).",
+    accepts: "A comma-separated list of names. The script does not check the names itself; a profile with no valid credentials stops the run in the credentials pre-check (exit code 2).",
+    flag: "<code>-P, --profile NAME</code> (repeatable or comma-separated). The first <code>-P</code> on the command line replaces the conf list; later ones add to it." },
+  { k: "all-regions", def: "yes", kind: "scope", what: "<code>yes</code> = scan every enabled region of the account (the script asks AWS for the list; regions with no databases are left out of the report). <code>no</code> = scan only the region(s) in <code>region</code> below.",
+    accepts: BOOL, flag: "<code>-A, --all-regions</code> (sets yes). Giving <code>-r</code> on the command line switches it to no for that run." },
+  { k: "region", def: "(empty)", kind: "scope", what: "Region(s) to scan when <code>all-regions=no</code>, for example <code>us-east-1,ap-south-1</code>. Empty = the region from your environment or profile.",
+    accepts: "A comma-separated list of region names (not validated by the script).", flag: "<code>-r, --region REGION</code> (repeatable or comma-separated)." },
+  { k: "engine", def: "(empty)", kind: "scope", what: "Only report databases whose engine matches. Example: <code>aurora-*,postgres</code>. Empty = every engine.",
+    accepts: "A comma-separated list of name patterns; <code>*</code> is a wildcard (aurora-postgresql, aurora-mysql, postgres, mysql, mariadb, sqlserver-*, oracle-* ...).", flag: "<code>-e, --engine GLOB</code>" },
+  { k: "identifier", def: "(empty)", kind: "scope", what: "Only report clusters / instances whose name matches, for example <code>hr-*</code>. Empty = all.",
+    accepts: "A comma-separated list of name patterns with <code>*</code> as wildcard.", flag: "<code>-i, --identifier GLOB</code>" }
+ ]},
+ { id: "schedule", title: "Schedule (what a compliant server looks like)", intro: "These are the rules for the three checks: daily (RDS automated backups), weekly and monthly (AWS Backup recovery points). Change them to match your backup plan. Days are always UTC dates.", items: [
+  { k: "daily", def: "7", kind: "status", what: "Daily check on the RDS automated backups: the RDS retention must be at least this many days, and there must be one automated backup on each of the last N UTC days. Today only counts once today's backup exists. The tolerance setting is <b>not</b> used here (daily has no slack).",
+    accepts: "A whole number, 0 or more (no upper limit is checked).", flag: "<code>--daily N</code>", tryk: "daily", tryw: "Step 2 (Conf settings); to see the retention part, change step 1 &#8594; RDS retention." },
+  { k: "daily-max-age", def: "26", kind: "status", what: "The newest automated backup must be at most this many <b>hours</b> old. 26 = one day plus 2 hours of slack. A server with no automated backup at all fails this once it is older than this many hours.",
+    accepts: "A whole number of hours, 0 or more.", flag: "<code>--daily-max-age H</code>", tryk: "daily-max-age" },
+  { k: "weekly-weekday", def: "sat", kind: "status", what: "The day your AWS Backup plan takes the weekly point. The weekly check expects one point on every such weekday in the look-back window.",
+    accepts: "sun, mon, tue, wed, thu, fri or sat (any case).", flag: "<code>--weekly-weekday DAY</code>", tryk: "weekly-weekday", tryw: "Also step 3 (What really runs in AWS) for the day the plan actually runs." },
+  { k: "weekly-retention-days", def: "30", kind: "status", what: "Two jobs. (1) The <b>expected keep-time</b> of a weekly point: a counted point with another keep-time is only highlighted yellow, never failed (see <code>retention-tolerance-days</code>). (2) When <code>weekly-window-days</code> is empty, the weekly look-back window is this many days, so changing it changes how many Saturdays are expected. It does <b>not</b> decide whether a point counts as weekly: <code>weekly-days</code> does.",
+    accepts: "A whole number, 0 or more.", flag: "<code>--weekly-retention-days N</code>", tryk: "weekly-retention-days", tryw: "Step 2; the plan side is in step 3 (Weekly points kept)." },
+  { k: "monthly-rule", def: "first-sun", kind: "status", what: "Which day of the month your monthly point is taken: the first Sunday, the first Monday, and so on. The monthly check expects one point on that day in each of the last N months.",
+    accepts: "first-sun, first-mon, first-tue, first-wed, first-thu, first-fri or first-sat (any case).", flag: "<code>--monthly-rule RULE</code>", tryk: "monthly-rule" },
+  { k: "monthly", def: "12", kind: "status", what: "How many months back the monthly check looks: one point per month for the last N months. A young server is NOT YET DUE until it has lived long enough to have all of them; the report shows the date it becomes due.",
+    accepts: "A whole number, 0 or more.", flag: "<code>--monthly N</code>", tryk: "monthly" },
+  { k: "monthly-retention-days", def: "365", kind: "warn", what: "The expected keep-time of a monthly point. A counted point with another keep-time is highlighted yellow; the status does not change. (Which points count as monthly is decided by <code>monthly-days</code>.) See the note on the early-month false failure when this equals the 12-month window.",
+    accepts: "A whole number, 0 or more.", flag: "<code>--monthly-retention-days N</code>", tryk: "monthly-retention-days", tryw: "Step 2; the plan side is in step 3 (Monthly points kept)." },
+  { k: "replica-exempt-engines", def: "oracle-*,aurora-*", kind: "status", what: "Read replicas and Aurora global-database secondary clusters whose engine matches these patterns are always COMPLIANT (all schedules N/A) because they are not backed up on their own. Empty = replicas and secondaries are checked for daily backups only.",
+    accepts: "A comma-separated list of engine patterns; only <code>*</code> is special; matching ignores case.", flag: "<code>--replica-exempt-engines LIST</code>", tryk: "replica-exempt-engines", tryw: "Try the 'Read replica (exempt)' preset, then clear the list." }
+ ]},
+ { id: "output", title: "Output", intro: "What the report looks like and where it goes. None of these change a status.", items: [
+  { k: "format", def: "html,csv", kind: "output", what: "Report formats. <code>html</code> is the interactive page, <code>csv</code> writes the compliance CSV plus a backups CSV and an orphaned-snapshots CSV, <code>json</code> is for other tools, <code>text</code> is a plain table.",
+    accepts: "One or more of text (or txt), csv, json, html, comma-separated. Anything else, or an empty list, stops the run (exit 1). More than one format needs an output folder.", flag: "<code>-F, --format LIST</code>" },
+  { k: "output-dir", def: "./reports", kind: "output", what: "Folder for the report files, named <code>&lt;prefix&gt;_&lt;account&gt;_&lt;date&gt;_&lt;time&gt;.&lt;ext&gt;</code>. Relative paths start from the folder you run the script in (use a full path under a scheduler). Empty = print one format on the screen.",
+    accepts: "Any folder path, or empty.", flag: "<code>-o, --output-dir DIR</code> (<code>-o ''</code> = screen)" },
+  { k: "tz", def: "Asia/Kolkata", kind: "output", what: "A second time zone shown next to UTC in the reports (for example <code>Generated 2026-11-20 02:00 UTC / 2026-11-20 07:30 IST</code>). It is only for reading: every check still uses UTC days.",
+    accepts: "Any time-zone name your system knows (Asia/Kolkata, UTC, America/New_York ...). It must not be empty. A name the system does not know is not rejected: the times then show as UTC under that name, so check the spelling.", flag: "<code>--tz ZONE</code>" },
+  { k: "non-compliant-only", def: "no", kind: "output", what: "<code>yes</code> = the table lists only NON-COMPLIANT servers. The totals and the compliance percentage still count every server.",
+    accepts: BOOL, flag: "<code>--non-compliant-only</code> (sets yes)" },
+  { k: "log-file", def: "./reports/run.log", kind: "ops", what: "A log of every run, appended to. The same lines also appear on the screen. Empty = no log file.",
+    accepts: "Any file path, or empty.", flag: "<code>-l, --log-file FILE</code>" }
+ ]},
+ { id: "snapshots", title: "Snapshot audit", intro: "An extra list of manual snapshots. It never changes a server's status.", items: [
+  { k: "manual-older-than", def: "90", kind: "output", what: "Also write a CSV of <b>manual</b> snapshots older than N days (oldest first); <code>source_status</code> says ORPHANED when the database they came from no longer exists. With <code>-o ''</code> the rows are printed on the screen instead of a file. Empty = off.",
+    accepts: "A whole number of days, or empty.", flag: "<code>--manual-older-than N</code>" },
+  { k: "snapshot-price-per-gb", def: "0.021", kind: "output", what: "Price in US dollars per GB-month, used for the cost estimate of orphaned snapshots (snapshots whose source database is gone). It is a rough upper estimate because snapshot storage is billed incrementally.",
+    accepts: "A plain number such as <code>0.021</code>: digits with an optional decimal part (no minus sign, no comma).", flag: "<code>--snapshot-price-per-gb USD</code>" }
+ ]},
+ { id: "retention", title: "Report retention", intro: "Housekeeping for the report folder.", items: [
+  { k: "keep-reports", def: "30", kind: "ops", what: "After each run, delete this tool's old report files from the output folder: only files directly in it whose name starts with <code>prefix_</code> and ends in .html, .csv, .json or .txt, and whose file date is older than N days. Other files, sub-folders, the run log and the <code>--save-data</code> files are never touched. 0 = keep everything.",
+    accepts: "A whole number of days, 0 or more.", flag: "<code>--keep-reports N</code>. Preview with <code>--dry-run</code>." }
+ ]},
+ { id: "email", title: "Email", intro: "The summary e-mail. It is sent with the machine's own <code>mail</code>, <code>mailx</code> or <code>sendmail</code> (sendmail also attaches the HTML report). E-mail never changes the exit code; with no mail command the run only logs a warning.", items: [
+  { k: "alert-email", def: "(empty)", kind: "ops", what: "Who gets the summary e-mail. Empty = no e-mail.",
+    accepts: "Comma-separated addresses; each must be one plain address (no spaces, no <code>; | &amp; $</code> characters). A bad address stops the run (exit 1).", flag: "<code>--alert-email ADDR</code> (repeatable or comma-separated); <code>--alert-test</code> sends a test mail and exits." },
+  { k: "alert-from", def: "(empty)", kind: "ops", what: "The From address. Empty = the mail system's default.",
+    accepts: "One plain address, or empty.", flag: "<code>--alert-from ADDR</code>" },
+  { k: "alert-on", def: "noncompliant", kind: "ops", what: "<code>noncompliant</code> = send only when a server is NON-COMPLIANT or an AWS call failed (UNKNOWN rows or failed regions); servers covered by an exception count as compliant. <code>always</code> = send after every run.",
+    accepts: "noncompliant or always (any case); anything else stops the run (exit 1).", flag: "<code>--alert-on WHEN</code>" }
+ ]},
+ { id: "names", title: "Account names (display only)", intro: "Not a <code>key=value</code> setting: one line per account in the conf, <code>123456789012 = prod-payments</code>. Accounts not listed show their IAM account alias, else the number.", items: [
+  { k: "123456789012 = name", def: "111111111111 = prod-payments, 222222222222 = nonprod-shared (fake numbers in the shipped file)", kind: "output", what: "A friendly name shown as <code>name (number)</code> in every report, e-mail and log line. It is only a label.",
+    accepts: "A 12-digit account number, <code>=</code>, then the name (at most 64 characters; a trailing <code># comment</code> and surrounding quotes are removed). Each account may appear once; a repeat stops the run (exit 1).", flag: "none: conf file only" }
+ ]},
+ { id: "advanced", title: "Advanced (rarely changed)", intro: "The fine print of the rules, plus run behaviour. The shipped values are right for the standard Saturday / first-Sunday plan.", items: [
+  { k: "weekly", def: "auto", kind: "status", what: "How many weekly points are expected. <code>auto</code> = every weekly-weekday inside the look-back window (4 or 5 for 30 days). A number N = the last N of them, whatever the window.",
+    accepts: "<code>auto</code> or a whole number.", flag: "<code>--weekly auto|N</code>", tryk: "weekly",
+    ex: "Run on Thu 19 Nov 2026, 30-day window: Saturdays 24 Oct, 31 Oct, 7 Nov and 14 Nov = 4 expected. <code>weekly=2</code> would expect only 7 Nov and 14 Nov." },
+  { k: "weekly-window-days", def: "(empty)", kind: "status", what: "How far back the weekly check looks, in days. Empty = same as <code>weekly-retention-days</code> (30). Only used when <code>weekly=auto</code>.",
+    accepts: "Empty, or a whole number of at least 7.", flag: "<code>--weekly-window-days N</code>", tryk: "weekly-window-days" },
+  { k: "weekly-days", def: "25-40", kind: "status", what: "The keep-time range (in days) that makes an AWS Backup recovery point count as <b>weekly</b>. The class comes from the point's keep-time alone, not from the plan name or the date. A point that fits neither range is a 'mismatch': it is not counted and the server gets a yellow warning.",
+    accepts: "<code>MIN-MAX</code> in days, for example <code>25-40</code>. The ranges must not overlap: weekly MIN &#8804; weekly MAX &lt; monthly MIN &#8804; monthly MAX (otherwise exit 1).", flag: "<code>--weekly-days MIN-MAX</code>", tryk: "weekly-days" },
+  { k: "monthly-days", def: "300-400", kind: "status", what: "The keep-time range (days) that makes a point count as <b>monthly</b>. A point kept longer than the monthly maximum (or never expiring) is 'yearly' when <code>yearly</code> is above 0, otherwise a mismatch.",
+    accepts: "<code>MIN-MAX</code> in days, same rule as weekly-days. (<code>--monthly-max-days N</code> still exists for older configs and sets only the MAX.)", flag: "<code>--monthly-days MIN-MAX</code>", tryk: "monthly-days", tryw: "Try the 'Monthly retention too short' preset." },
+  { k: "tolerance-days", def: "1", kind: "status", what: "A weekly or monthly point counts for its scheduled day if it was taken up to N days before or after it (UTC dates). A scheduled day is not counted as missing until its tolerance window has ended. It does not apply to the daily check.",
+    accepts: "A whole number from 0 to 3.", flag: "<code>--tolerance-days N</code>", tryk: "tolerance-days",
+    ex: "With 1, the weekly point for Sat 14 Nov counts if a point exists anywhere from Fri 13 Nov 00:00 to Sun 15 Nov 23:59 UTC. With 0 only Saturday itself counts. Try the 'Weekly 1 day late' preset and set it to 0." },
+  { k: "daily-retention-days", def: "(empty)", kind: "warn", what: "The RDS backup retention you intend to have. A server whose RDS backup retention is higher than this (beyond the tolerance) is highlighted yellow (for example <code>daily retention 14d, expected 7d</code>). Lower than <code>daily</code> is already a real failure of the daily check. Empty = same as <code>daily</code>.",
+    accepts: "Empty, or a whole number.", flag: "<code>--daily-retention-days N</code>", tryk: "daily-retention-days" },
+  { k: "retention-tolerance-days", def: "1", kind: "warn", what: "How many days a keep-time may differ from the expected one before the yellow 'retention mismatch' highlight appears (weekly, monthly and daily retention). Highlight only.",
+    accepts: "A whole number, 0 or more (no upper limit is checked).", flag: "<code>--retention-tolerance-days N</code>", tryk: "retention-tolerance-days", tryw: "Try the 'Retention drift' preset." },
+  { k: "yearly", def: "0", kind: "status", what: "Number of yearly AWS Backup points expected (retention above the monthly range, or never expiring), counted as distinct calendar years. 0 = the yearly check is off and hidden. While the server is younger than N years it is NOT YET DUE.",
+    accepts: "A whole number; 0 = off.", flag: "<code>--yearly N</code>", tryk: "yearly" },
+  { k: "parallel", def: "4", kind: "ops", what: "How many regions of one account are scanned at the same time. 1 = one by one. Higher is faster but sends more AWS calls at once.",
+    accepts: "A whole number from 1 to 32.", flag: "<code>--parallel N</code>" },
+  { k: "prefix", def: "rds_backup_compliance", kind: "output", what: "The start of every report file name. <code>keep-reports</code> only deletes files that start with it.",
+    accepts: "Any non-empty text (use characters that are fine in a file name).", flag: "<code>--prefix NAME</code>" },
+  { k: "aws-timeout", def: "30", kind: "ops", what: "Seconds the AWS CLI waits to connect and to read an answer (used for both). Raise it on slow links. A call that still fails after its retries leaves that part of the report UNKNOWN.",
+    accepts: "A whole number of seconds (no range is checked).", flag: "<code>--aws-timeout SEC</code>" },
+  { k: "max-attempts", def: "5", kind: "ops", what: "How many times the AWS CLI tries a call before giving up (standard retry mode).",
+    accepts: "A whole number (no range is checked).", flag: "<code>--max-attempts N</code>" },
+  { k: "mail-timeout", def: "60", kind: "ops", what: "Seconds the mail command may take before it is stopped.",
+    accepts: "A whole number of at least 1.", flag: "<code>--mail-timeout SEC</code>" },
+  { k: "fail-on-noncompliant", def: "no", kind: "ops", what: "<code>yes</code> = the script ends with exit code 5 when any server is NON-COMPLIANT, so cron, a scheduler or CI can raise an alarm. Otherwise a finished run exits 0.",
+    accepts: BOOL, flag: "<code>--fail-on-noncompliant</code> (sets yes)" },
+  { k: "save-data", def: "no", kind: "ops", what: "<code>yes</code> = also save the raw data of each account as <code>rds_backup_&lt;account&gt;_&lt;date&gt;.json</code> in the output folder, so several accounts can be combined later with <code>--merge</code> (offline, no AWS calls).",
+    accepts: BOOL, flag: "<code>--save-data [FILE]</code> (sets yes)" },
+  { k: "exceptions", def: "(empty)", kind: "status", what: "The compliance-exceptions file: servers you know are non-compliant and have approved for a limited time. They show COMPLIANT (EXCEPTION) and count as compliant until the expiry date; the real status is kept as <code>actual_status</code>. Empty = <code>compliance_exceptions.conf</code> next to the script, if that file exists.",
+    accepts: "A file path (a leading <code>~</code> is expanded). Each line: <code>account_id | identifier | scope | expires | reason</code>; account 12 digits, identifier exact (no wildcards), scope patch / backup / patch,backup, expires a real date <code>YYYY-MM-DD</code> (UTC, last valid day), all five fields required. Any bad line stops the run (exit 1) and names the line.", flag: "<code>--exceptions FILE</code>", tryw: "Step 5 (Compliance exception) in the simulator." }
+ ]}
+];
+
+var REF_NOTES = [
+ { h: "The creation day is never expected", b: "<p>A backup on or before the day the cluster was created is never required. That is true for daily, weekly and monthly alike. The first backup the script expects is the next scheduled day <b>after</b> the creation day.</p><p><b>Created on the first Sunday (Sun 1 Nov 2026):</b> 1 Nov itself is not expected, so monthly has nothing due yet (NOT YET DUE). The first monthly expected is Sun 6 Dec 2026.</p><p><b>Created on the Saturday before (Sat 31 Oct 2026):</b> the very next day, Sun 1 Nov, is a first-Sunday after creation, so that monthly backup is expected straight away. If it is missing the cluster is NON-COMPLIANT as soon as the tolerance window ends. In practice: a cluster created on the Saturday before a first Sunday must already be covered by the AWS Backup plan on day one.</p>", presets: ["Created on first Sunday (1 Nov 2026)", "Created on last Saturday (31 Oct 2026)"] },
+ { h: "How the overall status is chosen", b: "<p>Each schedule gets OK, DUE (too young), FAIL, UNKNOWN, N/A or OFF. The overall status is the first that applies in this order: <b>NON-COMPLIANT</b> (any FAIL) &gt; <b>UNKNOWN</b> (an AWS call failed) &gt; <b>NOT YET DUE</b> (any DUE) &gt; <b>COMPLIANT</b>. So one missing backup beats a young cluster. NOT YET DUE servers are left out of the compliance percentage and show the date each schedule becomes due.</p>" },
+ { h: "Exceptions: a missed first monthly needs about a year", b: "<p>A missing monthly backup stays a failure for as long as that month is inside the 12-month window; it only drops out when the 13th first-Sunday point is due. Example from the simulator: a cluster created Sat 31 Oct 2026 whose Sun 1 Nov 2026 monthly point is missing shows <b>NON-COMPLIANT</b> every day (monthly 0/1, then 1/2 ... 11/12 missing Nov 2026) until <b>Sun 7 Nov 2027</b>.</p><p>So an exception that covers it needs an expiry date of at least <b>8 Nov 2027</b> (7 Nov is the first day it clears), roughly one year ahead. With a shorter expiry the server flips back to NON-COMPLIANT (flagged 'exception expired') the day after. The expiry is mandatory, is the last valid day (UTC), and an exception that is within 14 days of expiring, or no longer needed because the server is compliant anyway, is flagged in the report.</p>" },
+ { h: "Known behaviour: false NON-COMPLIANT at the start of some months (monthly=12, retention 365)", b: "<p>With the shipped values a perfectly healthy cluster can show NON-COMPLIANT for about six days at the start of some months, with a gap such as <code>monthly 11/12 missing Feb 2026</code>.</p><p><b>Why:</b> the monthly point is kept exactly 365 days. The check expects 12 points: the first Sunday of each of the last 12 months, and this month's first Sunday does not count until it has happened. So until then the oldest of the 12 is last year's point of the same month. If last year's first Sunday fell on the 1st (this year's falls on the 7th), that old point has already expired (day 1 + 365 days) before this year's replacement exists.</p><p><b>When (default conf, simulator sweep over 2026-2028 on a healthy cluster):</b> 1-6 Jun 2026, 1-6 Feb 2027, 1-6 Mar 2027, 1-6 Nov 2027, 1-6 May 2028 and 31 Jul - 5 Aug 2028. It is not only February.</p><p><b>Ways around it</b> (not changed in the script): keep monthly points a week longer, for example 372 days in the AWS Backup plan and <code>monthly-retention-days=372</code> (monthly-days 300-400 still counts them); in the simulator this removed every false failure across the 3 years. Or check 11 months (<code>monthly=11</code>), which also removed them. A one-off exception for those days also works.</p>" },
+ { h: "Retention settings count points, they do not judge them", b: "<p>Whether an AWS Backup point is weekly or monthly depends only on its keep-time and the <code>weekly-days</code> / <code>monthly-days</code> ranges. <code>weekly-retention-days</code> and <code>monthly-retention-days</code> are only the keep-time you expect: a different value inside the range is a yellow highlight, not a failure. A keep-time outside both ranges (say 90 days) is not counted at all, so the weekly or monthly check then fails for lack of points. <i>Try the 'Monthly retention too short' preset.</i></p>" },
+ { h: "Days are UTC dates", b: "<p>Every schedule works on UTC calendar days. A Saturday backup that runs late on Friday or early on Sunday UTC still counts with the default tolerance of 1, but not with 0. <code>tz</code> only changes how times are displayed.</p>" },
+ { h: "The conf file rules", b: "<p>The conf file is required and must contain every key exactly once (a value may be empty where the shipped file says so). A missing key, a repeated key, an unknown key or a bad value stops the run with exit code 1 and names the file and line. <code>--config FILE</code> uses another complete copy instead (nothing is mixed between the two files). Command-line options override the file for one run. <code>--no-config</code> was removed in v1.7.1. Check everything without calling AWS with <code>--check-config</code>.</p>" }
+];
+
+var RUN_GROUPS = ["Getting started", "Scope: accounts, regions, servers", "One-off overrides", "Settings files", "Output formats", "Scheduling and exit codes", "Merging accounts", "Exceptions", "E-mail", "Housekeeping and audits", "Display and speed", "Help"];
+var RUN_EXAMPLES = [
+ { g: 0, t: "First run with the shipped settings", w: "Scans the current login in every region and writes the HTML and CSV reports into <code>./reports</code>. Use it for the first run after unzipping, once the conf has your profile and account names.",
+   cmd: ["./rds_backup_compliance_report.sh"], e: "Exit 0. The log ends with <code>resources: N, non-compliant: M</code> and an <code>Output (5 files)</code> list: the HTML, the compliance CSV, a backups CSV, an orphaned-snapshots CSV and a manual-snapshots CSV. Reports older than 30 days are deleted." },
+ { g: 0, t: "Check the settings without calling AWS", w: "Validates the conf and exceptions files and prints every setting with where its value came from (conf or CLI). Run it after every edit of the conf.",
+   cmd: ["./rds_backup_compliance_report.sh --check-config"], e: "Exit 0 and <code>OK: configuration is valid (no AWS calls made)</code>. A bad or missing setting exits 1 and names the file and line." },
+ { g: 0, t: "See what would be called, delete nothing", w: "Prints the read-only AWS calls a run would make and the report files <code>keep-reports</code> would delete, without doing either. Good before the first scheduled run, or to show security which calls are used.",
+   cmd: ["./rds_backup_compliance_report.sh -A --dry-run"], e: "Exit 0. <code>DRY-RUN: aws ...</code> lines (sts, iam, ec2, rds describe-*, backup list-*) and <code>keep-reports: would delete ...</code>. Nothing is written or deleted." },
+ { g: 1, t: "One account, one region, result on the screen", w: "Quick look at a single account and region without creating files. <code>-o ''</code> means print to the screen. Replace <code>prod</code> with your AWS CLI profile.",
+   cmd: ["./rds_backup_compliance_report.sh -P prod -r us-east-1 -F text -o ''"], e: "Exit 0. A text report: summary lines (<code>Compliance: 25% (1 of 4)</code>, <code>Resources 6: compliant ...</code>) then a table with DAILY / WEEKLY / MONTHLY counts, STATUS and GAPS per server." },
+ { g: 1, t: "Several accounts, every region, for this run only", w: "Scans each profile in every enabled region without editing the conf. One report per account.",
+   cmd: ["./rds_backup_compliance_report.sh -P prod,nonprod,dev -A"], e: "Exit 0. One block of reports per account in <code>./reports</code>." },
+ { g: 1, t: "Only Aurora PostgreSQL, two regions, only the failures", w: "Narrows the report to one engine and two regions, and lists only NON-COMPLIANT servers (totals still count all).",
+   cmd: ["./rds_backup_compliance_report.sh -P prod -r us-east-1,us-west-2 -e aurora-postgresql --non-compliant-only"], e: "Exit 0 (the exit code is 5 only with <code>--fail-on-noncompliant</code>). Reports as usual, with only failing rows in the table." },
+ { g: 1, t: "One group of servers by name", w: "Checks only the servers whose name matches a pattern, for example everything of one application.",
+   cmd: ["./rds_backup_compliance_report.sh -P nonprod -r ap-south-1 -i 'hr-*' -F text -o ''"], e: "Exit 0. Only the matching servers; the summary counts only those." },
+ { g: 2, t: "A different backup schedule for this run", w: "Weekly runs on Sunday and the last 5 are checked, monthly on the first Saturday. Use it to test a plan you are about to roll out.",
+   cmd: ["./rds_backup_compliance_report.sh -P prod --weekly-weekday sun --weekly 5 --monthly-rule first-sat -F text -o ''"], e: "Exit 0. Same report, judged against the new schedule. Servers on the old schedule will usually turn NON-COMPLIANT." },
+ { g: 2, t: "No slack on weekly and monthly dates", w: "Tolerance 0 means a point only counts if it was taken on the scheduled UTC day itself.",
+   cmd: ["./rds_backup_compliance_report.sh -P prod --tolerance-days 0 -F text -o ''"], e: "Exit 0. Same report, but a point taken one day early or late no longer counts for its scheduled day, so it shows as missing." },
+ { g: 2, t: "Check fewer months, turn the yearly check on", w: "Looks at the last 6 monthly points only and also expects one yearly point (retention above the monthly range).",
+   cmd: ["./rds_backup_compliance_report.sh -P prod --monthly 6 --yearly 1 -F text -o ''"], e: "Exit 0. A YEARLY column appears (for example <code>0/1</code>) and a server with no yearly point shows <code>yearly 0/1</code> in GAPS and is NON-COMPLIANT (NOT YET DUE while it is younger than a year). Only the last 6 monthly points are required." },
+ { g: 2, t: "Stricter daily freshness, different weekly range", w: "The newest automated backup must be at most 24 hours old, and weekly points kept 20-45 days count as weekly.",
+   cmd: ["./rds_backup_compliance_report.sh -P prod --daily-max-age 24 --weekly-days 20-45 -F html -o ./out"], e: "Exit 0. An HTML report in <code>./out</code>." },
+ { g: 2, t: "Your weekly plan keeps points 35 days", w: "Tell the script the keep-time you really use. The weekly window follows it (5 Saturdays in 35 days) and the yellow retention warning goes away. <code>--check-config</code> shows the CLI value won.",
+   cmd: ["./rds_backup_compliance_report.sh --check-config --weekly-retention-days 35 | grep -E 'weekly-(retention|window)'"], e: "Exit 0. <code>weekly-retention-days 35 CLI</code> and <code>weekly-window-days = weekly-retention-days (35) conf</code>." },
+ { g: 3, t: "Another settings file with --config", w: "Keeps one conf per environment. The file must contain every setting, so copy the shipped one first. Here a non-production copy is made, edited and checked, then used.",
+   cmd: ["mkdir -p ~/configs && cp rds_backup_compliance_report.conf ~/configs/nonprod.conf",
+         "sed -i 's/^profile=.*/profile=nonprod/; s/^all-regions=.*/all-regions=no/; s/^region=.*/region=ap-south-1/; s/^prefix=.*/prefix=nonprod_backup/' ~/configs/nonprod.conf",
+         "./rds_backup_compliance_report.sh --config ~/configs/nonprod.conf --check-config | grep -E '^Config file|^  (profile|region|prefix) '",
+         "./rds_backup_compliance_report.sh --config ~/configs/nonprod.conf"],
+   e: "Exit 0. <code>Config file: ... (--config)</code>, then the three settings with source <code>conf</code>; the last command writes reports named <code>nonprod_backup_&lt;account&gt;_...</code>. A file with a missing setting is refused with exit 1." },
+ { g: 3, t: "--no-config no longer exists", w: "Older notes mention <code>--no-config</code>. It was removed in v1.7.1 because the conf file is now required. Use <code>--config FILE</code> for another complete file, or command-line options for single values.",
+   cmd: ["./rds_backup_compliance_report.sh --no-config"], e: "Exit 1 with <code>[ERROR] --no-config was removed in v1.7.1 ...</code>." },
+ { g: 4, t: "Text, JSON, HTML and CSV", w: "Text prints on the screen, JSON is for other tools, HTML is the interactive page, CSV opens in Excel. Several formats need an output folder.",
+   cmd: ["./rds_backup_compliance_report.sh -P prod -r us-east-1 -F text -o ''",
+         "./rds_backup_compliance_report.sh -P prod -r us-east-1 -F json -o ./out",
+         "./rds_backup_compliance_report.sh -P prod -r us-east-1 -F html,csv -o ./out"],
+   e: "Exit 0 each. The first prints a table; the others list their files under <code>Output (N files)</code> (the CSV format also writes a backups CSV and an orphaned-snapshots CSV)." },
+ { g: 5, t: "Exit code 5 when something is NON-COMPLIANT", w: "Lets a scheduler or CI job react. The script prints its own exit code here with <code>echo</code>.",
+   cmd: ["./rds_backup_compliance_report.sh -P prod --fail-on-noncompliant -F json -o ./out || echo \"exit $?\""], e: "Prints <code>exit 5</code> when at least one server is NON-COMPLIANT (the mock prod account has 3). With everything compliant the exit code is 0 and nothing is echoed. Other codes: 1 settings error, 2 pre-check failed (aws, jq, credentials, region), 4 output error." },
+ { g: 5, t: "Everything compliant gives exit 0", w: "Same flag on a set of servers that all pass, to show the other half of the contract.",
+   cmd: ["./rds_backup_compliance_report.sh -P nonprod -r ap-south-1 -i 'hr-*' --fail-on-noncompliant >/dev/null 2>&1; echo $?"], e: "Prints <code>0</code>." },
+ { g: 5, t: "Daily cron job on a Linux jump box", w: "Put this line in <code>crontab -e</code> (and set <code>PATH=/usr/local/bin:/usr/bin:/bin</code> above it so <code>aws</code> and <code>jq</code> are found). It runs at 01:30 every day, appends everything to a file, and records the exit code. Use your own script folder. Do not put <code>%</code> in a crontab line.",
+   cmd: ["30 1 * * * cd /home/dba/rds-backup-compliance && ./rds_backup_compliance_report.sh --fail-on-noncompliant >> reports/cron.out 2>&1; echo \"exit $? at $(date)\" >> reports/cron.out"],
+   verify: ["cd \"$PWD\" && ./rds_backup_compliance_report.sh --fail-on-noncompliant >> reports/cron.out 2>&1; echo \"exit $? at $(date)\" >> reports/cron.out"],
+   e: "<code>reports/cron.out</code> ends with <code>exit 5 at &lt;date&gt;</code> when something is NON-COMPLIANT, <code>exit 0 ...</code> otherwise. Add <code>alert-email</code> so someone hears about exit 5." },
+ { g: 6, t: "Save each account's data, then merge offline", w: "For CloudShell or when profiles live on different machines: run once per account with <code>--save-data</code>, copy the <code>rds_backup_&lt;account&gt;_&lt;date&gt;.json</code> files into one folder, then merge them into a single report. <code>--merge</code> makes no AWS calls and re-evaluates compliance at merge time.",
+   cmd: ["./rds_backup_compliance_report.sh -P prod -r us-east-1 --save-data -o ./saved",
+         "./rds_backup_compliance_report.sh -P nonprod -r ap-south-1 --save-data -o ./saved",
+         "ls ./saved",
+         "./rds_backup_compliance_report.sh --merge ./saved -F html -o all.html"],
+   e: "Exit 0. The folder holds one <code>rds_backup_&lt;account&gt;_&lt;date&gt;.json</code> per account; the merge writes <code>all.html</code> covering both accounts (it cannot be combined with <code>-P</code>, <code>-r</code>, <code>-A</code> or <code>--save-data</code>)." },
+ { g: 7, t: "Add a compliance exception, check it", w: "Lists a server you know is non-compliant and have approved until a date. <code>compliance_exceptions.conf</code> next to the script is loaded automatically; elsewhere use <code>--exceptions FILE</code>. Fields: <code>account_id | identifier | scope | expires | reason</code>. The first command copies the notes from the example file without its sample lines.",
+   cmd: ["grep -v '^[0-9]' compliance_exceptions.conf.example > compliance_exceptions.conf",
+         "echo '111111111111 | legacy-mysql | backup | 2027-03-31 | Decommission in Q1, CHG-2001 (owner: dba-team)' >> compliance_exceptions.conf",
+         "./rds_backup_compliance_report.sh --check-config | grep -E '^Exceptions|^  line |^OK'"],
+   e: "Exit 0. <code>Exceptions (1); today is ... UTC:</code>, the entry with its line number, and <code>OK: configuration is valid</code>. In reports that server shows COMPLIANT (EXCEPTION). A malformed line (for example a date written 31-03-2027) exits 1 naming the file and line." },
+ { g: 7, t: "Keep the exceptions file somewhere else", w: "Points the run at an exceptions file outside the script folder.",
+   cmd: ["./rds_backup_compliance_report.sh --exceptions ~/configs/compliance_exceptions.conf --check-config | grep -E '^Exceptions|^  line '"],
+   pre: ["mkdir -p ~/configs && echo '111111111111 | legacy-mysql | backup | 2027-03-31 | Decommission in Q1' > ~/configs/compliance_exceptions.conf"],
+   e: "Exit 0. <code>Exceptions file: ... (--exceptions)</code> and the entries." },
+ { g: 8, t: "Send a test e-mail", w: "Checks the mail setup without scanning anything. The machine needs <code>mail</code>, <code>mailx</code> or <code>sendmail</code>.",
+   cmd: ["./rds_backup_compliance_report.sh --alert-test --alert-email dba-team@example.com --alert-from rds-reports@example.com"], e: "Exit 0 and <code>E-mail sent to dba-team@example.com: [rds_backup_compliance] TEST e-mail from &lt;host&gt;</code>. With no mail command it only logs a warning." },
+ { g: 8, t: "E-mail the summary after every run", w: "<code>--alert-on always</code> sends even when everything is compliant; the default <code>noncompliant</code> sends only for failures or AWS errors.",
+   cmd: ["./rds_backup_compliance_report.sh -P nonprod -r ap-south-1 -i 'hr-*' --alert-email dba-team@example.com,oncall@example.com --alert-on always"], e: "Exit 0 (mail never changes the exit code). The log shows <code>E-mail sent to ...: [rds_backup_compliance] COMPLIANT: 0 non-compliant of 1, 100% compliant</code>." },
+ { g: 9, t: "Preview and change how long reports are kept", w: "<code>--dry-run</code> lists the old reports a run would delete; the second command keeps only 14 days for one run.",
+   cmd: ["./rds_backup_compliance_report.sh --dry-run 2>&1 | grep keep-reports",
+         "./rds_backup_compliance_report.sh --keep-reports 14"],
+   e: "Exit 0. First: <code>keep-reports: would delete ...</code> and <code>nothing was deleted</code>. Second: <code>keep-reports: deleted ... (older than 14 days)</code> and a count." },
+ { g: 9, t: "Manual snapshot audit and orphan cost", w: "Lists manual snapshots older than 180 days (a CSV, oldest first, ORPHANED when the source database is gone). The second command prints the same list on the screen instead of a file; the third prices orphaned snapshots at 0.019 USD per GB-month.",
+   cmd: ["./rds_backup_compliance_report.sh -P prod -r us-east-1 -F csv --manual-older-than 180",
+         "./rds_backup_compliance_report.sh -P prod -r us-east-1 -F text -o '' --manual-older-than 365 2>&1 >/dev/null | grep -E 'manual|^\"' | head -4",
+         "./rds_backup_compliance_report.sh -P prod -r us-east-1 -F csv --snapshot-price-per-gb 0.019"],
+   e: "Exit 0. First: a <code>..._manual_older_than_180d.csv</code> in <code>./reports</code>. Second: <code>manual snapshots older than 365 days: N (screen only, no file written)</code> and CSV rows. Third: the orphaned-snapshots CSV and summary use the new price." },
+ { g: 10, t: "Show times in another zone", w: "Changes only the second time zone shown next to UTC. Useful when the report is read by another team.",
+   cmd: ["./rds_backup_compliance_report.sh -P prod -r us-east-1 --tz America/New_York -F text -o '' 2>/dev/null | grep '^Generated'"], e: "Exit 0. For example <code>Generated 2026-11-20 02:00 UTC / 2026-11-19 21:00 EST</code>. The verdicts are unchanged." },
+ { g: 10, t: "Faster scan of many regions, patient with AWS", w: "Scans up to 8 regions at once, waits 60 seconds per call and tries each call up to 8 times; <code>-v</code> prints every region line, including empty regions.",
+   cmd: ["./rds_backup_compliance_report.sh -A --parallel 8 --aws-timeout 60 --max-attempts 8 -v"], e: "Exit 0. The same reports; the log has a line per region." },
+ { g: 11, t: "Help and version", w: "Lists every option with its current conf value in brackets.",
+   cmd: ["./rds_backup_compliance_report.sh --help", "./rds_backup_compliance_report.sh --version"], e: "Exit 0. <code>--help</code> prints the option list; <code>--version</code> prints the script name and version (1.7.2)." }
+];
+
+</script>
+<script>
+/* Tabs (Simulator | Settings reference | Run examples), rendering of reference.js, copy buttons. */
+(function(){
+  var $ = function(id){ return document.getElementById(id); };
+  function esc(s){ return String(s).replace(/[&<>"']/g, function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]; }); }
+  var TABS = { sim: "tab-sim", settings: "tab-ref", examples: "tab-run" };
+  function showTab(name, noHash){
+    if (!TABS[name]) name = "sim";
+    Object.keys(TABS).forEach(function(k){
+      $(TABS[k]).hidden = (k !== name);
+      var b = $("tb-" + k); b.setAttribute("aria-selected", k === name ? "true" : "false"); b.tabIndex = k === name ? 0 : -1;
+    });
+    if (!noHash && window.history && history.replaceState) { try { history.replaceState(null, "", name === "sim" ? location.pathname + location.search : "#tab=" + name); } catch (e) {} }
+  }
+  function flash(el){ el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash"); }
+  function tryIt(key, id){
+    showTab("sim");
+    var sim = $("r_" + key) || $(id || "");
+    if (!sim) return;
+    var adv = $("adv"); if (adv && adv.contains(sim)) adv.open = true;
+    sim.scrollIntoView({ block: "center" }); flash(sim);
+    var inp = $("c_" + key) || $(id || ""); if (inp && inp.focus) { try { inp.focus({ preventScroll: true }); } catch (e) { inp.focus(); } }
+  }
+  function openPreset(name){
+    var P = window.__sim.PRESETS, i; for (i = 0; i < P.length; i++) if (P[i].n === name) break;
+    if (i === P.length) return;
+    showTab("sim"); window.__sim.applyPreset(i); window.scrollTo(0, 0);
+  }
+
+  /* ---- Settings reference ---- */
+  var SETS = [];
+  function renderRef(){
+    var h = '<div class="card"><h2>Settings reference: every key in <code class="k">rds_backup_compliance_report.conf</code></h2>'
+      + '<p class="runintro">All ' + REF_GROUPS.reduce(function(a, g){ return a + g.items.length; }, 0) + ' entries of the conf file in the order of its sections (40 <code>key=value</code> settings plus the account-name lines). Defaults are the shipped values. Accepted values come from the script\'s own checks, so a value outside them stops the run with exit code 1 and the line number. Days are UTC dates.</p>'
+      + '<div class="legendk">Each setting is tagged: ' + Object.keys(KINDS).map(function(k){ return '<span class="tag ' + KINDS[k].c + '">' + KINDS[k].t + '</span>'; }).join(" ") + '</div>'
+      + '<div class="reftools"><input id="ref_q" type="search" placeholder="Search settings (name, words, flag)..." aria-label="Search settings">'
+      + '<select id="ref_k" aria-label="Filter by effect"><option value="">All settings</option>' + Object.keys(KINDS).map(function(k){ return '<option value="' + k + '">' + KINDS[k].t + '</option>'; }).join("") + '</select>'
+      + '<span class="refcount" id="ref_n"></span></div>'
+      + '<div class="toc">' + REF_GROUPS.map(function(g){ return '<a href="#grp-' + g.id + '" data-g="' + g.id + '">' + esc(g.title.replace(/ \(.*/, "")) + '</a>'; }).join("") + '<a href="#notes" data-g="notes">Notes &amp; known behaviour</a></div></div>';
+    REF_GROUPS.forEach(function(g){
+      h += '<div class="card refgrp" id="grp-' + g.id + '"><h2>' + esc(g.title) + '</h2><p class="intro">' + g.intro + '</p>';
+      g.items.forEach(function(s){
+        var K = KINDS[s.kind], hasTry = s.tryk || s.tryid;
+        var txt = (s.k + " " + s.def + " " + s.what + " " + s.accepts + " " + s.flag + " " + (s.ex || "")).replace(/<[^>]+>/g, " ").replace(/&[a-z#0-9]+;/g, " ").toLowerCase();
+        h += '<div class="set" data-kind="' + s.kind + '" data-txt="' + esc(txt) + '" data-g="' + g.id + '"><div class="hd"><code class="key">' + esc(s.k) + '</code><span class="tag ' + K.c + '">' + K.t + '</span>'
+          + '<span class="dflt">default: <code>' + esc(s.def) + '</code></span></div><dl>'
+          + '<dt>What it does</dt><dd>' + s.what + '</dd>'
+          + '<dt>Accepted values</dt><dd>' + s.accepts + '</dd>'
+          + '<dt>Command line</dt><dd>' + s.flag + '</dd>'
+          + (s.ex ? '<dt>Example</dt><dd>' + s.ex + '</dd>' : '')
+          + (hasTry || s.tryw ? '<dt>Try it</dt><dd>' + (hasTry ? '<button class="tryb" data-try="' + esc(s.tryk || "") + '" data-id="' + esc(s.tryid || "") + '">Open in the simulator &#8594;</button> ' : '') + (s.tryw ? '<span class="hint">' + s.tryw + '</span>' : (s.tryk ? '<span class="hint">Step 2 (Conf settings)' + (s.tryk ? '' : '') + '</span>' : '')) + '</dd>' : '')
+          + '</dl></div>';
+      });
+      h += '</div>';
+    });
+    h += '<div class="card" id="notes"><h2>Notes &amp; known behaviour</h2>' + REF_NOTES.map(function(n, i){
+      return '<div class="note"><h3>' + esc(n.h) + '</h3>' + n.b + (n.presets ? '<p>' + n.presets.map(function(p){ return '<button class="tryb" data-preset="' + esc(p) + '">Open preset: ' + esc(p) + '</button>'; }).join(" ") + '</p>' : '') + '</div>';
+    }).join("") + '</div>';
+    $("tab-ref").innerHTML = h;
+    SETS = [].slice.call($("tab-ref").querySelectorAll(".set"));
+    $("ref_q").addEventListener("input", filterRef); $("ref_k").addEventListener("change", filterRef);
+    $("tab-ref").addEventListener("click", function(e){
+      var b = e.target.closest("button.tryb"); if (b) { if (b.dataset.preset) openPreset(b.dataset.preset); else tryIt(b.dataset.try, b.dataset.id); return; }
+      var a = e.target.closest(".toc a"); if (a) { e.preventDefault(); var t = $(a.dataset.g === "notes" ? "notes" : "grp-" + a.dataset.g); if (t) t.scrollIntoView({ block: "start", behavior: "smooth" }); }
+    });
+    filterRef();
+  }
+  function filterRef(){
+    var q = $("ref_q").value.trim().toLowerCase().split(/\s+/).filter(Boolean), k = $("ref_k").value, shown = 0;
+    SETS.forEach(function(el){
+      var ok = (!k || el.dataset.kind === k) && q.every(function(w){ return el.dataset.txt.indexOf(w) >= 0; });
+      el.hidden = !ok; if (ok) shown++;
+    });
+    [].forEach.call(document.querySelectorAll("#tab-ref .refgrp"), function(g){ g.hidden = !g.querySelector(".set:not([hidden])"); });
+    $("ref_n").textContent = "Showing " + shown + " of " + SETS.length;
+  }
+
+  /* ---- Run examples ---- */
+  var EX = [];
+  function renderRun(){
+    var h = '<div class="card"><h2>Run examples: ready-to-copy commands</h2>'
+      + '<p class="runintro">Every command below was run against the repo\'s test copy of the AWS CLI (no real AWS calls) and its flags were accepted by <code>rds_backup_compliance_report.sh</code> v1.7.2. Run them from the script folder. <code>prod</code>, <code>nonprod</code> and <code>dev</code> are example AWS CLI profile names and the account numbers are fake: use your own. Options on the command line override the conf for that one run.</p>'
+      + '<div class="reftools"><input id="run_q" type="search" placeholder="Search examples (flag, word)..." aria-label="Search examples"><span class="refcount" id="run_n"></span></div>'
+      + '<div class="toc">' + RUN_GROUPS.map(function(g, i){ return '<a href="#run-g' + i + '" data-rg="' + i + '">' + esc(g) + '</a>'; }).join("") + '</div></div>';
+    RUN_GROUPS.forEach(function(g, gi){
+      h += '<div class="card refgrp" id="run-g' + gi + '"><h2>' + esc(g) + '</h2>';
+      RUN_EXAMPLES.forEach(function(x, xi){
+        if (x.g !== gi) return;
+        var code = x.cmd.join("\n"), txt = (x.t + " " + code + " " + x.w + " " + x.e).replace(/<[^>]+>/g, " ").replace(/&[a-z#0-9]+;/g, " ").toLowerCase();
+        h += '<div class="ex" data-txt="' + esc(txt) + '"><div class="eh"><b>' + esc(x.t) + '</b></div><div class="eb"><p><span class="lbl">What it does and when to use it: </span>' + x.w + '</p>'
+          + '<div class="codewrap"><pre>' + esc(code) + '</pre><button class="copyb" data-xi="' + xi + '" aria-label="Copy command">Copy</button></div>'
+          + '<p><span class="lbl">What to expect: </span>' + x.e + '</p></div></div>';
+      });
+      h += '</div>';
+    });
+    $("tab-run").innerHTML = h;
+    EX = [].slice.call($("tab-run").querySelectorAll(".ex"));
+    $("run_q").addEventListener("input", filterRun);
+    $("tab-run").addEventListener("click", function(e){
+      var b = e.target.closest(".copyb"); if (b) { copy(RUN_EXAMPLES[+b.dataset.xi].cmd.join("\n"), b); return; }
+      var a = e.target.closest(".toc a"); if (a) { e.preventDefault(); var t = $("run-g" + a.dataset.rg); if (t) t.scrollIntoView({ block: "start", behavior: "smooth" }); }
+    });
+    filterRun();
+  }
+  function filterRun(){
+    var q = $("run_q").value.trim().toLowerCase().split(/\s+/).filter(Boolean), shown = 0;
+    EX.forEach(function(el){ var ok = q.every(function(w){ return el.dataset.txt.indexOf(w) >= 0; }); el.hidden = !ok; if (ok) shown++; });
+    [].forEach.call(document.querySelectorAll("#tab-run .refgrp"), function(g){ g.hidden = !g.querySelector(".ex:not([hidden])"); });
+    $("run_n").textContent = "Showing " + shown + " of " + EX.length;
+  }
+  function copy(text, btn){
+    function done(){ var o = btn.textContent; btn.textContent = "Copied"; setTimeout(function(){ btn.textContent = "Copy"; }, 1500); }
+    function fallback(){ var t = document.createElement("textarea"); t.value = text; t.style.position = "fixed"; t.style.opacity = "0"; document.body.appendChild(t); t.select(); try { document.execCommand("copy"); } catch (e) {} document.body.removeChild(t); done(); }
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(done, fallback); else fallback();
+  }
+
+  /* ---- init ---- */
+  renderRef(); renderRun();
+  var bar = $("tabbar");
+  bar.addEventListener("click", function(e){ var b = e.target.closest("button[data-tab]"); if (b) showTab(b.dataset.tab); });
+  bar.addEventListener("keydown", function(e){
+    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+    var names = Object.keys(TABS), cur = names.filter(function(k){ return $("tb-" + k).getAttribute("aria-selected") === "true"; })[0];
+    var n = names[(names.indexOf(cur) + (e.key === "ArrowRight" ? 1 : names.length - 1)) % names.length]; showTab(n); $("tb-" + n).focus(); e.preventDefault();
+  });
+  var m = (location.hash || "").match(/tab=(settings|examples)/); showTab(m ? m[1] : "sim", true);
+  window.__tabs = { showTab: showTab, tryIt: tryIt, openPreset: openPreset };
+})();
+
 </script></body></html>
