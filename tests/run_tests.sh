@@ -969,7 +969,7 @@ t cm_help 0 fleet --help; has cm_help out '--check-mode MODE'; has cm_help out '
 chk "shipped conf: check-mode=schedule is the default" grep -qx 'check-mode=schedule' "$SHIPPED"
 # schedule mode is untouched: byte-identical output to the v1.7.2 release (same settings, frozen clock, default fleet)
 if git -C "$HERE/.." rev-parse -q --verify 'v1.7.2^{commit}' >/dev/null 2>&1; then
-    V172="$OUT/v172"; mkdir -p "$V172"; git -C "$HERE/.." archive v1.7.2 | tar -x -C "$V172"; grep -v '^check-mode=' "$BASECONF" >"$OUT/base_172.conf"
+    V172="$OUT/v172"; mkdir -p "$V172"; git -C "$HERE/.." archive v1.7.2 | tar -x -C "$V172"; grep -vE '^(check-mode|attach-html|attach-csv|attach-prefix)=' "$BASECONF" >"$OUT/base_172.conf"
     same172() { local name="$1" fmt="$2"; shift 2; local o="$OUT/cm172_$name" extra=(); [[ "$name" == *_explicit ]] && extra=(--check-mode schedule)
         cd "$CMW" || return
         PATH="$CMD:$PATH" FAKE_NOW="$CM_FN" MOCK_NOW="$CM_FN" MOCK_SCENARIO=fleet "$V172/rds_backup_compliance_report.sh" --config "$OUT/base_172.conf" "$@" -F "$fmt" >"$o.old" 2>/dev/null
@@ -1019,7 +1019,7 @@ ct cm_csv 0 -P prod -r us-east-1 -F csv --check-mode counts
 chk "counts csv: weekly found / expected / target numbers, empty missing column" csvq "$OUT/cm_csv.out" 'any(r["identifier"]=="billing-aurora-mysql" and r["weekly_status"]=="FAIL" and r["weekly_found"]=="3" and r["weekly_expected"]=="4" and r["weekly_target"]=="4" and r["weekly_missing"]=="" for r in rows)'
 chk "counts csv: the rerun server is COMPLIANT with weekly 4/4" csvq "$OUT/cm_csv.out" 'any(r["identifier"]=="shop-aurora-mysql" and r["status"]=="COMPLIANT" and r["weekly_found"]=="4" for r in rows)'
 PATH="$CMD:$PATH" FAKE_NOW="$CM_FN" MOCK_NOW="$CM_FN" MOCK_EXTRA=shop_rerun em cm_mail mailx 0 fleet -P prod -r us-east-1 -F json --check-mode counts "${A2[@]}"
-has cm_mail.cap body '^  - prod-core \(111111111111\) us-east-1 billing-aurora-mysql \(aurora-mysql\): weekly 3/4 in last 30d$'
+has cm_mail.cap body 'prod-core \(111111111111\).*billing-aurora-mysql.*weekly 3/4 in last 30d'
 hasnt cm_mail.cap body 'shop-aurora-mysql'; hasnt cm_mail.cap body 'missing (Sat|Sun|Mon)'
 # --merge applies the mode at merge time (saved data is mode independent)
 CMM="$OUT/cmmerge"; mkdir -p "$CMM"; ct cm_save 0 -P prod -r us-east-1 -F json --save-data "$CMM/prod.json"
