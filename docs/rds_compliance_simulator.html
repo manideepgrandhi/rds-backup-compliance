@@ -986,7 +986,13 @@ var REF_GROUPS = [
   { k: "alert-from", def: "(empty)", kind: "ops", what: "The From address. Empty = the mail system's default.",
     accepts: "One plain address, or empty.", flag: "<code>--alert-from ADDR</code>" },
   { k: "alert-on", def: "noncompliant", kind: "ops", what: "<code>noncompliant</code> = send only when a server is NON-COMPLIANT or an AWS call failed (UNKNOWN rows or failed regions); servers covered by an exception count as compliant. <code>always</code> = send after every run.",
-    accepts: "noncompliant or always (any case); anything else stops the run (exit 1).", flag: "<code>--alert-on WHEN</code>" }
+    accepts: "noncompliant or always (any case); anything else stops the run (exit 1).", flag: "<code>--alert-on WHEN</code>" },
+  { k: "attach-html", def: "yes", kind: "ops", what: "Attach the interactive HTML report to the alert e-mail. Only sendmail can attach files; mail / mailx send the text body only.",
+    accepts: "yes or no (also 1 / 0, y / n, true / false, on / off, any case).", flag: "<code>--attach-html YES|NO</code>" },
+  { k: "attach-csv", def: "yes", kind: "ops", what: "Attach the per-server compliance CSV to the alert e-mail. Only sendmail can attach files; mail / mailx send the text body only.",
+    accepts: "yes or no (also 1 / 0, y / n, true / false, on / off, any case).", flag: "<code>--attach-csv YES|NO</code>" },
+  { k: "attach-prefix", def: "backup_compliance", kind: "ops", what: "Prefix of the short file names used only on the e-mail attachments, e.g. <code>backup_compliance_2026-11-26.html</code>. Files written to the output folder keep their full names.",
+    accepts: "A non-empty name of letters, digits, dot, underscore or hyphen.", flag: "<code>--attach-prefix NAME</code>" }
  ]},
  { id: "names", title: "Account names (display only)", intro: "Not a <code>key=value</code> setting: one line per account in the conf, <code>123456789012 = prod-payments</code>. Accounts not listed show their IAM account alias, else the number.", items: [
   { k: "123456789012 = name", def: "111111111111 = prod-payments, 222222222222 = nonprod-shared (fake numbers in the shipped file)", kind: "output", what: "A friendly name shown as <code>name (number)</code> in every report, e-mail and log line. It is only a label.",
@@ -1157,7 +1163,7 @@ var RUN_EXAMPLES = [
   var SETS = [];
   function renderRef(){
     var h = '<div class="card"><h2>Settings reference: every key in <code class="k">rds_backup_compliance_report.conf</code></h2>'
-      + '<p class="runintro">All ' + REF_GROUPS.reduce(function(a, g){ return a + g.items.length; }, 0) + ' entries of the conf file in the order of its sections (40 <code>key=value</code> settings plus the account-name lines). Defaults are the shipped values. Accepted values come from the script\'s own checks, so a value outside them stops the run with exit code 1 and the line number. Days are UTC dates.</p>'
+      + '<p class="runintro">All ' + REF_GROUPS.reduce(function(a, g){ return a + g.items.length; }, 0) + ' entries of the conf file in the order of its sections (43 <code>key=value</code> settings plus the account-name lines). Defaults are the shipped values. Accepted values come from the script\'s own checks, so a value outside them stops the run with exit code 1 and the line number. Days are UTC dates.</p>'
       + '<div class="legendk">Each setting is tagged: ' + Object.keys(KINDS).map(function(k){ return '<span class="tag ' + KINDS[k].c + '">' + KINDS[k].t + '</span>'; }).join(" ") + '</div>'
       + '<div class="reftools"><input id="ref_q" type="search" placeholder="Search settings (name, words, flag)..." aria-label="Search settings">'
       + '<select id="ref_k" aria-label="Filter by effect"><option value="">All settings</option>' + Object.keys(KINDS).map(function(k){ return '<option value="' + k + '">' + KINDS[k].t + '</option>'; }).join("") + '</select>'
