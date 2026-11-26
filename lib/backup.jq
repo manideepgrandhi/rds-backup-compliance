@@ -12,6 +12,7 @@ def DAYS_PER_YEAR: 365.25;
 def EPOCH_WEEKDAY: 4;          # 1970-01-01 (day 0) was a Thursday; weekdays count 0 = Sunday
 def SPARE_SLOTS: 2;            # extra scheduled days looked at beyond the expected count (late / early points)
 def MONTHS_AHEAD: 14;          # months searched forward for the "full on" date of a young resource
+def MONTHLY_SLACK_DAYS: 7;     # counts mode: the monthly window is N months plus this many days (first-<weekday> dates move up to 6 days a year)
 # r1: round a number to one decimal place.
 def r1: (. * 10 | round) / 10;
 # utc: epoch seconds -> "YYYY-MM-DD HH:MM UTC" ("" for null).
@@ -42,6 +43,22 @@ def mlabel: (dgm) as $g | "\(MON[$g[1]]) \($g[0])";                             
 # take day 1 of the month, then move forward 0-6 days to the wanted weekday.
 def firstdow($mi; $wd): ([($mi / MONTHS_PER_YEAR | floor), ($mi % MONTHS_PER_YEAR), 1, 0, 0, 0, 0, 0] | mktime / SECONDS_PER_DAY | floor) as $d1
   | $d1 + (($wd - ($d1 | dow) + DAYS_PER_WEEK) % DAYS_PER_WEEK);                     # first <weekday> of month index y*12+m (0-based month)
+
+# counts: check-mode=counts (v1.8.0). $cfg.check_mode is only passed in counts mode, so schedule mode reads the same $cfg as before.
+def counts: $cfg.check_mode == "counts";
+# mfirst(month index): day number of the first day of a month (month index = year * 12 + month 0-11).
+def mfirst($mi): [($mi / MONTHS_PER_YEAR | floor), ($mi % MONTHS_PER_YEAR), 1, 0, 0, 0, 0, 0] | mktime / SECONDS_PER_DAY | floor;
+# mback($today; $mi; $n): day number of today's day-of-month, $n months earlier (clamped to the last day of that month).
+def mback($today; $mi; $n): ($today | dgm | .[2]) as $dom
+  | [ mfirst($mi - $n) + $dom - 1, mfirst($mi - $n + 1) - 1 ] | min;
+# ccount($have; $need; $target): counts-mode result of one schedule, same shape as sched(); the found count is capped at
+# what is expected now, so a young resource reads "2/2 so far (target 4)" like in schedule mode. No dates are listed.
+def ccount($have; $need; $target): {have: ([$have, $need] | min), need: $need, target: $target, _days: [], missing: []};
+# ctail(schedule): the window of a counts-mode gap text, like " in last 30d" / " in last 12 months".
+def ctail($k): if $k == "daily" then " in last \($cfg.daily)d"
+  elif $k == "weekly" then " in last \($cfg.weekly_window_days)d"
+  elif $k == "monthly" then " in last \($cfg.monthly) month\(if $cfg.monthly == 1 then "" else "s" end)"
+  else "" end;
 
 # class of an AWS Backup recovery point from its retention (days between creation and DeleteAt)
 # DeleteAt - creation; falls back to Lifecycle.DeleteAfterDays (v1.3.1 data) when CalculatedLifecycle is missing
@@ -131,12 +148,14 @@ def evaluate:
   # (tolerance 0), retention >= daily and the newest backup <= daily_max_age_h. Any gap = FAIL; too young or none yet = DUE.
   | (if role_exempt($r) then {st: "N/A", have: null, need: null, gap: "", missing: []}
      elif $r.snap_ok == false then {st: "UNKNOWN", have: null, need: $cfg.daily, gap: "snapshots unreadable", missing: []}
-     else sched([ range(0; $cfg.daily + SPARE_SLOTS) | $today - . ]; [ $auto[].created_epoch ]; 0; $cfg.daily; null; $cday) as $s
+     else sched([ range(0; $cfg.daily + SPARE_SLOTS) | $today - . ]; [ $auto[].created_epoch ]; 0; $cfg.daily; null; $cday)
+          # counts mode: the same count of days with an automated backup (this check never used tolerance-days), but no dates are listed
+          | (if counts then . + {missing: []} else . end) as $s
        | (if $last_auto == null then null else (($now - $last_auto) / SECONDS_PER_HOUR | r1) end) as $h
        | [ (if ($r.retention // 0) < $cfg.daily then "daily: retention \($r.retention // 0)d < \($cfg.daily)d" else empty end),
            (if $h == null then (if $age * HOURS_PER_DAY > $cfg.daily_max_age_h then "daily: no automated backup" else empty end)
             elif $h > $cfg.daily_max_age_h then "daily: last automated \($h)h ago" else empty end),
-           (if stx($s) == "FAIL" then "daily \($s.have)/\($s.need) missing \([ $s.missing[] | dshort ] | join(", "))" else empty end) ] as $g
+           (if stx($s) == "FAIL" then (if counts then "daily \($s.have)/\($s.need)" + ctail("daily") else "daily \($s.have)/\($s.need) missing \([ $s.missing[] | dshort ] | join(", "))" end) else empty end) ] as $g
        | $s + {last_h: $h, gap: ($g | join("; ")), full_d: (if $s.need < $s.target then ($cday + $s.target) else null end),
                st: (if ($g | length) > 0 then "FAIL" elif stx($s) == "DUE" or $h == null then "DUE" else "OK" end)} end) as $daily
   # weekly / monthly anchors: $lastw = the latest scheduled weekday on or before today; $mi = this month index
@@ -144,6 +163,11 @@ def evaluate:
   | (if $cfg.weekly == "auto" then null else $cfg.weekly end) as $wn
   | (($today - (($today | dow) - $wd + DAYS_PER_WEEK) % DAYS_PER_WEEK)) as $lastw
   | ($now | gmtime | .[0] * MONTHS_PER_YEAR + .[1]) as $mi
+  # counts mode windows (day numbers): weekly = the last weekly-window-days days including today; monthly = N months back
+  # from today's date, plus MONTHLY_SLACK_DAYS ($mstart0 without the slack, for the excess warning)
+  | ($today - $cfg.weekly_window_days + 1) as $wstart
+  | mback($today; $mi; $cfg.monthly) as $mstart0
+  | ($mstart0 - MONTHLY_SLACK_DAYS) as $mstart
   # weekly / monthly / yearly: N/A for secondaries and replicas (daily only), UNKNOWN if recovery points are unreadable.
   # weekly candidates go back 7 days at a time from $lastw; monthly candidates are the first <weekday> of past months.
   | (if $r.global_role == "secondary" or $r.global_role == "replica" then
@@ -153,15 +177,27 @@ def evaluate:
      else
        ([ $rps[] | select(.class == "weekly") | .created_epoch ]) as $wp
        | ([ $rps[] | select(.class == "monthly") | .created_epoch ]) as $mp
-       | sched([ range(0; ($wn // ($cfg.weekly_window_days / DAYS_PER_WEEK | floor)) + SPARE_SLOTS + 1) | $lastw - DAYS_PER_WEEK * . ]; $wp; $tol; $wn; $today - $cfg.weekly_window_days; $cday) as $w
-       | sched([ range(0; $cfg.monthly + SPARE_SLOTS) | firstdow($mi - .; $md) ]; $mp; $tol; $cfg.monthly; null; $cday) as $m
+       | (if counts then
+            # counts: weekly-class points created in the last weekly-window-days UTC days (target = weekly, or floor(window / 7) for auto);
+            # expected now = whole weeks since the resource was created (closed days only), at most the target
+            (if $wn == null then ($cfg.weekly_window_days / DAYS_PER_WEEK | floor) else $wn end) as $wt
+            | ccount([ $wp[] | select(day >= $wstart) ] | length; ([ $wt, ((($today - 1 - $cday) / DAYS_PER_WEEK) | floor | [., 0] | max) ] | min); $wt)
+          else sched([ range(0; ($wn // ($cfg.weekly_window_days / DAYS_PER_WEEK | floor)) + SPARE_SLOTS + 1) | $lastw - DAYS_PER_WEEK * . ]; $wp; $tol; $wn; $today - $cfg.weekly_window_days; $cday) end) as $w
+       | (if counts then
+            # counts: monthly-class points created in the last N months (+ MONTHLY_SLACK_DAYS), catch-ups count; expected now = whole months since the
+            # month the resource was created, not counting the current one, at most N
+            (if $r.created_epoch == null then null else ($r.created_epoch | gmtime | .[0] * MONTHS_PER_YEAR + .[1]) end) as $cmi
+            | ccount([ $mp[] | select(day >= $mstart) ] | length; ([ $cfg.monthly, (if $cmi == null then $cfg.monthly else [($mi - $cmi - 1), 0] | max end) ] | min); $cfg.monthly)
+          else sched([ range(0; $cfg.monthly + SPARE_SLOTS) | firstdow($mi - .; $md) ]; $mp; $tol; $cfg.monthly; null; $cday) end) as $m
        | {weekly: ($w + {st: stx($w), dfmt: "week",
                          full_d: (if $w.need < $w.target then
-                                     (if $wn == null then $cday + $cfg.weekly_window_days
+                                     (if counts then $cday + DAYS_PER_WEEK * $w.target + 1
+                                      elif $wn == null then $cday + $cfg.weekly_window_days
                                       else (($cday + 1) as $f | $f + (($wd - ($f | dow) + DAYS_PER_WEEK) % DAYS_PER_WEEK) + DAYS_PER_WEEK * ($wn - 1)) end) else null end)}),
           monthly: ($m + {st: stx($m), dfmt: "month",
                           full_d: (if $m.need < $m.target then
-                                      ([ range(0; $cfg.monthly + MONTHS_AHEAD) | firstdow(($cday | dgm | .[0] * MONTHS_PER_YEAR + .[1]) + .; $md) | select(. > $cday) ][$cfg.monthly - 1])
+                                      (if counts then mfirst((if $r.created_epoch == null then $mi else ($r.created_epoch | gmtime | .[0] * MONTHS_PER_YEAR + .[1]) end) + $cfg.monthly + 1)
+                                       else ([ range(0; $cfg.monthly + MONTHS_AHEAD) | firstdow(($cday | dgm | .[0] * MONTHS_PER_YEAR + .[1]) + .; $md) | select(. > $cday) ][$cfg.monthly - 1]) end)
                                     else null end)}),
           # yearly: distinct calendar years with a yearly-class point; DUE while the resource is younger than N years
           yearly: (if $cfg.yearly > 0 then
@@ -177,7 +213,7 @@ def evaluate:
   ([ ($daily | select(.st == "FAIL") | .gap),
        (if $daily.st == "UNKNOWN" then "daily: snapshots unreadable" else empty end),
        ($wmy | to_entries[] | select(.value.st == "FAIL") | "\(.key) \(.value.have)/\(.value.need)"
-          + (if (.value.missing // []) | length > 0 then " missing " + mtxt(.key; .value) else "" end)),
+          + (if counts then ctail(.key) elif (.value.missing // []) | length > 0 then " missing " + mtxt(.key; .value) else "" end)),
        (if $wmy.weekly.st == "UNKNOWN" then "AWS Backup recovery points unreadable" else empty end) ] | join("; ")) as $gaps
   | ([ $rps[] | select(.class == "mismatch") ]) as $mis
   # every schedule status except OFF: the overall status is decided from this list below
@@ -200,11 +236,13 @@ def evaluate:
          elif $cl == "mismatch" then {counted: false, reason: (if $ret == null then "no expiry (never expires): not weekly or monthly" + (if $cfg.yearly > 0 then "" else "; yearly check is off" end)
                                                              else "retention \($ret)d is outside \(wtxt) and \(mtxt2)" end)}
          elif $cl == "yearly" then {counted: true, reason: "yearly (\(.created_epoch | year)), retention \(if $ret == null then "never expires" else "\($ret)d" end)"}
-         else (.created_epoch | hitday($cl)) as $h
+         else (if counts then (.created_epoch | day) as $cd | (if ($cl == "weekly" and $cd >= $wstart) or ($cl == "monthly" and $cd >= $mstart) then $cd else null end)
+               else (.created_epoch | hitday($cl)) end) as $h
            | (if $cl == "weekly" then wtxt else mtxt2 end) as $win
            | rmis_note($cl; $ret) as $rn
-           | if $h != null then {counted: true, ret_mismatch: ($rn != null), reason: ("\($cl): counts for \(if $cl == "monthly" then ($h | dshort) + " (first \(wdname($md)))" else $h | dshort end), "
+           | if $h != null then {counted: true, ret_mismatch: ($rn != null), reason: ("\($cl): counts for \(if counts then "the last" + (ctail($cl) | sub("^ in last"; "")) elif $cl == "monthly" then ($h | dshort) + " (first \(wdname($md)))" else $h | dshort end), "
                  + (if $rn != null then "but \($rn)" else "retention \($ret)d as expected" end))}
+             elif counts then {counted: false, reason: ("retention \($ret)d = \($cl), but \(.created_epoch | day | dshort) is older than the last" + (ctail($cl) | sub("^ in last"; "")))}
              else {counted: false, reason: ("retention \($ret)d = \($cl), but \(.created_epoch | day | dshort) is not within ±\($tol)d of a checked \(if $cl == "weekly" then wdname($wd) else "first " + wdname($md) end)"
                      + (if ($wmy[$cl]._days // []) | length > 0 then " (" + ([ $wmy[$cl]._days[] | dshort ] | join(", ")) + ")" else "" end))} end end)
       | {id: $p.id, c: $p.created_epoch, date: (if $p.created_epoch == null then "" else ($p.created_epoch | day | dwk) end),
@@ -218,13 +256,13 @@ def evaluate:
      else ([ $auto[] | select(.created_epoch != null and .created_epoch >= $now - $cfg.daily * SECONDS_PER_DAY) ] | length) as $n
        | {n: $n, max: ($cfg.daily + 1), exp: "\($cfg.daily)"} end) as $exd
   | (if $wmy.weekly.st == "N/A" or $wmy.weekly.st == "UNKNOWN" then null
-     else ([ $rps[] | select(.class == "weekly" and .created_epoch >= ($today - $cfg.weekly_window_days - $tol) * SECONDS_PER_DAY) ] | length) as $n
+     else ([ $rps[] | select(.class == "weekly" and (if counts then (.created_epoch | day) >= $wstart else .created_epoch >= ($today - $cfg.weekly_window_days - $tol) * SECONDS_PER_DAY end)) ] | length) as $n
        | (if $wn == null then [($cfg.weekly_window_days / DAYS_PER_WEEK | floor), ($cfg.weekly_window_days / DAYS_PER_WEEK | ceil)] else [$wn, $wn] end) as $lh
-       | {n: (if $wn == null then $n else ([ $rps[] | select(.class == "weekly" and .created_epoch >= ($lastw - DAYS_PER_WEEK * ($wn - 1) - $tol) * SECONDS_PER_DAY) ] | length) end),
+       | {n: (if $wn == null or counts then $n else ([ $rps[] | select(.class == "weekly" and .created_epoch >= ($lastw - DAYS_PER_WEEK * ($wn - 1) - $tol) * SECONDS_PER_DAY) ] | length) end),
           max: $lh[1], exp: (if $lh[0] == $lh[1] then "\($lh[0])" else "\($lh[0])-\($lh[1])" end)} end) as $exw
   | (if $wmy.monthly.st == "N/A" or $wmy.monthly.st == "UNKNOWN" then null
-     else ([ range(0; $cfg.monthly + SPARE_SLOTS) | firstdow($mi - .; $md) | select(. <= $today) ][$cfg.monthly - 1]) as $old
-       | {n: ([ $rps[] | select(.class == "monthly" and .created_epoch >= (($old // 0) - $tol) * SECONDS_PER_DAY) ] | length), max: $cfg.monthly, exp: "\($cfg.monthly)"} end) as $exm
+     else (if counts then $mstart0 else ([ range(0; $cfg.monthly + SPARE_SLOTS) | firstdow($mi - .; $md) | select(. <= $today) ][$cfg.monthly - 1]) end) as $old
+       | {n: ([ $rps[] | select(.class == "monthly" and (if counts then (.created_epoch | day) >= $old else .created_epoch >= (($old // 0) - $tol) * SECONDS_PER_DAY end)) ] | length), max: ($cfg.monthly + (if counts then 1 else 0 end)), exp: "\($cfg.monthly)"} end) as $exm
   | ({daily: $exd, weekly: $exw, monthly: $exm}) as $ex
   | ([ $ex | to_entries[] | select(.value != null and .value.n > .value.max) | "\(.key) \(.value.n) (expected \(.value.exp))" ] | join("; ")) as $ext
   | ([ $auto[] | select(.created_epoch != null and .created_epoch < over_cut($r.retention)) ] | sort_by(.created_epoch)) as $old
@@ -378,13 +416,22 @@ def totals($rs): {resources: ($rs | length),
 def comptxt($t): if $t.compliance.pct == null then "Compliance: - (nothing due yet)"
   else "Compliance: \($t.compliance.pct)% (\($t.compliance.compliant) of \($t.compliance.of))" end
   + (if $t.not_yet_due > 0 then ", \($t.not_yet_due) not yet due not counted" else "" end);
-# ruletxt: the rules in effect as one line (text output header).
-def ruletxt: "daily: each of the last \($cfg.daily) days (RDS automated, last <= \($cfg.daily_max_age_h)h)"
+# ruletxt_schedule: the rules in effect as one line in check-mode=schedule (unchanged since v1.7.2).
+def ruletxt_schedule: "daily: each of the last \($cfg.daily) days (RDS automated, last <= \($cfg.daily_max_age_h)h)"
   + " · weekly every \(wdname($cfg.weekly_weekday)) " + (if $cfg.weekly == "auto" then "in the last \($cfg.weekly_window_days) days" else "x\($cfg.weekly)" end)
   + " (retention \($cfg.weekly_retention_days)d, counted \($cfg.weekly_min_days)-\($cfg.weekly_max_days)d)"
   + " · monthly first \(wdname($cfg.monthly_weekday)) x\($cfg.monthly) (retention \($cfg.monthly_retention_days)d, counted \($cfg.monthly_min_days)-\($cfg.monthly_max_days)d)"
   + (if yon then " · yearly x\($cfg.yearly)" else "" end)
   + " · daily retention \(dret)d · retention ±\(rtol)d · schedule ±\($cfg.tolerance_days)d, UTC dates · global secondaries: daily only" + (if $cfg.replica_exempt_engines | length > 0 then " · replica-exempt-engines \($cfg.replica_exempt_engines | join(",")): always COMPLIANT" else "" end);
+# ruletxt_counts: the same line in check-mode=counts (weekday, monthly-rule and tolerance-days are not used).
+def ruletxt_counts: "check-mode counts: daily at least \($cfg.daily) of the last \($cfg.daily) days have an RDS automated backup (last <= \($cfg.daily_max_age_h)h)"
+  + " · weekly at least " + (if $cfg.weekly == "auto" then "\($cfg.weekly_window_days / DAYS_PER_WEEK | floor)" else "\($cfg.weekly)" end) + " points in the last \($cfg.weekly_window_days) days"
+  + " (retention \($cfg.weekly_retention_days)d, counted \($cfg.weekly_min_days)-\($cfg.weekly_max_days)d)"
+  + " · monthly at least \($cfg.monthly) points in the last \($cfg.monthly) month\(if $cfg.monthly == 1 then "" else "s" end) (+\(MONTHLY_SLACK_DAYS) days) (retention \($cfg.monthly_retention_days)d, counted \($cfg.monthly_min_days)-\($cfg.monthly_max_days)d)"
+  + (if yon then " · yearly x\($cfg.yearly)" else "" end)
+  + " · daily retention \(dret)d · retention ±\(rtol)d, UTC dates · global secondaries: daily only" + (if $cfg.replica_exempt_engines | length > 0 then " · replica-exempt-engines \($cfg.replica_exempt_engines | join(",")): always COMPLIANT" else "" end);
+# ruletxt: the rules in effect as one line (text output header).
+def ruletxt: if counts then ruletxt_counts else ruletxt_schedule end;
 # v1.5.1 page header: one bullet per rule, every value from $cfg; tolerances / counted ranges in ⓘ tips
 # htip(text): HTML info icon with text as its tooltip.
 def htip($t): " <span class=\"ti\" tabindex=\"0\" title=\"\($t | @html)\">&#9432;</span>";
@@ -393,13 +440,17 @@ def hdrhtml($R):
   $cfg.monthly_min_days as $mmin
   | "<ul class=\"hdr\" id=\"hdr\">"
   + "<li>Generated \($now | loc) (\($now | utc))</li>"
-  + "<li id=\"h-daily\">Daily: last \($cfg.daily) days, newest within \($cfg.daily_max_age_h)h, retention \(dret)d</li>"
-  + "<li id=\"h-weekly\">Weekly: every \(wdname($cfg.weekly_weekday)), "
+  + "<li id=\"h-daily\">Daily: " + (if counts then "at least \($cfg.daily) of the last \($cfg.daily) days" else "last \($cfg.daily) days" end) + ", newest within \($cfg.daily_max_age_h)h, retention \(dret)d</li>"
+  + (if counts then "<li id=\"h-weekly\">Weekly: at least " + (if $cfg.weekly == "auto" then "\($cfg.weekly_window_days / DAYS_PER_WEEK | floor)" else "\($cfg.weekly)" end) + " points in the last \($cfg.weekly_window_days) days, retention \($cfg.weekly_retention_days)d"
+      + htip("Check mode counts (any weekday). Counted when retention is \($cfg.weekly_min_days)-\($cfg.weekly_max_days)d; retention ±\(rtol)d; dates in UTC") + "</li>"
+    else "<li id=\"h-weekly\">Weekly: every \(wdname($cfg.weekly_weekday)), "
     + (if $cfg.weekly == "auto" then "last \($cfg.weekly_window_days) days" else "last \($cfg.weekly)" end)
     + ", retention \($cfg.weekly_retention_days)d"
-    + htip("Counted when retention is \($cfg.weekly_min_days)-\($cfg.weekly_max_days)d; retention ±\(rtol)d; schedule ±\($cfg.tolerance_days)d; dates in UTC") + "</li>"
-  + "<li id=\"h-monthly\">Monthly: first \(wdname($cfg.monthly_weekday)), last \($cfg.monthly) months, retention \($cfg.monthly_retention_days)d"
-    + htip("Counted when retention is \($mmin)-\($cfg.monthly_max_days)d; retention ±\(rtol)d; schedule ±\($cfg.tolerance_days)d; dates in UTC") + "</li>"
+    + htip("Counted when retention is \($cfg.weekly_min_days)-\($cfg.weekly_max_days)d; retention ±\(rtol)d; schedule ±\($cfg.tolerance_days)d; dates in UTC") + "</li>" end)
+  + (if counts then "<li id=\"h-monthly\">Monthly: at least \($cfg.monthly) points in the last \($cfg.monthly) month\(if $cfg.monthly == 1 then "" else "s" end), retention \($cfg.monthly_retention_days)d"
+      + htip("Check mode counts (any day; catch-up points count). Counted when retention is \($mmin)-\($cfg.monthly_max_days)d; retention ±\(rtol)d; the window has \(MONTHLY_SLACK_DAYS) days of slack; dates in UTC") + "</li>"
+    else "<li id=\"h-monthly\">Monthly: first \(wdname($cfg.monthly_weekday)), last \($cfg.monthly) months, retention \($cfg.monthly_retention_days)d"
+    + htip("Counted when retention is \($mmin)-\($cfg.monthly_max_days)d; retention ±\(rtol)d; schedule ±\($cfg.tolerance_days)d; dates in UTC") + "</li>" end)
   + (if yon then "<li id=\"h-yearly\">Yearly: last \($cfg.yearly)</li>" else "" end)
   + (if $cfg.replica_exempt_engines | length > 0 then "<li id=\"h-exempt\">Role=replica/secondary matching \($cfg.replica_exempt_engines | join(",")): always COMPLIANT</li>" else "" end)
   + (if [$R[] | select(.global_role == "secondary" or .global_role == "replica")] | length > 0 then "<li id=\"h-global\">Global secondaries: daily only</li>" else "" end)

@@ -12,6 +12,8 @@ MOCK_NOW: fixed epoch for "now".  MOCK_SLEEP: "region=seconds,..." delay per reg
 MOCK_LOG: append argv as JSONL.  MOCK_DEFAULT_REGION: answer for `aws configure get region`.
 MOCK_REPLICA_OF_CLUSTER: instance replicas name a Multi-AZ cluster source (ReadReplicaSourceDBClusterIdentifier) instead of an instance.
 MOCK_ALIAS / MOCK_ALIAS_DENY: override or deny iam list-account-aliases (v1.5.2 account names).
+MOCK_EXTRA=shop_rerun: adds prod us-east-1 shop-aurora-mysql (v1.8.0 check-mode counts): the last Saturday's weekly point is missing and an
+               on-demand weekly point (30 d retention) was taken 49 h after it (the Monday). The default fleet is unchanged without it.
 """
 import json, os, sys
 from datetime import datetime, timedelta, timezone
@@ -96,6 +98,8 @@ FLEET = {
         ("eu-west-1", "erp-oracle-rr", "instance", "oracle-ee", "19.0.0.0.ru-2024-01.rur-2024-01.r1", 400, 0, 0, 999, [], [], 0, None, None, [], {"replica_of": "erp-oracle"}),
     ],
 }
+if os.environ.get("MOCK_EXTRA") == "shop_rerun":
+    FLEET["111111111111"].append(("us-east-1", "shop-aurora-mysql", "cluster", "aurora-mysql", "8.0.mysql_aurora.3.08.0", 800, 7, 7, 5, [1, 2, 3], "all", 0, None, None, [], {"rerun_h": 49}))
 rows = [] if SCEN == "empty" else [r for r in FLEET[acct] if r[0] == region]
 
 # snapshots whose source is not a current cluster / instance of this account + region (region-wide describe-db-*-snapshots)
@@ -287,6 +291,8 @@ if svc == "backup" and op == "list-recovery-points-by-backup-vault":
                 t = t + timedelta(hours=opts(r).get("wshift", {}).get(k, 0))
                 if picked(r[9], k) and t > created(r) and t < NOW and t + timedelta(days=35) > NOW:
                     pts.append(rp(r, t, 35, vault, "weekly-sat"))
+            if opts(r).get("rerun_h"):   # v1.8.0: an on-demand weekly point (30 d retention, no plan rule) taken rerun_h hours after the last Saturday
+                pts.append(rp(r, min(saturdays(1)[0] + timedelta(hours=opts(r)["rerun_h"]), NOW - timedelta(hours=1)), 30, vault))
             for k, t in enumerate(first_sundays(13)):
                 if picked(r[10], k) and t > created(r) and t + timedelta(days=365) > NOW:
                     pts.append(rp(r, t, 365, vault, "monthly-first-sun"))

@@ -948,6 +948,86 @@ t scr2_dir 0 fleet -P prod -r us-east-1 -F json -o "$SC/d" --manual-older-than 9
 chk "with -o DIR the CSV is still written there" compgen -G "$SC/d/*_manual_older_than_90d.csv" >/dev/null
 hasnt scr2_dir err 'screen only'
 
+echo "== v1.8.0: check-mode (schedule | counts)"
+# A frozen clock: Thursday 2026-11-26 12:00 UTC, so the last Saturday is 21 Nov and the Monday after it is 23 Nov.
+CM_FN="$(date -u -d '2026-11-26 12:00:00' +%s)"; CMD="$OUT/cmdate"; CMW="$OUT/cmcwd"; mkdir -p "$CMD" "$CMW"
+printf '#!/usr/bin/env bash\nfor a in "$@"; do case "$a" in -d|-d*|--date*) exec /bin/date "$@" ;; esac; done\nexec /bin/date -d "@$FAKE_NOW" "$@"\n' >"$CMD/date"; chmod +x "$CMD/date"
+# ct NAME EXIT ARGS...: like t, with the frozen clock and MOCK_EXTRA=shop_rerun (prod us-east-1 shop-aurora-mysql: the 21 Nov point is missing, an on-demand one exists from 23 Nov)
+ct() { local name="$1" exp="$2"; shift 2
+       PATH="$CMD:$PATH" FAKE_NOW="$CM_FN" MOCK_NOW="$CM_FN" MOCK_EXTRA=shop_rerun MOCK_SCENARIO=fleet "$SCRIPT" --config "$BASECONF" "$@" >"$OUT/$name.out" 2>"$OUT/$name.err"; local rc=$?
+       if [[ "$rc" == "$exp" ]]; then ok "$name (rc=$rc)"; else bad "$name: rc=$rc expected $exp"; tail -3 "$OUT/$name.err" | sed 's/^/       /'; fi; }
+# settings: the key is required, validated, shown by --check-config, and --check-mode overrides it
+grep -v '^check-mode=' "$BASECONF" >"$OUT/nocm.conf"
+t cm_missing 1 fleet --config "$OUT/nocm.conf" --check-config; has cm_missing err 'missing 1 required setting\(s\): check-mode'
+mkconf "$OUT/cm_counts.conf" 'check-mode=counts'; mkconf "$OUT/cm_bad.conf" 'check-mode=weekly'
+t cm_bad 1 fleet --config "$OUT/cm_bad.conf" --check-config; has cm_bad err 'conf:[0-9]+: --check-mode must be schedule or counts \(got .weekly.\)'
+t cm_badcli 1 fleet --check-mode weekly; has cm_badcli err '--check-mode must be schedule or counts'
+t cm_cc0 0 fleet --check-config; has cm_cc0 out '^  check-mode +schedule +conf$'
+t cm_cc1 0 fleet --check-config --config "$OUT/cm_counts.conf"; has cm_cc1 out '^  check-mode +counts +conf$'
+t cm_cc2 0 fleet --check-config --check-mode COUNTS; has cm_cc2 out '^  check-mode +counts +CLI$'
+t cm_help 0 fleet --help; has cm_help out '--check-mode MODE'; has cm_help out 'are then ignored\) +\[schedule\]$'
+chk "shipped conf: check-mode=schedule is the default" grep -qx 'check-mode=schedule' "$SHIPPED"
+# schedule mode is untouched: byte-identical output to the v1.7.2 release (same settings, frozen clock, default fleet)
+if git -C "$HERE/.." rev-parse -q --verify 'v1.7.2^{commit}' >/dev/null 2>&1; then
+    V172="$OUT/v172"; mkdir -p "$V172"; git -C "$HERE/.." archive v1.7.2 | tar -x -C "$V172"; grep -vE '^(check-mode|attach-html|attach-csv|attach-prefix)=' "$BASECONF" >"$OUT/base_172.conf"
+    same172() { local name="$1" fmt="$2"; shift 2; local o="$OUT/cm172_$name" extra=(); [[ "$name" == *_explicit ]] && extra=(--check-mode schedule)
+        cd "$CMW" || return
+        PATH="$CMD:$PATH" FAKE_NOW="$CM_FN" MOCK_NOW="$CM_FN" MOCK_SCENARIO=fleet "$V172/rds_backup_compliance_report.sh" --config "$OUT/base_172.conf" "$@" -F "$fmt" >"$o.old" 2>/dev/null
+        PATH="$CMD:$PATH" FAKE_NOW="$CM_FN" MOCK_NOW="$CM_FN" MOCK_SCENARIO=fleet "$SCRIPT" --config "$BASECONF" "${extra[@]}" "$@" -F "$fmt" >"$o.new" 2>/dev/null
+        chk "schedule mode byte-identical to v1.7.2: $name ($fmt)" cmp -s "$o.old" "$o.new"
+        [[ -s "$o.new" ]] || bad "schedule mode identity: $name produced no output"; cd "$HERE" || return; }
+    same172 fleet json -P prod,nonprod,dev -A; same172 fleet_csv csv -P prod,nonprod,dev -A; same172 fleet_text text -P prod,nonprod,dev -A
+    same172 fleet_html html -P prod,nonprod,dev -A; same172 weekly6 json -P prod -r us-east-1,us-west-2 --weekly 6 --yearly 1 --tolerance-days 0
+    same172 fleet_explicit json -P prod,nonprod,dev -A; same172 html_explicit html -P prod -r us-east-1; same172 nconly_explicit text -P prod -r us-east-1 --non-compliant-only
+else echo "  skip v1.7.2 comparison (no git tag v1.7.2 here)"; fi
+ct cm_sch 0 -P prod -r us-east-1 -F json; ct cm_cnt 0 -P prod -r us-east-1 -F json --check-mode counts
+jqt cm_sch '.thresholds | has("check_mode") | not' "$OUT/cm_sch.out"; jqt cm_cnt '.thresholds.check_mode == "counts"' "$OUT/cm_cnt.out"
+# Saturday 21 Nov failed, the on-demand backup ran Monday 23 Nov: schedule mode (tolerance 1) still sees a miss, counts mode is back to 4/4
+rowt cm_sch shop-aurora-mysql '.status == "NON-COMPLIANT" and .gaps == "weekly 3/4 missing Sat 21 Nov"'
+rowt cm_cnt shop-aurora-mysql '.status == "COMPLIANT" and .gaps == "" and .weekly.have == 4 and .weekly.need == 4 and .weekly.st == "OK"'
+# only 3 weekly points in the window, no rerun: 3/4, with the window and without dates
+rowt cm_cnt billing-aurora-mysql '.status == "NON-COMPLIANT" and .gaps == "weekly 3/4 in last 30d" and .weekly.have == 3 and .weekly.need == 4 and (.weekly.missing | length) == 0'
+rowt cm_cnt legacy-mysql '.status == "NON-COMPLIANT" and .gaps == "daily: last automated 74h ago; daily 5/7 in last 7d"'
+rowt cm_cnt reports-pg '.status == "NON-COMPLIANT" and .gaps == "daily: retention 3d < 7d; daily 3/7 in last 7d"'
+ct cm_cnt2 0 -P prod,nonprod -r us-east-1,us-west-2,ap-south-1 -F json --check-mode counts
+rowt cm_cnt2 payroll-sqlserver '.status == "NON-COMPLIANT" and .gaps == "monthly 10/12 in last 12 months" and .monthly.have == 10'
+rowt cm_cnt orders-aurora-pg15 '.status == "COMPLIANT" and .gaps == ""'; rowt cm_sch orders-aurora-pg15 '.status == "COMPLIANT" and .gaps == ""'
+# retention checks stay: a weekly point with another retention is still highlighted, one outside weekly-days is still not counted
+rowt cm_cnt orders-aurora-pg15 '.retention_mismatch | test("weekly point has 35d, expected 30d")'
+rowt cm_cnt orders-aurora-pg15 '.warnings | test("2 recovery points")'
+# young servers stay NOT YET DUE, never NON-COMPLIANT
+rowt cm_cnt fresh-pg '.status == "NOT YET DUE" and .gaps == "" and .weekly.st == "DUE" and .weekly.target == 4 and .monthly.target == 12'
+rowt cm_cnt new-aurora-pg16 '.status == "NOT YET DUE" and .gaps == "" and .weekly.st == "DUE" and .weekly.need == 2 and .weekly.target == 4'
+# secondaries / replicas keep daily only
+rowt cm_cnt2 orders-dr-pg15 '.status == "COMPLIANT" and .weekly.st == "N/A" and .monthly.st == "N/A"'
+# weekly-weekday, monthly-rule and tolerance-days are ignored in counts mode: the rows do not change
+ct cm_ign 0 -P prod -r us-east-1 -F json --check-mode counts --tolerance-days 3 --weekly-weekday sun --monthly-rule first-mon
+chk "counts: weekly-weekday, monthly-rule and tolerance-days change nothing" cmp -s <(jq -S '.rows' "$OUT/cm_cnt.out") <(jq -S '.rows' "$OUT/cm_ign.out")
+# numbers come from the existing settings: weekly N, weekly-window-days, monthly N
+ct cm_w6 0 -P prod -r us-east-1 -F json --check-mode counts --weekly 6; rowt cm_w6 shop-aurora-mysql '.gaps == "weekly 4/6 in last 30d"'
+ct cm_win 0 -P prod -r us-east-1 -F json --check-mode counts --weekly-window-days 45; rowt cm_win billing-aurora-mysql '.status == "NON-COMPLIANT" and .weekly.target == 6 and (.gaps | test("weekly [0-9]/6 in last 45d"))'
+ct cm_m1 0 -P nonprod -r ap-south-1 -F json --check-mode counts --monthly 1; rowt cm_m1 payroll-sqlserver '.status == "COMPLIANT" and .monthly.have == 1 and .monthly.target == 1'
+ct cm_m13 0 -P nonprod -r ap-south-1 -F json --check-mode counts --monthly 13; rowt cm_m13 payroll-sqlserver '.gaps | test("monthly [0-9]+/13 in last 13 months")'
+# the other formats: text rule line, HTML header, CSV counts (no dates), e-mail failure rows
+ct cm_txt 0 -P prod -r us-east-1 -F text --check-mode counts
+has cm_txt out '^Rule: check-mode counts: daily at least 7 of the last 7 days .* weekly at least 4 points in the last 30 days .* monthly at least 12 points in the last 12 months'
+has cm_txt out '	NON-COMPLIANT	weekly 3/4 in last 30d	'; hasnt cm_txt out 'missing (Sat|Sun|Mon)'
+ct cm_html 0 -P prod -r us-east-1 -F html --check-mode counts
+has cm_html out 'id=\\?"h-weekly\\?">Weekly: at least 4 points in the last 30 days, retention 30d'; has cm_html out 'id=\\?"h-monthly\\?">Monthly: at least 12 points in the last 12 months'
+has cm_html out 'id=\\?"h-daily\\?">Daily: at least 7 of the last 7 days'; hasnt cm_html out 'Weekly: every Saturday'
+ct cm_csv 0 -P prod -r us-east-1 -F csv --check-mode counts
+chk "counts csv: weekly found / expected / target numbers, empty missing column" csvq "$OUT/cm_csv.out" 'any(r["identifier"]=="billing-aurora-mysql" and r["weekly_status"]=="FAIL" and r["weekly_found"]=="3" and r["weekly_expected"]=="4" and r["weekly_target"]=="4" and r["weekly_missing"]=="" for r in rows)'
+chk "counts csv: the rerun server is COMPLIANT with weekly 4/4" csvq "$OUT/cm_csv.out" 'any(r["identifier"]=="shop-aurora-mysql" and r["status"]=="COMPLIANT" and r["weekly_found"]=="4" for r in rows)'
+PATH="$CMD:$PATH" FAKE_NOW="$CM_FN" MOCK_NOW="$CM_FN" MOCK_EXTRA=shop_rerun em cm_mail mailx 0 fleet -P prod -r us-east-1 -F json --check-mode counts "${A2[@]}"
+has cm_mail.cap body 'prod-core \(111111111111\).*billing-aurora-mysql.*weekly 3/4 in last 30d'
+hasnt cm_mail.cap body 'shop-aurora-mysql'; hasnt cm_mail.cap body 'missing (Sat|Sun|Mon)'
+# --merge applies the mode at merge time (saved data is mode independent)
+CMM="$OUT/cmmerge"; mkdir -p "$CMM"; ct cm_save 0 -P prod -r us-east-1 -F json --save-data "$CMM/prod.json"
+ct cm_merge 0 --merge "$CMM/prod.json" --check-mode counts -F json -o ''
+chk "merge in counts mode gives the same rows as a direct counts run" cmp -s <(jq -S '.rows' "$OUT/cm_cnt.out") <(jq -S '.rows' "$OUT/cm_merge.out")
+ct cm_merge_s 0 --merge "$CMM/prod.json" -F json -o ''; chk "merge in schedule mode gives the same rows as a direct schedule run" cmp -s <(jq -S '.rows' "$OUT/cm_sch.out") <(jq -S '.rows' "$OUT/cm_merge_s.out")
+chk "jq: the counts window constants are named (no loose slack number)" bash -c "grep -q '^def MONTHLY_SLACK_DAYS: 7;' '$LIBD/backup.jq'"
+
 AFTER="$(cd "$HERE/.." && find . -path ./.git -prune -o -print | sort)"
 chk "nothing written into the repo" test "$BEFORE" == "$AFTER"
 echo; echo "passed $PASS, failed $FAIL"; (( FAIL == 0 ))
