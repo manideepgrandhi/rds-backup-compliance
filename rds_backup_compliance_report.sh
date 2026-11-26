@@ -3,7 +3,7 @@
 # rds_backup_compliance_report.sh - backup compliance of Aurora clusters and standalone RDS instances, per account
 # and region. READ-ONLY: rds describe-*, backup list-*, sts get-caller-identity, iam list-account-aliases, ec2 describe-regions.
 #
-# Rules (schedule based; the values below are the shipped rds_backup_compliance_report.conf, all configurable):
+# Rules (check-mode=schedule, the default; the values below are the shipped rds_backup_compliance_report.conf, all configurable):
 #   daily   RDS automated backups: retention >= daily days, one backup on each of the last daily UTC days, the latest
 #           <= daily-max-age hours old
 #   weekly  AWS Backup point (retention in weekly-days counted) for every weekly-weekday of the last weekly-window-days
@@ -16,6 +16,13 @@
 #   Dates before the resource was created are never expected. Points whose retention fits no class: warning only.
 #   Aurora global database secondaries and read replicas: daily only (weekly / monthly / yearly N/A).
 #   replica-exempt-engines: those Role=replica/secondary engines are always COMPLIANT (all schedules N/A).
+# check-mode=counts (v1.8.0, off by default): no weekday placement. Same settings, counted instead:
+#   daily   at least daily of the last daily closed UTC days have an RDS automated backup (retention and daily-max-age as above)
+#   weekly  at least weekly points (auto = floor(weekly-window-days / 7), 4 for 30 days) with retention in weekly-days,
+#           created in the last weekly-window-days days, on any weekday
+#   monthly at least monthly points with retention in monthly-days created in the last monthly months (+7 days slack);
+#           a catch-up point counts like a regular one
+#   weekly-weekday, monthly-rule and tolerance-days are ignored. Gaps read like "weekly 3/4 in last 30d".
 # Role (global_role column): replica | secondary (global DB member) | primary (everything else, v1.7.0; was none) | unknown (global clusters unreadable).
 # Status: COMPLIANT | NON-COMPLIANT (gaps column) | NOT YET DUE (resource too young) | UNKNOWN (a call failed).
 # Config (v1.7.1): every setting comes from ONE file, rds_backup_compliance_report.conf next to the script (required;
@@ -48,7 +55,7 @@ readonly MAX_PARALLEL=32 MAX_TOLERANCE_DAYS=3 MAX_NAME_CHARS=64 MAX_ERR_CHARS=20
 readonly REPORT_EXTS="html csv json txt"  # extensions keep-reports may delete (only files starting with the prefix)
 # Every key the conf file must contain (a value may be empty where the conf says so). Order = --check-config order.
 readonly -a REQUIRED_KEYS=(profile region all-regions engine identifier
-    daily daily-max-age weekly-weekday weekly-retention-days monthly-rule monthly monthly-retention-days replica-exempt-engines
+    check-mode daily daily-max-age weekly-weekday weekly-retention-days monthly-rule monthly monthly-retention-days replica-exempt-engines
     format output-dir tz non-compliant-only log-file manual-older-than snapshot-price-per-gb keep-reports
     alert-email alert-from alert-on exceptions
     weekly weekly-window-days weekly-days monthly-days tolerance-days daily-retention-days retention-tolerance-days yearly
@@ -63,7 +70,7 @@ fi
 # Arrays hold the list settings. Run state below: background job pids, AWS call counters, the work dir, written files.
 PROFILES=(); REGIONS=(); ENGINES=(); IDENTIFIERS=(); FORMATS=(); EXEMPT_ENGINES=(); ALERT_EMAILS=(); MERGE_ARGS=()
 ALL_REGIONS=""; OUTPUT_DIR=""; OUT_FILE=""; MANUAL_OLDER=""; SNAP_PRICE=""; PREFIX=""; DISPLAY_TZ=""
-DAILY=""; DAILY_MAX_AGE_H=""; WEEKLY=""; MONTHLY=""; YEARLY=""
+CHECK_MODE=""; DAILY=""; DAILY_MAX_AGE_H=""; WEEKLY=""; MONTHLY=""; YEARLY=""
 WEEKLY_MIN_DAYS=""; WEEKLY_MAX_DAYS=""; MONTHLY_MIN_DAYS=""; MONTHLY_MAX_DAYS=""
 WEEKLY_WEEKDAY=""; MONTHLY_RULE=""; TOLERANCE_DAYS=""; WEEKLY_WINDOW_DAYS=""; PARALLEL=""
 DAILY_RETENTION_DAYS=""; WEEKLY_RETENTION_DAYS=""; MONTHLY_RETENTION_DAYS=""; RET_TOLERANCE_DAYS=""
@@ -116,6 +123,8 @@ Scope:
   -i, --identifier GLOB     Cluster / instance identifier                                               [$(IFS=$j; echo "${IDENTIFIERS[*]}")]
 
 Compliance:
+      --check-mode MODE     schedule = a point on each scheduled day (weekday, monthly-rule, +/- tolerance-days);
+                            counts = at least N points in a window, any weekday (those three are then ignored) [$CHECK_MODE]
       --daily N             RDS automated: retention >= N days, a backup on each of the last N days     [$DAILY]
       --daily-max-age H     Latest automated backup at most H hours old                                 [$DAILY_MAX_AGE_H]
       --weekly-weekday DAY  Day the weekly backup runs (sun..sat)                                       [$WEEKLY_WEEKDAY]
@@ -254,6 +263,7 @@ set_opt_apply() {
         profile) set_list PROFILES profile "$v" ;; region) set_list REGIONS region "$v" ;;
         all-regions) bool_set ALL_REGIONS --all-regions "$v" ;;
         engine) set_list ENGINES engine "$v" ;; identifier) set_list IDENTIFIERS identifier "$v" ;;
+        check-mode) case "${v,,}" in schedule|counts) CHECK_MODE="${v,,}" ;; *) die 1 "--check-mode must be schedule or counts (got '$v')" ;; esac ;;
         daily) int_ok --daily "$v"; DAILY="$v" ;; daily-max-age) int_ok --daily-max-age "$v"; DAILY_MAX_AGE_H="$v" ;;
         weekly) [[ "$v" == auto ]] || int_ok --weekly "$v"; WEEKLY="$v" ;; monthly) int_ok --monthly "$v"; MONTHLY="$v" ;; yearly) int_ok --yearly "$v"; YEARLY="$v" ;;
         weekly-days) [[ "$v" =~ ^([0-9]+)-([0-9]+)$ ]] || die 1 "--weekly-days must be MIN-MAX (got '$v')"
@@ -372,7 +382,7 @@ parse_args() {
             --keep-workdir) KEEP_WORKDIR=1 ;; --dry-run) DRY_RUN=1 ;; -v|--verbose) VERBOSE=1 ;;
             --save-data) set_opt save-data yes; if [[ $# -ge 2 && "$2" != -* ]]; then SAVE_DATA_FILE="$2"; shift; fi ;;
             --merge) MERGE=1; while [[ $# -ge 2 && "$2" != -* ]]; do MERGE_ARGS+=("$2"); shift; done ;;
-            --daily|--daily-max-age|--weekly|--monthly|--yearly|--weekly-days|--monthly-max-days|--monthly-days|--daily-retention-days|--weekly-retention-days|--monthly-retention-days|--retention-tolerance-days|--weekly-weekday|--monthly-rule|--tolerance-days|--parallel|--weekly-window-days|--prefix|--tz|--aws-timeout|--max-attempts|--manual-older-than|--snapshot-price-per-gb|--replica-exempt-engines|--exceptions|--keep-reports|--alert-email|--alert-from|--alert-on|--mail-timeout)
+            --check-mode|--daily|--daily-max-age|--weekly|--monthly|--yearly|--weekly-days|--monthly-max-days|--monthly-days|--daily-retention-days|--weekly-retention-days|--monthly-retention-days|--retention-tolerance-days|--weekly-weekday|--monthly-rule|--tolerance-days|--parallel|--weekly-window-days|--prefix|--tz|--aws-timeout|--max-attempts|--manual-older-than|--snapshot-price-per-gb|--replica-exempt-engines|--exceptions|--keep-reports|--alert-email|--alert-from|--alert-on|--mail-timeout)
                 need_arg "$1" $#; set_opt "${1#--}" "$2"; shift ;;
             --*=*) set_opt "${1%%=*}" "${1#*=}" 2>/dev/null || die 1 "Unknown option: $1"; ;;
             *) die 1 "Unknown option: $1 (see --help)" ;;
@@ -412,7 +422,8 @@ tz_setup() {   # offset seconds + label of the second time zone (Git Bash date m
 
 # cfg_json: every threshold as one JSON object ($cfg in backup.jq; jq has no fallbacks, so every key is passed).
 # Weekday names become numbers (0 = Sunday); an empty daily-retention-days follows daily and an empty
-# weekly-window-days follows weekly-retention-days; weekly "auto" stays a string.
+# weekly-window-days follows weekly-retention-days; weekly "auto" stays a string. check_mode is added only in counts
+# mode, so the settings embedded in the json / html reports of the default schedule mode stay exactly as before.
 cfg_json() {
     local w="$WEEKLY"; [[ "$w" == auto ]] && w='"auto"'
     jq -cn --argjson d "$DAILY" --argjson h "$DAILY_MAX_AGE_H" --argjson w "$w" --argjson m "$MONTHLY" --argjson y "$YEARLY" \
@@ -420,11 +431,11 @@ cfg_json() {
         --argjson wd "$(dow_num "$WEEKLY_WEEKDAY")" --argjson md "$(dow_num "${MONTHLY_RULE#first-}")" --argjson tol "$TOLERANCE_DAYS" --argjson ww "${WEEKLY_WINDOW_DAYS:-$WEEKLY_RETENTION_DAYS}" \
         --argjson dr "${DAILY_RETENTION_DAYS:-$DAILY}" --argjson wr "$WEEKLY_RETENTION_DAYS" --argjson mr "$MONTHLY_RETENTION_DAYS" --argjson rt "$RET_TOLERANCE_DAYS" \
         --argjson off "$TZ_OFFSET" --arg lab "$TZ_LABEL" --argjson mo "${MANUAL_OLDER:-null}" --argjson sp "$SNAP_PRICE" \
-        --argjson ex "$(json_array "${EXEMPT_ENGINES[@]}")" \
+        --argjson ex "$(json_array "${EXEMPT_ENGINES[@]}")" --arg cm "$CHECK_MODE" \
         '{manual_older_than: $mo, snapshot_price_per_gb: $sp, daily: $d, daily_max_age_h: $h, weekly: $w, monthly: $m, yearly: $y, weekly_min_days: $wmin, weekly_max_days: $wmax,
           monthly_min_days: $mmin, monthly_max_days: $mmax, weekly_weekday: $wd, monthly_weekday: $md, tolerance_days: $tol, weekly_window_days: $ww,
           daily_retention_days: $dr, weekly_retention_days: $wr, monthly_retention_days: $mr, ret_tolerance_days: $rt,
-          replica_exempt_engines: $ex, tz_offset: $off, tz_label: $lab}' | tr -d '\r'
+          replica_exempt_engines: $ex, tz_offset: $off, tz_label: $lab} + (if $cm == "counts" then {check_mode: $cm} else {} end)' | tr -d '\r'
 }
 
 
@@ -497,7 +508,7 @@ setting_value() {
     case "$1" in
         profile) (IFS=,; echo "${PROFILES[*]}") ;; region) (IFS=,; echo "${REGIONS[*]}") ;; all-regions) yn "$ALL_REGIONS" ;;
         engine) (IFS=,; echo "${ENGINES[*]}") ;; identifier) (IFS=,; echo "${IDENTIFIERS[*]}") ;;
-        daily) echo "$DAILY" ;; daily-max-age) echo "$DAILY_MAX_AGE_H" ;; weekly-weekday) echo "$WEEKLY_WEEKDAY" ;;
+        check-mode) echo "$CHECK_MODE" ;; daily) echo "$DAILY" ;; daily-max-age) echo "$DAILY_MAX_AGE_H" ;; weekly-weekday) echo "$WEEKLY_WEEKDAY" ;;
         weekly-retention-days) echo "$WEEKLY_RETENTION_DAYS" ;; monthly-rule) echo "$MONTHLY_RULE" ;; monthly) echo "$MONTHLY" ;;
         monthly-retention-days) echo "$MONTHLY_RETENTION_DAYS" ;; replica-exempt-engines) (IFS=,; echo "${EXEMPT_ENGINES[*]}") ;;
         format) (IFS=,; echo "${FORMATS[*]}") ;; output-dir) echo "$OUTPUT_DIR" ;; tz) echo "$DISPLAY_TZ" ;;

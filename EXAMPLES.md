@@ -403,6 +403,37 @@ Exceptions (1); today is 2026-11-18 UTC:
   line 22: 111111111111 legacy-mysql scope=backup expires 2027-03-31 - Decommission in Q1, CHG-2001 (owner: dba-team)
 ```
 
+### 11. `check-mode=counts`: count backups instead of checking dates (v1.8.0, unreleased)
+
+`check-mode=schedule` (the default) wants a point for each scheduled day. With `check-mode=counts` a server is compliant when it has enough backups in a window, on any weekday: 7 of the last 7 days, 4 weekly points in the last 30 days, 12 monthly points in the last 12 months. `weekly-weekday`, `monthly-rule` and `tolerance-days` are ignored. The case it is made for: the Saturday 21 Nov weekly job of `shop-aurora-mysql` failed and an on-demand backup (30-day retention) was started on Monday 23 Nov. Both samples are real output of the same data on Thursday 26 Nov 2026; only the check mode differs (rows cut to a few servers and columns, tab separated):
+```bash
+./rds_backup_compliance_report.sh -P prod -r us-east-1 -F text --check-mode schedule | cut -f3,7-11
+```
+```text
+IDENTIFIER	DAILY	WEEKLY	MONTHLY	STATUS	GAPS
+billing-aurora-mysql	7/7	3/4 · missing Sat 14 Nov	12/12	NON-COMPLIANT	weekly 3/4 missing Sat 14 Nov
+fresh-pg	5/5 so far (target 7)	0/0 so far (target 4)	0/0 so far (target 12)	NOT YET DUE	daily full on 28 Nov 2026; weekly full on 21 Dec 2026; monthly full on 07 Nov 2027
+shop-aurora-mysql	7/7	3/4 · missing Sat 21 Nov	12/12	NON-COMPLIANT	weekly 3/4 missing Sat 21 Nov
+```
+```bash
+./rds_backup_compliance_report.sh -P prod -r us-east-1 -F text --check-mode counts | cut -f3,7-11
+```
+```text
+IDENTIFIER	DAILY	WEEKLY	MONTHLY	STATUS	GAPS
+billing-aurora-mysql	7/7	3/4	12/12	NON-COMPLIANT	weekly 3/4 in last 30d
+fresh-pg	5/5 so far (target 7)	0/0 so far (target 4)	0/0 so far (target 12)	NOT YET DUE	daily full on 28 Nov 2026; weekly full on 20 Dec 2026; monthly full on 01 Dec 2027
+shop-aurora-mysql	7/7	4/4	12/12	COMPLIANT	
+```
+In `schedule` mode the Monday backup is 2 days from Saturday, outside the ±1 day tolerance, so `shop-aurora-mysql` stays NON-COMPLIANT (`weekly 3/4 missing Sat 21 Nov`). In `counts` mode it is 4/4 and COMPLIANT. `billing-aurora-mysql` really has only 3 weekly points in the window and fails in both modes; counts mode names the window instead of a date: `weekly 3/4 in last 30d`. Young servers (`fresh-pg`) stay NOT YET DUE in both modes. The text report's `Rule:` line (and the HTML header) says `check-mode counts: daily at least 7 of the last 7 days ...`.
+
+Turn it on for good in the conf (`check-mode=counts`), or for one run with `--check-mode counts`. `--check-config` shows which one is in effect:
+```bash
+./rds_backup_compliance_report.sh --check-mode counts --check-config | grep check-mode
+```
+```text
+  check-mode                 counts                         CLI
+```
+
 ## v1.3.0
 
 ```bash

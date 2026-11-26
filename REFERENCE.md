@@ -76,6 +76,25 @@ AWS Backup recovery points are classified by their retention, which is CreationD
 | Over 400 days, or never expires | Yearly, only when `yearly` > 0 |
 | Anything else | Mismatch: not counted, and the resource gets a yellow warning such as `retention doesn't match: 2 recovery points (2555d, never expires) not counted` |
 
+### Check mode: counts (v1.8.0)
+
+`check-mode=schedule` (the default) is the policy above: a point for every scheduled day. `check-mode=counts` (or `--check-mode counts`) drops the calendar and counts backups in a window instead, whatever weekday they ran on. A backup you re-run late counts like the original, so a missed Saturday that you re-run on Monday brings the weekly check back to 4/4.
+
+| Check | Rule in `counts` mode | Numbers come from |
+|---|---|---|
+| Daily | At least `daily` of the last `daily` UTC days have an RDS automated backup (the same day count as schedule mode, which never used tolerance). Retention ≥ `daily` and newest ≤ `daily-max-age` hours stay as they are | `daily`, `daily-max-age` |
+| Weekly | At least N AWS Backup points with retention in `weekly-days`, created in the last `weekly-window-days` days (default `weekly-retention-days`, 30), on any weekday. N = `weekly`; `auto` = floor(window / 7), 4 for 30 days | `weekly`, `weekly-window-days`, `weekly-days` |
+| Monthly | At least `monthly` AWS Backup points with retention in `monthly-days`, created in the last `monthly` months counted back from today's date, plus 7 days of slack. A catch-up point counts like a regular one, so this is a total, not one per month | `monthly`, `monthly-days` |
+| Yearly | Unchanged | `yearly` |
+
+- **Ignored in `counts` mode:** `weekly-weekday`, `monthly-rule` and `tolerance-days`. They stay required in the conf so one file works in both modes.
+- **Unchanged in `counts` mode:** the retention checks (`retention mismatch`, excess backups, holds more than retention, points outside `weekly-days` / `monthly-days` not counted), replica and global-secondary rules, `replica-exempt-engines`, exceptions, `--merge` (the mode is applied when the report is made, so saved data works in either mode) and the e-mail summary.
+- **Young servers stay NOT YET DUE.** A server expects only what its age allows: whole closed days for daily, whole weeks since creation for weekly (at most the target) and whole months since the month it was created, not counting the current one, for monthly. A server that has all of that but not the full target shows `2/2 so far (target 4)` and `weekly full on 20 Dec 2026`; one that is missing some of it is NON-COMPLIANT.
+- **Gaps** name the window instead of dates: `weekly 3/4 in last 30d`, `daily 6/7 in last 7d`, `monthly 11/12 in last 12 months`. The CSV and JSON `missing` fields are empty in `counts` mode.
+- **Weekly window.** Days are UTC dates, today included; 30 days always holds at least four Saturdays, so a healthy Saturday job reads 4/4 on any day.
+- **Monthly caveat.** The retention of the monthly point limits what can be counted: with `monthly=12` and a 365-day retention, the point of 12 months ago expires a few days before a first-Sunday that moved later in the calendar is due, so a healthy server can read `11/12` for a few days a year (for example 3 Feb 2027). Schedule mode shows the same thing on those days. Keep monthly points a little longer than a year, or use `monthly=11`.
+- **Output.** The text rule line, the HTML header and the JSON `thresholds` say `counts` (JSON gets `check_mode`; in `schedule` mode the key is absent so the output stays identical to 1.7.2).
+
 ### Strict retention (v1.4.0)
 
 The ranges above decide whether a point **counts**. On top of that, each counted point is compared with the retention the schedule expects:
@@ -224,6 +243,7 @@ region=
 engine=
 identifier=
 ## ============================== Schedule ==============================
+check-mode=schedule
 daily=7
 daily-max-age=26
 weekly-weekday=sat
@@ -258,10 +278,11 @@ The real file also has a short `##` note above each setting. Notes always sit on
 
 | Key | Shipped value | Meaning |
 |---|---|---|
-| `weekly` | `auto` | `auto` = every weekly-weekday in the weekly window; `N` = the last N |
+| `check-mode` | `schedule` | `schedule` = a point for every scheduled day; `counts` = at least N points in a window, any weekday (`weekly-weekday`, `monthly-rule` and `tolerance-days` are then ignored) |
+| `weekly` | `auto` | `auto` = every weekly-weekday in the weekly window (counts mode: floor(window / 7)); `N` = the last N (counts mode: N points in the window) |
 | `weekly-window-days` | empty | Weekly window in days; empty = `weekly-retention-days` |
 | `weekly-days` / `monthly-days` | `25-40` / `300-400` | Retention ranges that make a recovery point weekly / monthly |
-| `tolerance-days` | `1` | A point counts for a scheduled day if taken up to N days before or after (0-3) |
+| `tolerance-days` | `1` | A point counts for a scheduled day if taken up to N days before or after (0-3). Ignored when `check-mode=counts` |
 | `daily-retention-days` | empty | Expected RDS backup retention; empty = `daily` |
 | `retention-tolerance-days` | `1` | Allowed difference from the expected retention |
 | `yearly` | `0` | Yearly points expected; 0 = off |
@@ -414,6 +435,8 @@ tests/validate_cli.py            # checks that every field read exists in the bu
 
 Technical notes for each version, kept as they were in the README. The plain-English version of the same releases is in [CHANGELOG.md](CHANGELOG.md).
 
+- **Unreleased**
+  - New setting `check-mode` (`schedule` default | `counts`) and `--check-mode`. `counts` replaces the date-by-date checks with window counts (daily N of the last N days, weekly N points in `weekly-window-days`, monthly N points in the last N months + 7 days); `weekly-weekday`, `monthly-rule` and `tolerance-days` are then ignored. Counts-mode gaps: `weekly 3/4 in last 30d`. JSON `thresholds` gets `check_mode` only in `counts` mode, so `schedule` output is byte-identical to 1.7.2.
 - **1.7.2**
   - `--dry-run` previews `keep-reports` (a `would delete` line per file and a count) and deletes nothing.
   - With `--non-compliant-only`, the text summary counts every server; the table and CSV still list only the failing rows.

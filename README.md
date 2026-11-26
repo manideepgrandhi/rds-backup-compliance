@@ -40,6 +40,8 @@ A quick look on the screen: `./rds_backup_compliance_report.sh -F text -o '' --n
 
 A server created on or before a scheduled day is not expected to have a backup for that day. A backup counts for a scheduled day if it was taken that UTC day, or up to 1 day before or after (weekly and monthly). Details: [Policy](REFERENCE.md#policy).
 
+Prefer counting to dates? Set `check-mode=counts` (or run with `--check-mode counts`). A server is then compliant when it has enough backups in a window, on any weekday: 7 of the last 7 days (daily), 4 weekly points in the last 30 days and 12 monthly points in the last 12 months. A missed Saturday that you re-run on Monday brings the weekly check back to 4/4. Gaps read `weekly 3/4 in last 30d`. Details: [Check mode](REFERENCE.md#check-mode-counts-v180).
+
 ## Most-used settings
 
 Every setting is in [rds_backup_compliance_report.conf](rds_backup_compliance_report.conf) (next to the script). Any of them can be overridden for one run with a command-line option, for example `--daily 14` or `-r us-east-1`.
@@ -48,15 +50,16 @@ Every setting is in [rds_backup_compliance_report.conf](rds_backup_compliance_re
 |---|---|---|
 | `profile` | empty | AWS CLI profile(s), one per account. Empty = the current login |
 | `all-regions` / `region` | `yes` / empty | Scan every enabled region, or only `region` |
+| `check-mode` | `schedule` | `schedule` = a backup on each scheduled day. `counts` = enough backups in a window, any weekday |
 | `daily` / `daily-max-age` | `7` / `26` | Daily backups expected, and the newest one's maximum age in hours |
 | `weekly-weekday` / `weekly-retention-days` | `sat` / `30` | Weekly backup day, and how long it is kept |
 | `monthly-rule` / `monthly` / `monthly-retention-days` | `first-sun` / `12` / `365` | Monthly backup day, months checked, how long it is kept |
-| `tolerance-days` | `1` | Days a backup may be early or late and still count (0-3) |
+| `tolerance-days` | `1` | Days a backup may be early or late and still count (0-3). Not used when `check-mode=counts` |
 | `format` / `output-dir` | `html,csv` / `./reports` | Report formats and where they go |
 | `alert-email` | empty | Who gets an e-mail summary. Empty = no e-mail |
 | `keep-reports` | `30` | Delete this tool's reports older than N days. 0 = keep all |
 
-All 40 settings, with allowed values: [the settings file](REFERENCE.md#the-settings-file-v171) in the reference, or the **Settings reference** tab of the [simulator](https://github.com/manideepgrandhi/rds-backup-compliance/blob/main/docs/rds_compliance_simulator.html).
+All 41 settings, with allowed values: [the settings file](REFERENCE.md#the-settings-file-v171) in the reference, or the **Settings reference** tab of the [simulator](https://github.com/manideepgrandhi/rds-backup-compliance/blob/main/docs/rds_compliance_simulator.html).
 
 ## Exit codes
 

@@ -2,6 +2,13 @@
 
 Plain-English features for each published release. The What's new page is built from this file.
 
+## Unreleased
+- New `check-mode` setting (and `--check-mode`): `schedule` (the default, exactly as before) or `counts`
+- In `counts` mode a server is compliant when it has enough backups in a window, whatever weekday they ran on: daily = 7 of the last 7 days have an automated backup, weekly = 4 points (auto: the weeks that fit in `weekly-window-days`) in the last 30 days, monthly = 12 points in the last 12 months
+- A backup you re-run late counts, so a missed Saturday that you re-run on Monday brings the weekly check back to 4/4. `weekly-weekday`, `monthly-rule` and `tolerance-days` are ignored in `counts` mode (they stay in the conf)
+- Counts-mode gaps read `weekly 3/4 in last 30d`, `daily 6/7 in last 7d`, `monthly 11/12 in last 12 months`; retention checks, young servers (NOT YET DUE) and replica rules are unchanged
+- With `check-mode=schedule` the reports are identical to 1.7.2 byte for byte
+
 ## 1.7.2
 - `--dry-run` now previews `keep-reports`: it lists each old report it would delete and a count, and deletes nothing
 - With `--non-compliant-only`, the text summary (Compliance, Resources) counts every server, as `--help` says; the table and CSV still list only the failing rows
