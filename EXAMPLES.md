@@ -44,9 +44,9 @@
 
 Sample outputs from the mock fleet are in `samples/`, and screenshots are in `docs/`.
 
-## Usage examples (v1.7.2)
+## Usage examples (v1.8.0)
 
-Ready-to-copy commands for everyday jobs, each with a short sample of real output. Every sample was produced by running v1.7.2 against the test mock in `tests/mock/aws`, so the numbers come from the mock fleet. Accounts are fake: `111111111111` (profile `prod`), `222222222222` (`nonprod`) and `333333333333` (`dev`). The script folder is `/home/dba/rds-backup-compliance` on a jump box named `jumpbox-01`. Timestamps are IST; report file names use UTC. Long outputs are cut where you see `...`.
+Ready-to-copy commands for everyday jobs, each with a short sample of real output. Every sample was produced by running v1.8.0 against the test mock in `tests/mock/aws`, so the numbers come from the mock fleet. Accounts are fake: `111111111111` (profile `prod`), `222222222222` (`nonprod`) and `333333333333` (`dev`). The script folder is `/home/dba/rds-backup-compliance` on a jump box named `jumpbox-01`. Timestamps are IST; report file names use UTC. Long outputs are cut where you see `...`.
 
 ### 1. First run after unzip: edit the conf, check it, run
 

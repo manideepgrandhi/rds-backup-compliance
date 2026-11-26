@@ -2,12 +2,12 @@
 
 Plain-English features for each published release. The What's new page is built from this file.
 
-## Unreleased
+## 1.8.0
 - New `check-mode` setting (and `--check-mode`): `schedule` (the default, exactly as before) or `counts`
 - In `counts` mode a server is compliant when it has enough backups in a window, whatever weekday they ran on: daily = 7 of the last 7 days have an automated backup, weekly = 4 points (auto: the weeks that fit in `weekly-window-days`) in the last 30 days, monthly = 12 points in the last 12 months
 - A backup you re-run late counts, so a missed Saturday that you re-run on Monday brings the weekly check back to 4/4. `weekly-weekday`, `monthly-rule` and `tolerance-days` are ignored in `counts` mode (they stay in the conf)
 - Counts-mode gaps read `weekly 3/4 in last 30d`, `daily 6/7 in last 7d`, `monthly 11/12 in last 12 months`; retention checks, young servers (NOT YET DUE) and replica rules are unchanged
-- With `check-mode=schedule` the reports are identical to 1.7.2 byte for byte
+- With `check-mode=schedule` the reports are identical to 1.7.2 byte for byte, except the tool version is now 1.8.0
 - The alert e-mail now has a short HTML body (status banner, counts, a table of NON-COMPLIANT / UNKNOWN / region-error servers only) and a plain-text fallback
 - The interactive HTML report is still attached, and the compliance CSV is attached too (`attach-html` and `attach-csv`, both shipped yes)
 - Attachment file names are short (`attach-prefix`, shipped `backup_compliance`, e.g. `backup_compliance_2026-11-26.html`); files on disk keep their full names
