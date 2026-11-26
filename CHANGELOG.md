@@ -6,7 +6,7 @@ Plain-English features for each published release. The What's new page is built 
 - The alert e-mail now has a short HTML body (status banner, counts, a table of NON-COMPLIANT / UNKNOWN / region-error servers only) and a plain-text fallback
 - The interactive HTML report is still attached, and the compliance CSV is attached too (`attach-html` and `attach-csv`, both shipped yes)
 - Attachment file names are short (`attach-prefix`, shipped `backup_compliance`, e.g. `backup_compliance_2026-11-26.html`); files on disk keep their full names
-- The e-mail body lists the full report file paths and does not list the attachments
+- The e-mail body does not list report file paths or attachments; full paths are still printed on the screen at the end of the run
 - The jump-box hostname and script name moved to a small footer, so the body starts with the result
 - `mail` / `mailx` still send the text only, with a log note to install sendmail for the HTML body and attachments
 - Report files (HTML, CSV and the rest) are unchanged

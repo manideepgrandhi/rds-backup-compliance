@@ -661,24 +661,23 @@ is_compliance_csv() {
     [[ "$b" == *.csv ]] || return 1
     [[ "$b" != *_backups.csv && "$b" != *_orphaned_snapshots.csv && "$b" != *_manual_older_than_*csv ]]
 }
-# alert_bodies MODE DATA HOST WHEN FILES_JSON TEXT_OUT HTML_OUT: write the text and HTML e-mail bodies
-# with lib/alert_email.jq. MODE is unused by the jq (text and html are both written); DATA is the
-# render-json document. Returns 1 if either file cannot be built.
+# alert_bodies DATA HOST WHEN TEXT_OUT HTML_OUT: write the text and HTML e-mail bodies
+# with lib/alert_email.jq. DATA is the render-json document. Returns 1 if either file cannot be built.
 alert_bodies() {
-    local data="$1" host="$2" when="$3" files_json="$4" text_out="$5" html_out="$6" tool
+    local data="$1" host="$2" when="$3" text_out="$4" html_out="$5" tool
     tool="$SCRIPT_NAME v$SCRIPT_VERSION"
     render json "$data" | jqv -r -f "$LIBDIR/alert_email.jq" --arg mode text --arg host "$host" \
-        --arg tool "$tool" --arg when "$when" --argjson files "$files_json" >"$text_out" || return 1
+        --arg tool "$tool" --arg when "$when" >"$text_out" || return 1
     render json "$data" | jqv -r -f "$LIBDIR/alert_email.jq" --arg mode html --arg host "$host" \
-        --arg tool "$tool" --arg when "$when" --argjson files "$files_json" >"$html_out" || return 1
+        --arg tool "$tool" --arg when "$when" >"$html_out" || return 1
     return 0
 }
 # send_alerts [test]: build the HTML+text summary and e-mail it to alert-email. With
 # alert-on=noncompliant it only sends when a NON-COMPLIANT server or an AWS error (failed region, UNKNOWN row) was
 # found; servers with an applied exception count as compliant. Never changes the exit code.
 send_alerts() {
-    local mode="${1:-}" subject text="$WORK/alert_body.txt" html="$WORK/alert_body.html" sum host when files_json
-    local -a atts=() files=()
+    local mode="${1:-}" subject text="$WORK/alert_body.txt" html="$WORK/alert_body.html" sum host when
+    local -a atts=()
     (( ${#ALERT_EMAILS[@]} )) || return 0
     host="$(hostname 2>/dev/null || echo unknown)"
     when="$(date '+%Y-%m-%d %H:%M:%S %Z')"
@@ -703,12 +702,7 @@ send_alerts() {
         fi
         subject="[$PREFIX] $(jqv -r 'if .nc > 0 then "NON-COMPLIANT" elif .err > 0 then "ERRORS" else "COMPLIANT" end
             + ": \(.nc) non-compliant of \(.t.resources), \(.t.compliance.pct // 0)% compliant"' <<<"$sum")"
-        if (( ${#WRITTEN[@]} )); then
-            local w
-            for w in "${WRITTEN[@]}"; do files+=("$(abs_dir "$(dirname -- "$w")")/${w##*/}"); done
-        fi
-        files_json="$(json_array "${files[@]}")"
-        alert_bodies "$WORK/data.json" "$host" "$when" "$files_json" "$text" "$html" \
+        alert_bodies "$WORK/data.json" "$host" "$when" "$text" "$html" \
             || { log_warn "E-mail: building the summary failed"; return 0; }
         # attachments: use a report already written, else render one into the work dir (not listed as a report file)
         if (( ATTACH_HTML )); then

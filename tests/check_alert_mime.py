@@ -61,6 +61,8 @@ def check_mixed(msg_path: Path, reports_dir: Path | None, expect_status: str, ex
     for body in (text, html):
         if "is attached" in body.lower() or "Attachment (sendmail" in body:
             raise SystemExit("attachment list still present in the e-mail body")
+        if "Report files" in body:
+            raise SystemExit("Report files section still present in the e-mail body")
     if reports_dir is not None:
         html_file = next(reports_dir.glob("*.html"))
         csv_file = next(
@@ -120,9 +122,6 @@ def check_escape(jq_file: Path) -> None:
             "--arg",
             "when",
             "now",
-            "--argjson",
-            "files",
-            "[]",
         ],
         input=json.dumps(doc),
         text=True,

@@ -284,11 +284,6 @@ prod-payments (111111111111)  billing-aurora-mysql  us-east-1  aurora-mysql  wee
 prod-payments (111111111111)  legacy-mysql          us-east-1  mysql         daily: last automated 74h ago; daily 5/7 missing Mon 16 Nov, Tue 17 Nov
 prod-payments (111111111111)  reports-pg            us-east-1  postgres      daily: retention 3d < 7d; daily 3/7 missing Wed 11 Nov, Thu 12 Nov, Fri 13 Nov, Sat 14 Nov
 
-Report files:
-  /home/cloudshell-user/rds-backup-compliance/reports/rds_backup_compliance_111111111111_20261118_024244.html
-  /home/cloudshell-user/rds-backup-compliance/reports/rds_backup_compliance_111111111111_20261118_024244.csv
-  ...
-
 rds_backup_compliance_report.sh v1.7.2 · jumpbox-01 · 2026-11-18 08:12:44 IST
 ```
 The test e-mail body: `Test e-mail from rds_backup_compliance_report.sh v1.7.2 on jumpbox-01 at 2026-11-18 08:12:44 IST. No AWS calls were made.`
@@ -690,11 +685,6 @@ Account                       Server                Region     Engine        Wha
 prod-payments (111111111111)  billing-aurora-mysql  us-east-1  aurora-mysql  weekly 3/4 missing Sat 07 Nov
 prod-payments (111111111111)  legacy-mysql          us-east-1  mysql         daily: last automated 74h ago; daily 4/7 missing Sun 15 Nov, Mon 16 Nov, Tue 17 Nov
 prod-payments (111111111111)  reports-pg            us-east-1  postgres      daily: retention 3d < 7d; daily 3/7 missing Wed 11 Nov, Thu 12 Nov, Fri 13 Nov, Sat 14 Nov
-
-Report files:
-  /home/cloudshell-user/rds-backup-compliance/reports/rds_backup_compliance_111111111111_20261118_011013.html
-  /home/cloudshell-user/rds-backup-compliance/reports/rds_backup_compliance_111111111111_20261118_011013.csv
-  ...
 
 rds_backup_compliance_report.sh v1.7.2 · jumpbox-01 · 2026-11-18 01:10:13 UTC
 ```

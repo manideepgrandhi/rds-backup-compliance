@@ -1,6 +1,6 @@
 # Alert e-mail body (text or HTML). Input is the `render json` document.
 # Args: $mode (text|html), $host, $tool (e.g. "rds_backup_compliance_report.sh v1.7.2"),
-#       $when (timestamp for the footer), $files (JSON array of report file paths).
+#       $when (timestamp for the footer).
 # Named constants below are typography only (same colours as the HTML report); every
 # setting still comes from the conf / CLI, not from this file.
 def lab:
@@ -77,9 +77,6 @@ def text_body:
      (text_table("NON-COMPLIANT servers"; [nc_rows[] | as_fail("row")])),
      (text_table("UNKNOWN (an AWS call failed)"; [un_rows[] | as_fail("row")])),
      (text_table("Region errors"; [re_rows[] | as_fail("region")])),
-     (if ($files | length) > 0 then
-        ("", "Report files:", ($files[] | "  \(.)"))
-      else empty end),
      "",
      footer);
 
@@ -104,13 +101,6 @@ def html_table($title; $rows):
         + "</tr>"
       ) | join("\n"))
     + "\n</tbody></table>\n</td></tr>\n"
-  end;
-def html_files:
-  if ($files | length) == 0 then "" else
-    "<tr><td style=\"padding:4px 20px 16px;font-size:13px;line-height:1.5;\">\n"
-    + "<div style=\"font-weight:700;margin-bottom:4px;\">Report files</div>\n"
-    + ($files | map("<div style=\"font-family:Consolas,Menlo,monospace;font-size:12px;line-height:1.5;color:#1d2939;word-break:break-all;\">\(. | @html)</div>") | join("\n"))
-    + "\n</td></tr>\n"
   end;
 def html_body:
   status_word as $st
@@ -150,7 +140,6 @@ def html_body:
          + html_table("UNKNOWN (an AWS call failed)"; [un_rows[] | as_fail("row")])
          + html_table("Region errors"; [re_rows[] | as_fail("region")])
        end)
-     + html_files
      + "<tr><td style=\"padding:12px 20px;border-top:1px solid #e4e7ec;font-size:11px;color:#667085;\">\(footer | @html)</td></tr>\n"
      + "</table>\n</td></tr></table>\n</body></html>\n");
 

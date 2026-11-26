@@ -804,7 +804,7 @@ has em_mailx.cap body '^NON-COMPLIANT servers \(3\):$'
 has em_mailx.cap body 'prod-core \(111111111111\).*billing-aurora-mysql'
 has em_mailx.cap body 'weekly [0-9]/[0-9] missing Sat '
 has em_mailx.cap body 'retention 3d < 7d'
-has em_mailx.cap body '^Report files:$'; has em_mailx.cap body '\.html$'
+hasnt em_mailx.cap body 'Report files'
 hasnt em_mailx.cap body 'Content-Type|^--rds_bcr'
 hasnt em_mailx.cap body '^RDS backup compliance report from '
 has em_mailx err 'mailx cannot send the HTML body or attachments'
@@ -821,7 +821,7 @@ has em_sm.cap body '^Content-Disposition: attachment; filename="backup_complianc
 hasnt em_sm.cap body 'filename="rds_backup_compliance_111111111111_'
 has em_sm.cap body '^NON-COMPLIANT servers \(3\):$'
 has em_sm.cap body 'background:#b3261e'
-has em_sm.cap body '^Report files:$'
+hasnt em_sm.cap body 'Report files'
 hasnt em_sm.cap body 'is attached|Attachment \(sendmail'
 chk "disk HTML and CSV keep their full names" bash -c 'compgen -G "$0/rds_backup_compliance_111111111111_*.html" && compgen -G "$0/rds_backup_compliance_111111111111_*[0-9].csv"' "$EMO/s" >/dev/null
 chk "sendmail: MIME structure, both attachments, HTML body table" \
@@ -886,6 +886,7 @@ has em_two.cap body 'multipart/mixed'; has em_two.cap body 'filename="backup_com
 has em_two.cap body 'filename="backup_compliance_[0-9]{4}-[0-9]{2}-[0-9]{2}\.csv"'
 hasnt em_two.cap body 'filename="rds_backup_compliance_111111111111_222222222222_'
 hasnt em_two.cap body 'is attached|Attachment \(sendmail'
+hasnt em_two.cap body 'Report files'
 chk "two-account e-mail MIME and attachments" \
     python3 "$HERE/check_alert_mime.py" mixed "$OUT/em_two.cap.body" "$EMO/two" --status NON-COMPLIANT --nc 4
 # HTML escaping of identifier / gaps (jq unit, no AWS)
