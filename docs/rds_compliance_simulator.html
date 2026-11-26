@@ -39,6 +39,10 @@ label{font-size:15px}
 .row{display:grid;grid-template-columns:1fr 128px;gap:4px 10px;align-items:center;padding:6px 8px;border-left:4px solid transparent;border-radius:6px}
 .row.chg{border-left-color:#f0a020;background:#fff8ea}
 .row.wide{grid-template-columns:1fr}
+.row.ign{opacity:.55}
+.row .ig{font-size:12.5px;color:#8a5a00;margin-left:6px}
+.modebox{background:var(--blue2);border:1px solid #aac4e2;border-radius:8px;margin-bottom:8px}
+.modebox select{font-weight:600}
 .row .lab{font-size:15px}
 .row .key{font-family:Consolas,"SF Mono",Menlo,monospace;font-size:13px;background:var(--blue2);color:#154f98;border-radius:5px;padding:1px 6px;display:inline-block;margin-top:2px}
 .row .def{font-size:12.5px;color:#a56800;margin-left:6px}
@@ -143,7 +147,7 @@ footer{color:var(--mute);font-size:13.5px;text-align:center;padding:6px 20px 28p
 </style></head><body>
 <header>
  <h1>How the backup compliance script decides: COMPLIANT or NON-COMPLIANT</h1>
- <div class="sub">Pick a cluster creation date, change the conf settings, and watch the verdict change. Simulates <code class="k">rds_backup_compliance_report.sh</code> v1.7.2 exactly as <code class="k">lib/backup.jq</code> evaluates it. No AWS calls, works offline.</div>
+ <div class="sub">Pick a cluster creation date, change the conf settings, and watch the verdict change. Simulates <code class="k">rds_backup_compliance_report.sh</code> v1.8.0 exactly as <code class="k">lib/backup.jq</code> evaluates it, in both check modes: <code class="k">schedule</code> (a point on each scheduled day) and <code class="k">counts</code> (at least N points in a window, any weekday). No AWS calls, works offline.</div>
 </header>
 <nav class="tabs" id="tabbar" role="tablist" aria-label="Pages"><button role="tab" id="tb-sim" data-tab="sim" aria-selected="true">Simulator</button><button role="tab" id="tb-settings" data-tab="settings" aria-selected="false" tabindex="-1">Settings reference</button><button role="tab" id="tb-examples" data-tab="examples" aria-selected="false" tabindex="-1">Run examples</button></nav>
 <div class="wrap tabpane" id="tab-sim" role="tabpanel" aria-labelledby="tb-sim">
@@ -216,11 +220,11 @@ footer{color:var(--mute);font-size:13.5px;text-align:center;padding:6px 20px 28p
 </div>
 <div class="wrap tabpane" id="tab-ref" role="tabpanel" aria-labelledby="tb-settings" hidden></div>
 <div class="wrap tabpane" id="tab-run" role="tabpanel" aria-labelledby="tb-examples" hidden></div>
-<footer>This page is a simulator of the rules in <b>rds_backup_compliance_report.sh v1.7.2</b> (<code class="k">lib/backup.jq</code>, repo <code class="k">manideepgrandhi/rds-backup-compliance</code> @ 3b1a389); it is not the script and it never calls AWS. Dates are UTC, like the script. The real report is the source of truth.</footer>
+<footer>This page is a simulator of the rules in <b>rds_backup_compliance_report.sh v1.8.0</b> (<code class="k">lib/backup.jq</code>, repo <code class="k">manideepgrandhi/rds-backup-compliance</code> @ 1d2235e); it is not the script and it never calls AWS. Dates are UTC, like the script. The real report is the source of truth.</footer>
 
 <script>
-/* ===== CORE: a JavaScript port of evaluate / sched / rp_class / exceptions from lib/backup.jq (script v1.7.2) ===== */
-var SPD = 86400, SPH = 3600, SPARE_SLOTS = 2, MONTHS_AHEAD = 14, EPOCH_WEEKDAY = 4;
+/* ===== CORE: a JavaScript port of evaluate / sched / rp_class / exceptions from lib/backup.jq (script v1.8.0; check-mode schedule = the v1.7.2 logic, check-mode counts = v1.8.0) ===== */
+var SPD = 86400, SPH = 3600, SPARE_SLOTS = 2, MONTHS_AHEAD = 14, EPOCH_WEEKDAY = 4, MONTHLY_SLACK_DAYS = 7;   /* MONTHLY_SLACK_DAYS: counts mode, the monthly window is N months plus this many days */
 var DOW = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 var WDNAME = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 var MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -228,6 +232,7 @@ var WD_CODE = {sun:0,mon:1,tue:2,wed:3,thu:4,fri:5,sat:6};
 
 /* repo defaults: rds_backup_compliance_report.conf (settings that affect classification) */
 var DEFAULT_CONF = {
+  "check-mode":"schedule",
   "daily":"7", "daily-max-age":"26",
   "weekly-weekday":"sat", "weekly-retention-days":"30",
   "monthly-rule":"first-sun", "monthly":"12", "monthly-retention-days":"365",
@@ -252,6 +257,10 @@ function firstdow(mi, wd){
   return d1 + (((wd - dow(d1) + 7) % 7));
 }
 function r1(x){ return Math.round(x * 10) / 10; }
+/* counts mode (lib/backup.jq): mfirst = day number of the 1st of a month index; mback = today's day-of-month N months earlier, clamped to that month's last day */
+function mfirst(mi){ return dayOf(Date.UTC(Math.floor(mi / 12), ((mi % 12) + 12) % 12, 1) / 1000); }
+function mback(today, mi, n){ var dom = dgm(today)[2]; return Math.min(mfirst(mi - n) + dom - 1, mfirst(mi - n + 1) - 1); }
+function ctail(k, cfg){ return k === "daily" ? " in last " + cfg.daily + "d" : (k === "weekly" ? " in last " + cfg.weekly_window_days + "d" : (k === "monthly" ? " in last " + cfg.monthly + " month" + (cfg.monthly === 1 ? "" : "s") : "")); }
 function jqIdx(a, i){ if (i < 0) i += a.length; return (i >= 0 && i < a.length) ? a[i] : null; }
 function isoToDay(s){ return dayOf(Date.parse(s + "T00:00:00Z") / 1000); }
 function isoToEpoch(date, time){ return Date.parse(date + "T" + (time || "00:00") + ":00Z") / 1000; }
@@ -262,6 +271,9 @@ function parseConf(c){
   function intOk(key){ var v = String(c[key] == null ? "" : c[key]).trim(); if (!/^[0-9]+$/.test(v)) { errs.push(key + " must be a whole number (got '" + v + "')"); return 0; } return parseInt(v, 10); }
   function intOrEmpty(key){ var v = String(c[key] == null ? "" : c[key]).trim(); if (v === "") return null; return intOk(key); }
   function range(key){ var v = String(c[key] == null ? "" : c[key]).trim(); var m = /^([0-9]+)-([0-9]+)$/.exec(v); if (!m) { errs.push(key + " must be MIN-MAX (got '" + v + "')"); return [0, 0]; } return [parseInt(m[1], 10), parseInt(m[2], 10)]; }
+  var cm = String(c["check-mode"] == null ? "schedule" : c["check-mode"]).trim().toLowerCase();
+  if (cm !== "schedule" && cm !== "counts") { errs.push("check-mode must be schedule or counts (got '" + cm + "')"); cm = "schedule"; }
+  cfg.check_mode = cm;
   cfg.daily = intOk("daily"); cfg.daily_max_age_h = intOk("daily-max-age");
   var w = String(c["weekly"] == null ? "" : c["weekly"]).trim();
   cfg.weekly = (w === "auto") ? "auto" : intOk("weekly");
@@ -322,9 +334,12 @@ function sched(cand, pts, tol, n, low, cday, now){
            _full: full, _exp: exp, _open: droppedOpen };
 }
 function stx(c){ return c.have < c.need ? "FAIL" : (c.need < c.target ? "DUE" : "OK"); }
+/* counts mode result of one schedule, same shape as sched(): the found count is capped at what is expected now, so a young cluster reads "2/2 so far (target 4)". No dates are listed. */
+function ccount(have, need, target){ return { have: Math.min(have, need), need: need, target: target, _days: [], missing: [], _full: [], _exp: [], _open: [] }; }
 
 /* ---- evaluate: one resource -> one row (status, per-schedule results, gaps) ---- */
 function evaluate(r, cfg, now){
+  var counts = cfg.check_mode === "counts";
   var today = dayOf(now);
   var cday = (r.created_epoch == null) ? -1 : dayOf(r.created_epoch);
   var age = (now - (r.created_epoch == null ? now : r.created_epoch)) / SPD;
@@ -342,12 +357,13 @@ function evaluate(r, cfg, now){
   else {
     var cand = []; for (i = 0; i < cfg.daily + SPARE_SLOTS; i++) cand.push(today - i);
     var s = sched(cand, autoEp, 0, cfg.daily, null, cday, now);
+    if (counts) s.missing = [];   /* counts mode: the same count of days with an automated backup (never used tolerance-days), but no dates are listed */
     var h = (lastAuto == null) ? null : r1((now - lastAuto) / SPH);
     var g = [];
     if (retention < cfg.daily) g.push("daily: retention " + retention + "d < " + cfg.daily + "d");
     if (h == null) { if (age * 24 > cfg.daily_max_age_h) g.push("daily: no automated backup"); }
     else if (h > cfg.daily_max_age_h) g.push("daily: last automated " + h + "h ago");
-    if (stx(s) === "FAIL") g.push("daily " + s.have + "/" + s.need + " missing " + s.missing.map(dshort).join(", "));
+    if (stx(s) === "FAIL") g.push(counts ? "daily " + s.have + "/" + s.need + ctail("daily", cfg) : "daily " + s.have + "/" + s.need + " missing " + s.missing.map(dshort).join(", "));
     daily = Object.assign({}, s, { last_h: h, gap: g.join("; "),
       full_d: (s.need < s.target) ? (cday + s.target) : null,
       st: g.length > 0 ? "FAIL" : ((stx(s) === "DUE" || h == null) ? "DUE" : "OK") });
@@ -356,26 +372,43 @@ function evaluate(r, cfg, now){
   var wn = (cfg.weekly === "auto") ? null : cfg.weekly;
   var lastw = today - (((dow(today) - wd + 7) % 7));
   var mi = monthIndex(now);
-  var wmy;
+  var wmy, wstart = null, mstart = null, mstart0 = null;
   if (r.global_role === "secondary" || r.global_role === "replica") wmy = { weekly: { st: "N/A" }, monthly: { st: "N/A" }, yearly: { st: "N/A" } };
   else if (r.backup_ok === false) wmy = { weekly: { st: "UNKNOWN" }, monthly: { st: "UNKNOWN" }, yearly: { st: "UNKNOWN" } };
   else {
     var wp = rps.filter(function(p){ return p.cls === "weekly"; }).map(function(p){ return p.created_epoch; });
     var mp = rps.filter(function(p){ return p.cls === "monthly"; }).map(function(p){ return p.created_epoch; });
-    var wc = [], nw = (wn == null ? Math.floor(cfg.weekly_window_days / 7) : wn) + SPARE_SLOTS + 1;
-    for (i = 0; i < nw; i++) wc.push(lastw - 7 * i);
-    var w = sched(wc, wp, tol, wn, today - cfg.weekly_window_days, cday, now);
-    var mc = []; for (i = 0; i < cfg.monthly + SPARE_SLOTS; i++) mc.push(firstdow(mi - i, md));
-    var m = sched(mc, mp, tol, cfg.monthly, null, cday, now);
+    var w, m, cmi = (r.created_epoch == null) ? null : monthIndex(r.created_epoch);
+    if (counts) {
+      /* counts: weekly-class points created in the last weekly-window-days UTC days (target = weekly, or floor(window / 7) for auto);
+         expected now = whole weeks since the resource was created (closed days only), at most the target */
+      wstart = today - cfg.weekly_window_days + 1;
+      mstart0 = mback(today, mi, cfg.monthly); mstart = mstart0 - MONTHLY_SLACK_DAYS;
+      var wt = (wn == null) ? Math.floor(cfg.weekly_window_days / 7) : wn;
+      w = ccount(wp.filter(function(e){ return dayOf(e) >= wstart; }).length, Math.min(wt, Math.max(Math.floor((today - 1 - cday) / 7), 0)), wt);
+      /* counts: monthly-class points created in the last N months (+ MONTHLY_SLACK_DAYS), catch-ups count; expected now = whole months since the
+         month the resource was created, not counting the current one, at most N */
+      m = ccount(mp.filter(function(e){ return dayOf(e) >= mstart; }).length, Math.min(cfg.monthly, cmi == null ? cfg.monthly : Math.max(mi - cmi - 1, 0)), cfg.monthly);
+    } else {
+      var wc = [], nw = (wn == null ? Math.floor(cfg.weekly_window_days / 7) : wn) + SPARE_SLOTS + 1;
+      for (i = 0; i < nw; i++) wc.push(lastw - 7 * i);
+      w = sched(wc, wp, tol, wn, today - cfg.weekly_window_days, cday, now);
+      var mc = []; for (i = 0; i < cfg.monthly + SPARE_SLOTS; i++) mc.push(firstdow(mi - i, md));
+      m = sched(mc, mp, tol, cfg.monthly, null, cday, now);
+    }
     var wfull = null, mfull = null;
     if (w.need < w.target) {
-      if (wn == null) wfull = cday + cfg.weekly_window_days;
+      if (counts) wfull = cday + 7 * w.target + 1;
+      else if (wn == null) wfull = cday + cfg.weekly_window_days;
       else { var f = cday + 1; wfull = f + (((wd - dow(f) + 7) % 7)) + 7 * (wn - 1); }
     }
     if (m.need < m.target) {
-      var cm = monthIndex(r.created_epoch), lst = [];
-      for (i = 0; i < cfg.monthly + MONTHS_AHEAD; i++) { var fd = firstdow(cm + i, md); if (fd > cday) lst.push(fd); }
-      mfull = jqIdx(lst, cfg.monthly - 1);
+      if (counts) mfull = mfirst((cmi == null ? mi : cmi) + cfg.monthly + 1);
+      else {
+        var cm = monthIndex(r.created_epoch), lst = [];
+        for (i = 0; i < cfg.monthly + MONTHS_AHEAD; i++) { var fd = firstdow(cm + i, md); if (fd > cday) lst.push(fd); }
+        mfull = jqIdx(lst, cfg.monthly - 1);
+      }
     }
     var yearly;
     if (cfg.yearly > 0) {
@@ -392,7 +425,7 @@ function evaluate(r, cfg, now){
   if (daily.st === "UNKNOWN") gaps.push("daily: snapshots unreadable");
   ["weekly", "monthly", "yearly"].forEach(function(k){
     var v = wmy[k];
-    if (v.st === "FAIL") gaps.push(k + " " + v.have + "/" + v.need + ((v.missing || []).length > 0 ? " missing " + mtxt(k, v) : ""));
+    if (v.st === "FAIL") gaps.push(k + " " + v.have + "/" + v.need + (counts ? ctail(k, cfg) : ((v.missing || []).length > 0 ? " missing " + mtxt(k, v) : "")));
   });
   if (wmy.weekly.st === "UNKNOWN") gaps.push("AWS Backup recovery points unreadable");
   var mis = rps.filter(function(p){ return p.cls === "mismatch"; });
@@ -415,8 +448,10 @@ function evaluate(r, cfg, now){
     else if (cl === "mismatch") o = { counted: false, reason: ret == null ? "no expiry (never expires): not weekly or monthly" + (cfg.yearly > 0 ? "" : "; yearly check is off") : "retention " + ret + "d is outside " + wtxt() + " and " + mtxt2() };
     else if (cl === "yearly") o = { counted: true, reason: "yearly (" + new Date(p.created_epoch * 1000).getUTCFullYear() + "), retention " + (ret == null ? "never expires" : ret + "d") };
     else {
-      var hd = hitday(cl, p.created_epoch), rn = rmisNote(cl, ret, cfg);
-      if (hd != null) o = { counted: true, for_day: hd, ret_mismatch: rn != null, reason: cl + ": counts for " + (cl === "monthly" ? dshort(hd) + " (first " + WDNAME[md] + ")" : dshort(hd)) + ", " + (rn != null ? "but " + rn : "retention " + ret + "d as expected") };
+      var hd = counts ? ((cl === "weekly" && dayOf(p.created_epoch) >= wstart) || (cl === "monthly" && dayOf(p.created_epoch) >= mstart) ? dayOf(p.created_epoch) : null) : hitday(cl, p.created_epoch), rn = rmisNote(cl, ret, cfg);
+      if (counts) o = (hd != null) ? { counted: true, ret_mismatch: rn != null, reason: cl + ": counts for the last" + ctail(cl, cfg).replace(/^ in last/, "") + ", " + (rn != null ? "but " + rn : "retention " + ret + "d as expected") }
+                                   : { counted: false, reason: "retention " + ret + "d = " + cl + ", but " + dshort(dayOf(p.created_epoch)) + " is older than the last" + ctail(cl, cfg).replace(/^ in last/, "") };
+      else if (hd != null) o = { counted: true, for_day: hd, ret_mismatch: rn != null, reason: cl + ": counts for " + (cl === "monthly" ? dshort(hd) + " (first " + WDNAME[md] + ")" : dshort(hd)) + ", " + (rn != null ? "but " + rn : "retention " + ret + "d as expected") };
       else o = { counted: false, reason: "retention " + ret + "d = " + cl + ", but " + dshort(dayOf(p.created_epoch)) + " is not within \u00b1" + tol + "d of a checked " + (cl === "weekly" ? WDNAME[wd] : "first " + WDNAME[md]) +
                  (((wmy[cl]._days || []).length > 0) ? " (" + wmy[cl]._days.map(dshort).join(", ") + ")" : "") };
     }
@@ -435,10 +470,12 @@ function evaluate(r, cfg, now){
     var v = kv[1], fd = v.full_d;
     if (fd != null) { v.full_on = dlong(fd); v.full_on_iso = diso(fd) + " " + DOW[dow(fd)]; nyd.push(kv[0] + " full on " + v.full_on); }
   });
-  return { identifier: r.id, account_id: r.account_id, status: status, daily: daily, weekly: wmy.weekly, monthly: wmy.monthly, yearly: wmy.yearly,
+  var row = { identifier: r.id, account_id: r.account_id, status: status, daily: daily, weekly: wmy.weekly, monthly: wmy.monthly, yearly: wmy.yearly,
            gaps: gaps.join("; "), not_yet_due: nyd.join("; "), warnings: warnings, retention_mismatch: rmt.join("; "),
            age_days: r.created_epoch == null ? null : Math.floor(age), last_automated: lastAuto, diag: diag, today: today, cday: cday,
            lastw: lastw, rps: rps };
+  if (counts) row.counts = { wstart: wstart, mstart0: mstart0, mstart: mstart };   /* the counted windows (day numbers), for the explanations and the timeline */
+  return row;
 }
 
 /* ---- compliance exceptions (backup scope) ---- */
@@ -501,6 +538,7 @@ var WD3 = ["sun","mon","tue","wed","thu","fri","sat"];
 
 /* ---------- conf form ---------- */
 var SPEC = [
+ {k:"check-mode", lab:"Check mode: schedule = a point on each scheduled day; counts = at least N points in a window, any weekday", t:"cmode"},
  {k:"daily", lab:"Days of daily backups required (RDS automated)", t:"int"},
  {k:"daily-max-age", lab:"Newest automated backup may be this many hours old", t:"int"},
  {k:"weekly-weekday", lab:"Day the weekly AWS Backup should run", t:"wd"},
@@ -525,9 +563,10 @@ function buildConf(){
     return list.map(function(s){
       var inp;
       if (s.t === "wd") inp = '<select id="c_' + s.k + '">' + WD3.map(function(w){ return '<option value="' + w + '">' + w + '</option>'; }).join("") + '</select>';
+      else if (s.t === "cmode") inp = '<select id="c_' + s.k + '"><option value="schedule">schedule</option><option value="counts">counts</option></select>';
       else if (s.t === "mr") inp = '<select id="c_' + s.k + '">' + WD3.map(function(w){ return '<option value="first-' + w + '">first-' + w + '</option>'; }).join("") + '</select>';
       else inp = '<input id="c_' + s.k + '" ' + (s.t.indexOf("int") === 0 ? 'inputmode="numeric"' : '') + '>';
-      return '<div class="row' + (s.k === "replica-exempt-engines" ? " wide" : "") + '" id="r_' + s.k + '"><div><div class="lab">' + esc(s.lab) + '</div><span class="key">' + s.k + '</span><span class="def" id="d_' + s.k + '"></span></div>' + inp + '</div>';
+      return '<div class="row' + (s.k === "replica-exempt-engines" ? " wide" : "") + (s.k === "check-mode" ? " modebox" : "") + '" id="r_' + s.k + '"><div><div class="lab">' + esc(s.lab) + '</div><span class="key">' + s.k + '</span><span class="def" id="d_' + s.k + '"></span><span class="ig" id="i_' + s.k + '"></span></div>' + inp + '</div>';
     }).join("");
   }
   $("conf").innerHTML = mk(SPEC); $("confadv").innerHTML = mk(ADV);
@@ -582,13 +621,17 @@ var PRESETS = [
  {n:"AWS call failed", d:"The script could not read the AWS Backup points. It cannot prove anything, so weekly and monthly are UNKNOWN and the cluster is UNKNOWN (not a pass).", f:function(st){ st.backupOk = false; }},
  {n:"Created on first Sunday (1 Nov 2026)", d:"Fixed example, run on Thu 19 Nov 2026. The cluster was created on Sun 1 Nov, itself a first-Sunday. The creation day is never expected, so there is no monthly point to check yet (first one expected Sun 6 Dec 2026, all 12 by 7 Nov 2027). Daily is OK, weekly has only the two Saturdays after creation (7 and 14 Nov), monthly is empty: the cluster is NOT YET DUE.", f:function(st){ st.created = "2026-11-01"; st.createdTime = "09:30"; st.run = "2026-11-19"; st.runTime = "23:51"; }},
  {n:"Created on last Saturday (31 Oct 2026)", d:"Fixed example, run on Thu 19 Nov 2026. Created on Sat 31 Oct, so the very next day (Sun 1 Nov) is a first-Sunday AFTER creation and the monthly backup is expected straight away. Here that monthly point is missing, so monthly = FAIL and the cluster is NON-COMPLIANT. To see the fix, open step 4 \u2192 Monthly (AWS Backup) and switch the Sun 1 Nov point on: it becomes NOT YET DUE (1 of 12, all 12 by 3 Oct 2027). A Saturday-created cluster needs its AWS Backup plan attached on day one.", f:function(st){ st.created = "2026-10-31"; st.createdTime = "09:30"; st.run = "2026-11-19"; st.runTime = "23:51"; st.ov["m:2026-11-01"] = { off: true }; }},
- {n:"Read replica (exempt)", d:"An Aurora read replica. Its engine matches replica-exempt-engines (aurora-*), so no backups are expected: always COMPLIANT. Clear that setting to see daily-only checking.", f:function(st){ st.role = "replica"; st.created = dayStr(isoToDay(st.run) - 400); st.rdsRetention = "1"; }}
+ {n:"Read replica (exempt)", d:"An Aurora read replica. Its engine matches replica-exempt-engines (aurora-*), so no backups are expected: always COMPLIANT. Clear that setting to see daily-only checking.", f:function(st){ st.role = "replica"; st.created = dayStr(isoToDay(st.run) - 400); st.rdsRetention = "1"; }},
+ {n:"Counts: Saturday missed, re-run Monday", c:{"check-mode":"counts"}, d:"check-mode=counts. The weekly backup of the Saturday before the latest one failed and was re-run on Monday (taken 2 days late). Counts mode only asks for 4 weekly points in the last 30 days, on any weekday, so the late point counts: weekly 4/4, COMPLIANT. In schedule mode the same point is 2 days late, outside tolerance-days=1, and fails: switch Check mode to schedule to see it.", f:function(st,td){ st.ov["w:" + dayStr(lastDow(td, 6) - 7)] = { offset: 2 }; }},
+ {n:"Counts: a real miss (3 of 4)", c:{"check-mode":"counts"}, d:"check-mode=counts. The Saturday backup of two weeks ago never ran and was never re-run. Only 3 weekly points exist in the last 30 days, so weekly = FAIL and the cluster is NON-COMPLIANT. The gap reads 'weekly 3/4 in last 30d' (counts mode lists no dates).", f:function(st,td){ st.ov["w:" + dayStr(lastDow(td, 6) - 14)] = { off: true }; }},
+ {n:"Counts: monthly catch-up", c:{"check-mode":"counts"}, d:"check-mode=counts. The first-Sunday monthly point of three months ago was taken 3 days late (Wednesday). Counts mode only needs 12 monthly points in the last 12 months (+7 days slack), so monthly stays 12/12 and the cluster is COMPLIANT.", f:function(st,td){ st.ov["m:" + dayStr(firstdow(monthIndex(td * SPD) - 3, 0))] = { offset: 3 }; }},
+ {n:"Counts: young cluster (10 days)", c:{"check-mode":"counts"}, d:"check-mode=counts. Ten days old: only whole weeks since creation are expected, so weekly expects 1 of 4 and monthly expects 0 of 12. Daily is OK; weekly and monthly are NOT YET DUE and each shows the date it becomes due.", f:function(st,td){ st.created = dayStr(td - 10); }}
 ];
 var curPreset = -1;
 function applyPreset(i, t){
   var st = baseState(t), td = isoToDay(st.run);
   PRESETS[i].f(st, td);
-  writeState(st); setConf(null); curPreset = i; $("adv").open = false; renderPresetBar(); render();
+  writeState(st); setConf(PRESETS[i].c || null); curPreset = i; $("adv").open = false; renderPresetBar(); render();
 }
 function renderPresetBar(){
   $("presets").innerHTML = PRESETS.map(function(p, i){ return '<button data-i="' + i + '" class="' + (i === curPreset ? "on" : "") + '">' + esc(p.n) + '</button>'; }).join("");
@@ -624,6 +667,7 @@ function explain(tier, row, cfg, st, now){
     var m = (r.gap || "").match(/last automated ([0-9.]+)h ago/);
     if (m) add("bad", "The newest automated backup is <b>" + m[1] + " hours</b> old; the limit is <b>" + cfg.daily_max_age_h + " hours</b>. " + K("daily-max-age"));
     if (parts.indexOf("daily: no automated backup") >= 0) add("bad", "No automated backup exists and the cluster is older than " + cfg.daily_max_age_h + " hours. " + K("daily-max-age"));
+    if (cfg.check_mode === "counts" && r.st === "FAIL" && r.have < r.need) add("bad", "Found <b>" + r.have + " of " + r.need + "</b> days with an automated backup in the last <b>" + cfg.daily + " days</b> (after the creation day). Counts mode lists no dates. " + K("daily"));
     if (r.missing && r.missing.length && r.st === "FAIL") add("bad", "Expected one backup on each of the last <b>" + cfg.daily + "</b> days (after the creation day); found <b>" + r.have + " of " + r.need + "</b>. Missing: <b>" + r.missing.map(dshort).join(", ") + "</b>. " + K("daily"));
     if (r.st === "DUE") {
       if (r.need < r.target) add("due", "Cluster created <b>" + cdate + "</b>: only " + r.need + " of the last " + r.target + " days come after creation, so the daily history is incomplete until <b>" + r.full_on + "</b>. A young cluster is never failed for days before it existed. " + K("daily"));
@@ -646,6 +690,7 @@ function explain(tier, row, cfg, st, now){
   }
   if (r.st === "N/A") { add("na", "This cluster is a replica / secondary: only the daily check applies, weekly and monthly are N/A."); return out; }
   if (r.st === "UNKNOWN") { add("unk", "The AWS call that lists AWS Backup recovery points failed, so the script cannot judge the " + name + " points. Never treated as a pass."); return out; }
+  if (cfg.check_mode === "counts") return explainCounts(tier, row, cfg, st, now, out, add);
   var tol = cfg.tolerance_days, tolTxt = tol === 0 ? "the exact day only" : "\u00b1" + plural(tol, "day");
   if (isW) add("na", "Rule: a weekly AWS Backup point (keep-time " + cfg.weekly_min_days + "-" + cfg.weekly_max_days + " days) for every <b>" + WDNAME[cfg.weekly_weekday] + "</b> " +
       (cfg.weekly === "auto" ? "in the last <b>" + cfg.weekly_window_days + " days</b>" : "for the last <b>" + cfg.weekly + "</b> " + WDNAME[cfg.weekly_weekday] + "s") + ", " + tolTxt + ". " +
@@ -668,6 +713,31 @@ function explain(tier, row, cfg, st, now){
   return out;
 }
 
+/* counts mode (check-mode=counts): weekly / monthly explanations. No scheduled days; the points are counted in a window, on any weekday. */
+function explainCounts(tier, row, cfg, st, now, out, add){
+  var r = row[tier], isW = tier === "weekly", name = tier, cn = row.counts, cdate = dfull(row.cday);
+  var days = isW ? cfg.weekly_window_days : null, from = isW ? cn.wstart : cn.mstart;
+  if (isW) add("na", "Rule (counts): at least <b>" + r.target + "</b> weekly AWS Backup points (keep-time " + cfg.weekly_min_days + "-" + cfg.weekly_max_days + " days) created in the last <b>" + days + " days</b> (" + dfull(cn.wstart) + " to " + dfull(row.today) + "), on <b>any weekday</b>. " +
+      K("check-mode") + " " + K(cfg.weekly === "auto" ? (document.getElementById("c_weekly-window-days").value === "" ? "weekly-retention-days" : "weekly-window-days") : "weekly") + " " + K("weekly-days") + ". " + K("weekly-weekday") + " and " + K("tolerance-days") + " are ignored.");
+  else add("na", "Rule (counts): at least <b>" + cfg.monthly + "</b> monthly AWS Backup points (keep-time " + cfg.monthly_min_days + "-" + cfg.monthly_max_days + " days) created in the last <b>" + plural(cfg.monthly, "month") + "</b>, from " + dfull(cn.mstart0) + " (the same day of the month, " + plural(cfg.monthly, "month") + " ago) minus " + MONTHLY_SLACK_DAYS + " days of slack = <b>" + dfull(cn.mstart) + "</b>, on <b>any day</b>: a catch-up point counts like a regular one. " +
+      K("check-mode") + " " + K("monthly") + " " + K("monthly-days") + ". " + K("monthly-rule") + " and " + K("tolerance-days") + " are ignored.");
+  if (r.st === "FAIL") {
+    add("bad", "Found <b>" + r.have + " of " + r.need + "</b> " + name + " points in that window. Counts mode lists no missing dates: the gap reads <b>" + name + " " + r.have + "/" + r.need + esc(ctail(name, cfg)) + "</b>.");
+    var late = row.diag.filter(function(x){ return x.cls === name && !x.counted && x.reason.indexOf("older than") >= 0; });
+    late.slice(0, 4).forEach(function(x){ add("bad", "The point from <b>" + dshort(x.date_day) + "</b> exists but was not counted: " + esc(x.reason) + "."); });
+    if (late.length > 4) add("bad", "... and " + (late.length - 4) + " more.");
+  }
+  if (r.st === "DUE") add("due", "Cluster created <b>" + cdate + "</b>: counts mode expects only the whole " + (isW ? "weeks" : "months") + " that have passed since creation (" + (isW ? "closed days only" : "not counting the current month") + "), here <b>" + r.need + " of " + r.target + "</b>. The cluster is <b>NOT YET DUE until " + r.full_on + "</b>. " + K(isW ? (cfg.weekly === "auto" ? "weekly-window-days" : "weekly") : "monthly"));
+  if (r.st === "OK") add("ok", "Found <b>" + r.have + " of " + r.need + "</b> expected " + name + " points in the window.");
+  var cnt = row.diag.filter(function(x){ return x.counted && x.cls === name; });
+  var off = cnt.filter(function(x){ return isW ? dow(x.date_day) !== cfg.weekly_weekday : firstdow(monthIndex(x.c), cfg.monthly_weekday) !== x.date_day; });
+  off.slice(0, 3).forEach(function(x){ add("ok", "The point from " + dshort(x.date_day) + " was not taken on the usual " + (isW ? WDNAME[cfg.weekly_weekday] : "first " + WDNAME[cfg.monthly_weekday]) + ", but it counts: counts mode accepts any " + (isW ? "weekday" : "day") + "."); });
+  if (off.length > 3) add("ok", "... and " + (off.length - 3) + " more points off the usual day.");
+  var hl = row.diag.filter(function(x){ return x.ret_mismatch === true && x.cls === name; });
+  if (hl.length) add("note", "Highlight only (still counted): " + esc(rmisNote(name, hl[0].ret, cfg)) + (hl.length > 1 ? " (" + hl.length + " points)" : "") + ". " + K(name + "-retention-days") + " " + K("retention-tolerance-days"));
+  return out;
+}
+
 /* ---------- timeline strips ---------- */
 function strip(row, res, cfg, now, from, to, title, showCreate){
   var W = 700, G = 70, R = 16, lanes = [], i;
@@ -683,6 +753,15 @@ function strip(row, res, cfg, now, from, to, title, showCreate){
     var y = top + li * laneH + laneH / 2;
     s += '<rect x="' + G + '" y="' + (y - 17) + '" width="' + (W - G - R) + '" height="34" rx="6" fill="' + (li % 2 ? "#f6faff" : "#eef5fd") + '"/>';
     s += '<text x="' + (G - 8) + '" y="' + (y + 5) + '" text-anchor="end" font-size="14" fill="#33506f" font-weight="600">' + l.name + '</text>';
+  });
+  /* counts mode: the window each lane counts (weekly / monthly) */
+  if (row.counts) lanes.forEach(function(l, li){
+    var ws = l.k === "weekly" ? row.counts.wstart : (l.k === "monthly" ? row.counts.mstart : null);
+    if (ws == null || !l.r || l.r.st === "N/A" || l.r.st === "UNKNOWN") return;
+    var x0 = X(Math.max(ws, from)), x1 = X(Math.min(row.today, to) + 1), y = top + li * laneH + laneH / 2;
+    s += '<rect x="' + x0 + '" y="' + (y - 17) + '" width="' + Math.max(2, x1 - x0) + '" height="34" rx="6" fill="#1f6fd0" fill-opacity=".14" stroke="#1f6fd0" stroke-opacity=".5" stroke-dasharray="4 3"/>';
+    var wide = (x1 - x0) >= 190;
+    s += '<text x="' + (wide ? x0 + 6 : x0 - 6) + '" y="' + (y + 5) + '"' + (wide ? '' : ' text-anchor="end"') + ' font-size="12.5" fill="#154f98" font-weight="700">counted window: ' + l.r.have + ' of ' + l.r.need + (l.r.target > l.r.need ? ' (target ' + l.r.target + ')' : '') + '</text>';
   });
   /* axis */
   var ay = top + lanes.length * laneH + 4, d;
@@ -748,6 +827,7 @@ function strip(row, res, cfg, now, from, to, title, showCreate){
 function timeline(row, res, cfg, now){
   var minD = row.today - 14, lists = [];
   ["daily", "weekly", "monthly"].forEach(function(k){ var r = row[k]; if (r._full) r._full.forEach(function(x){ if (x.d < minD) minD = x.d; }); });
+  if (row.counts) { minD = Math.min(minD, row.counts.mstart); }
   var from = Math.min(minD, row.today - 14) - 3;
   if (row.cday > from + 3 && row.cday < minD + 400) { from = Math.min(from, row.cday - 3); if (row.cday - 3 > from) from = row.cday - 3; }
   var to = row.today + 1;
@@ -759,6 +839,7 @@ function timeline(row, res, cfg, now){
        '<span><svg width="18" height="18"><circle cx="9" cy="9" r="7" fill="#f1f4f8" stroke="#b8c6d4" stroke-width="1.5"/></svg> before the cluster existed (not expected)</span>' +
        '<span><svg width="18" height="18"><circle cx="9" cy="9" r="7" fill="none" stroke="#9aaabb" stroke-dasharray="3 2.5" stroke-width="1.6"/></svg> window still open (not expected yet)</span>' +
        '<span><svg width="14" height="14"><circle cx="7" cy="7" r="3.5" fill="#1f6fd0"/></svg> backup that exists in AWS</span>' +
+       (row.counts ? '<span><svg width="22" height="14"><rect x="1" y="1" width="20" height="12" rx="3" fill="#1f6fd0" fill-opacity=".14" stroke="#1f6fd0" stroke-opacity=".5" stroke-dasharray="3 2"/></svg> counts mode: points inside this window are counted</span>' : "") +
        (row.rps.some(function(p){ return p.cls === "mismatch" || p.cls === "yearly"; }) ? '<span><svg width="14" height="14"><circle cx="7" cy="7" r="3.5" fill="#d98a00"/></svg> point ignored (keep-time outside weekly / monthly range)</span>' : "") + '</div>';
   return h;
 }
@@ -804,6 +885,8 @@ function render(){
   /* conf diff markers */
   var changed = [];
   Object.keys(DEFAULT_CONF).forEach(function(k){ var ch = String(conf[k]).trim() !== DEFAULT_CONF[k]; $("r_" + k).classList.toggle("chg", ch); $("d_" + k).textContent = ch ? "(default: " + (DEFAULT_CONF[k] === "" ? "empty" : DEFAULT_CONF[k]) + ")" : ""; if (ch) changed.push(k + "=" + String(conf[k]).trim()); });
+  var cntMode = String(conf["check-mode"]).trim().toLowerCase() === "counts";
+  ["weekly-weekday", "monthly-rule", "tolerance-days"].forEach(function(k){ $("r_" + k).classList.toggle("ign", cntMode); $("i_" + k).textContent = cntMode ? "(ignored in counts mode)" : ""; });
   $("confdiff").innerHTML = changed.length ? "Changed from the repo defaults: " + changed.map(function(c){ return K(c); }).join(" ") : "All conf settings are at the repo defaults.";
   $("e_line").textContent = "111111111111 | " + S.id + " | " + S.excScope + " | " + (S.excExpires || "<missing: the script refuses a line without expiry>") + " | " + S.excReason;
   if (!S.created || !S.run) { right.innerHTML = '<div class="err">Enter the cluster creation date and the report run date.</div>'; bar.innerHTML = ""; return; }
@@ -824,9 +907,15 @@ function render(){
   /* sticky bar */
   var tiers = ["daily", "weekly", "monthly"].concat(row.yearly.st !== "OFF" ? ["yearly"] : []);
   bar.innerHTML = badge(final, shown, true) + tiers.map(function(k){ return '<span class="pill"><b>' + k[0].toUpperCase() + k.slice(1) + '</b>' + badge(row[k].st) + '</span>'; }).join("") +
+    (cfg.check_mode === "counts" ? '<span class="pill"><b>Mode</b><span class="badge s-na">counts</span></span>' : "") +
     '<span class="pill" style="margin-left:auto;color:var(--mute)">' + esc(S.id) + ' &middot; ' + row.age_days + ' days old &middot; run ' + esc(dfull(row.today)) + '</span>';
   /* rules in effect */
-  var rules = '<ul class="rules"><li><b>Daily</b>: an RDS automated backup on each of the last ' + cfg.daily + ' days (after creation), newest at most ' + cfg.daily_max_age_h + ' h old, RDS retention at least ' + cfg.daily + ' days.</li>' +
+  var rules = cfg.check_mode === "counts" ? '<ul class="rules"><li><b>Check mode: counts</b>. A count of points in a window, on any weekday. ' + K("weekly-weekday") + ', ' + K("monthly-rule") + ' and ' + K("tolerance-days") + ' are ignored.</li>' +
+    '<li><b>Daily</b>: at least ' + cfg.daily + ' of the last ' + cfg.daily + ' days (after creation) have an RDS automated backup, newest at most ' + cfg.daily_max_age_h + ' h old, RDS retention at least ' + cfg.daily + ' days.</li>' +
+    '<li><b>Weekly</b>: at least ' + (cfg.weekly === "auto" ? Math.floor(cfg.weekly_window_days / 7) : cfg.weekly) + ' points with keep-time ' + cfg.weekly_min_days + '-' + cfg.weekly_max_days + ' days created in the last ' + cfg.weekly_window_days + ' days.</li>' +
+    '<li><b>Monthly</b>: at least ' + cfg.monthly + ' points with keep-time ' + cfg.monthly_min_days + '-' + cfg.monthly_max_days + ' days created in the last ' + plural(cfg.monthly, "month") + ' (+' + MONTHLY_SLACK_DAYS + ' days slack); a catch-up point counts.</li>' +
+    (cfg.yearly > 0 ? '<li><b>Yearly</b>: ' + cfg.yearly + ' point(s) kept longer than ' + cfg.monthly_max_days + ' days.</li>' : "") + '</ul>' :
+    '<ul class="rules"><li><b>Daily</b>: an RDS automated backup on each of the last ' + cfg.daily + ' days (after creation), newest at most ' + cfg.daily_max_age_h + ' h old, RDS retention at least ' + cfg.daily + ' days.</li>' +
     '<li><b>Weekly</b>: a point with keep-time ' + cfg.weekly_min_days + '-' + cfg.weekly_max_days + ' days for every ' + WDNAME[cfg.weekly_weekday] + ' ' + (cfg.weekly === "auto" ? "in the last " + cfg.weekly_window_days + " days" : "x" + cfg.weekly) + ', ' + (cfg.tolerance_days === 0 ? "exact day" : "\u00b1" + cfg.tolerance_days + " d") + '.</li>' +
     '<li><b>Monthly</b>: a point with keep-time ' + cfg.monthly_min_days + '-' + cfg.monthly_max_days + ' days on the first ' + WDNAME[cfg.monthly_weekday] + ' of each of the last ' + cfg.monthly + ' months.</li>' +
     (cfg.yearly > 0 ? '<li><b>Yearly</b>: ' + cfg.yearly + ' point(s) kept longer than ' + cfg.monthly_max_days + ' days.</li>' : "") + '</ul>';
@@ -856,7 +945,11 @@ function render(){
     var r = row[k], title = { daily: "Daily &middot; RDS automated backups", weekly: "Weekly &middot; AWS Backup", monthly: "Monthly &middot; AWS Backup", yearly: "Yearly &middot; AWS Backup" }[k];
     var cnt = (r.have != null && r.need != null) ? ("found <b>" + r.have + " of " + r.need + "</b>" + (r.target != null && r.target > r.need ? " <span class='hint'>(full schedule: " + r.target + ")</span>" : "")) : "";
     var chips = "";
-    if (r._full && (r.st !== "N/A" && r.st !== "UNKNOWN")) {
+    if (row.counts && (k === "weekly" || k === "monthly") && r.st !== "N/A" && r.st !== "UNKNOWN") {
+      var cp = row.diag.filter(function(x){ return x.counted && x.cls === k; });
+      chips = '<div class="chips">' + cp.map(function(x){ return '<span class="chip ok">&#10003; ' + esc(dlab(x.date_day, now)) + '</span>'; }).join("") +
+        (r.have < r.need ? '<span class="chip bad">&#10007; ' + (r.need - r.have) + ' more needed</span>' : "") + (r.need < r.target ? '<span class="chip pend">' + (r.target - r.need) + ' not due yet</span>' : "") + '</div>';
+    } else if (r._full && (r.st !== "N/A" && r.st !== "UNKNOWN")) {
       var expSet = {}; r._exp.forEach(function(x){ expSet[x.d] = 1; });
       var arr = r._full.map(function(x){ return { d: x.d, hit: x.hit, e: !!expSet[x.d] }; }).concat((r._open || []).filter(function(d){ return d > row.cday - 40 && d <= row.today + 7; }).map(function(d){ return { d: d, open: true }; }));
       arr.sort(function(a, b){ return b.d - a.d; });
@@ -940,18 +1033,21 @@ var REF_GROUPS = [
   { k: "identifier", def: "(empty)", kind: "scope", what: "Only report clusters / instances whose name matches, for example <code>hr-*</code>. Empty = all.",
     accepts: "A comma-separated list of name patterns with <code>*</code> as wildcard.", flag: "<code>-i, --identifier GLOB</code>" }
  ]},
- { id: "schedule", title: "Schedule (what a compliant server looks like)", intro: "These are the rules for the three checks: daily (RDS automated backups), weekly and monthly (AWS Backup recovery points). Change them to match your backup plan. Days are always UTC dates.", items: [
-  { k: "daily", def: "7", kind: "status", what: "Daily check on the RDS automated backups: the RDS retention must be at least this many days, and there must be one automated backup on each of the last N UTC days. Today only counts once today's backup exists. The tolerance setting is <b>not</b> used here (daily has no slack).",
+ { id: "schedule", title: "Schedule (what a compliant server looks like)", intro: "These are the rules for the three checks: daily (RDS automated backups), weekly and monthly (AWS Backup recovery points). Change them to match your backup plan. Days are always UTC dates. <code>check-mode</code> (first) decides whether the weekly and monthly checks look for a point on each scheduled day or just count points in a window.", items: [
+  { k: "check-mode", def: "schedule", kind: "status", what: "How the weekly and monthly (and the daily) checks are done. <code>schedule</code> = a point for every scheduled day: <code>weekly-weekday</code>, <code>monthly-rule</code> and <code>tolerance-days</code> apply. <code>counts</code> = at least N points in a window, whatever weekday they ran on, so a backup you re-run late counts like the original. Daily: N of the last N days have an automated backup. Weekly: <code>weekly</code> points (auto = floor(window / 7), 4 for 30 days) in the last <code>weekly-window-days</code> days. Monthly: <code>monthly</code> points in the last N months (+7 days slack); a catch-up point counts. <code>weekly-weekday</code>, <code>monthly-rule</code> and <code>tolerance-days</code> are then ignored (keep them in the file). Gaps read like <code>weekly 3/4 in last 30d</code> with no dates. Young servers stay NOT YET DUE.",
+    accepts: "<code>schedule</code> or <code>counts</code> (any case); anything else stops the run (exit 1).", flag: "<code>--check-mode MODE</code>", tryk: "check-mode", tryw: "Step 2 (Conf settings), or open the preset 'Counts: Saturday missed, re-run Monday'.",
+    ex: "A Saturday weekly job failed and was re-run on Monday: <code>schedule</code> shows <code>weekly 3/4 missing Sat 21 Nov</code> (2 days is outside the tolerance), <code>counts</code> shows 4/4 COMPLIANT. A real miss reads <code>weekly 3/4 in last 30d</code> in both." },
+  { k: "daily", def: "7", kind: "status", what: "Daily check on the RDS automated backups: the RDS retention must be at least this many days, and there must be one automated backup on each of the last N UTC days. Today only counts once today's backup exists. The tolerance setting is <b>not</b> used here (daily has no slack). In <code>check-mode=counts</code> the same count is used, but a gap reads <code>daily 6/7 in last 7d</code> without the dates.",
     accepts: "A whole number, 0 or more (no upper limit is checked).", flag: "<code>--daily N</code>", tryk: "daily", tryw: "Step 2 (Conf settings); to see the retention part, change step 1 &#8594; RDS retention." },
   { k: "daily-max-age", def: "26", kind: "status", what: "The newest automated backup must be at most this many <b>hours</b> old. 26 = one day plus 2 hours of slack. A server with no automated backup at all fails this once it is older than this many hours.",
     accepts: "A whole number of hours, 0 or more.", flag: "<code>--daily-max-age H</code>", tryk: "daily-max-age" },
-  { k: "weekly-weekday", def: "sat", kind: "status", what: "The day your AWS Backup plan takes the weekly point. The weekly check expects one point on every such weekday in the look-back window.",
+  { k: "weekly-weekday", def: "sat", kind: "status", what: "The day your AWS Backup plan takes the weekly point. The weekly check expects one point on every such weekday in the look-back window. Ignored when <code>check-mode=counts</code> (keep it in the file).",
     accepts: "sun, mon, tue, wed, thu, fri or sat (any case).", flag: "<code>--weekly-weekday DAY</code>", tryk: "weekly-weekday", tryw: "Also step 3 (What really runs in AWS) for the day the plan actually runs." },
   { k: "weekly-retention-days", def: "30", kind: "status", what: "Two jobs. (1) The <b>expected keep-time</b> of a weekly point: a counted point with another keep-time is only highlighted yellow, never failed (see <code>retention-tolerance-days</code>). (2) When <code>weekly-window-days</code> is empty, the weekly look-back window is this many days, so changing it changes how many Saturdays are expected. It does <b>not</b> decide whether a point counts as weekly: <code>weekly-days</code> does.",
     accepts: "A whole number, 0 or more.", flag: "<code>--weekly-retention-days N</code>", tryk: "weekly-retention-days", tryw: "Step 2; the plan side is in step 3 (Weekly points kept)." },
-  { k: "monthly-rule", def: "first-sun", kind: "status", what: "Which day of the month your monthly point is taken: the first Sunday, the first Monday, and so on. The monthly check expects one point on that day in each of the last N months.",
+  { k: "monthly-rule", def: "first-sun", kind: "status", what: "Which day of the month your monthly point is taken: the first Sunday, the first Monday, and so on. The monthly check expects one point on that day in each of the last N months. Ignored when <code>check-mode=counts</code> (keep it in the file).",
     accepts: "first-sun, first-mon, first-tue, first-wed, first-thu, first-fri or first-sat (any case).", flag: "<code>--monthly-rule RULE</code>", tryk: "monthly-rule" },
-  { k: "monthly", def: "12", kind: "status", what: "How many months back the monthly check looks: one point per month for the last N months. A young server is NOT YET DUE until it has lived long enough to have all of them; the report shows the date it becomes due.",
+  { k: "monthly", def: "12", kind: "status", what: "How many months back the monthly check looks: one point per month for the last N months. A young server is NOT YET DUE until it has lived long enough to have all of them; the report shows the date it becomes due. With <code>check-mode=counts</code>: at least N monthly points created in the last N months (+7 days slack, any day, catch-ups count); a gap reads <code>monthly 11/12 in last 12 months</code>.",
     accepts: "A whole number, 0 or more.", flag: "<code>--monthly N</code>", tryk: "monthly" },
   { k: "monthly-retention-days", def: "365", kind: "warn", what: "The expected keep-time of a monthly point. A counted point with another keep-time is highlighted yellow; the status does not change. (Which points count as monthly is decided by <code>monthly-days</code>.) See the note on the early-month false failure when this equals the 12-month window.",
     accepts: "A whole number, 0 or more.", flag: "<code>--monthly-retention-days N</code>", tryk: "monthly-retention-days", tryw: "Step 2; the plan side is in step 3 (Monthly points kept)." },
@@ -999,16 +1095,16 @@ var REF_GROUPS = [
     accepts: "A 12-digit account number, <code>=</code>, then the name (at most 64 characters; a trailing <code># comment</code> and surrounding quotes are removed). Each account may appear once; a repeat stops the run (exit 1).", flag: "none: conf file only" }
  ]},
  { id: "advanced", title: "Advanced (rarely changed)", intro: "The fine print of the rules, plus run behaviour. The shipped values are right for the standard Saturday / first-Sunday plan.", items: [
-  { k: "weekly", def: "auto", kind: "status", what: "How many weekly points are expected. <code>auto</code> = every weekly-weekday inside the look-back window (4 or 5 for 30 days). A number N = the last N of them, whatever the window.",
+  { k: "weekly", def: "auto", kind: "status", what: "How many weekly points are expected. <code>auto</code> = every weekly-weekday inside the look-back window (4 or 5 for 30 days). A number N = the last N of them, whatever the window. With <code>check-mode=counts</code>: <code>auto</code> = floor(window / 7) points (4 for 30 days) and N = N points in the window, on any weekday.",
     accepts: "<code>auto</code> or a whole number.", flag: "<code>--weekly auto|N</code>", tryk: "weekly",
     ex: "Run on Thu 19 Nov 2026, 30-day window: Saturdays 24 Oct, 31 Oct, 7 Nov and 14 Nov = 4 expected. <code>weekly=2</code> would expect only 7 Nov and 14 Nov." },
-  { k: "weekly-window-days", def: "(empty)", kind: "status", what: "How far back the weekly check looks, in days. Empty = same as <code>weekly-retention-days</code> (30). Only used when <code>weekly=auto</code>.",
+  { k: "weekly-window-days", def: "(empty)", kind: "status", what: "How far back the weekly check looks, in days. Empty = same as <code>weekly-retention-days</code> (30). Only used when <code>weekly=auto</code> (with <code>check-mode=counts</code> it is also the window the points are counted in).",
     accepts: "Empty, or a whole number of at least 7.", flag: "<code>--weekly-window-days N</code>", tryk: "weekly-window-days" },
   { k: "weekly-days", def: "25-40", kind: "status", what: "The keep-time range (in days) that makes an AWS Backup recovery point count as <b>weekly</b>. The class comes from the point's keep-time alone, not from the plan name or the date. A point that fits neither range is a 'mismatch': it is not counted and the server gets a yellow warning.",
     accepts: "<code>MIN-MAX</code> in days, for example <code>25-40</code>. The ranges must not overlap: weekly MIN &#8804; weekly MAX &lt; monthly MIN &#8804; monthly MAX (otherwise exit 1).", flag: "<code>--weekly-days MIN-MAX</code>", tryk: "weekly-days" },
   { k: "monthly-days", def: "300-400", kind: "status", what: "The keep-time range (days) that makes a point count as <b>monthly</b>. A point kept longer than the monthly maximum (or never expiring) is 'yearly' when <code>yearly</code> is above 0, otherwise a mismatch.",
     accepts: "<code>MIN-MAX</code> in days, same rule as weekly-days. (<code>--monthly-max-days N</code> still exists for older configs and sets only the MAX.)", flag: "<code>--monthly-days MIN-MAX</code>", tryk: "monthly-days", tryw: "Try the 'Monthly retention too short' preset." },
-  { k: "tolerance-days", def: "1", kind: "status", what: "A weekly or monthly point counts for its scheduled day if it was taken up to N days before or after it (UTC dates). A scheduled day is not counted as missing until its tolerance window has ended. It does not apply to the daily check.",
+  { k: "tolerance-days", def: "1", kind: "status", what: "A weekly or monthly point counts for its scheduled day if it was taken up to N days before or after it (UTC dates). A scheduled day is not counted as missing until its tolerance window has ended. It does not apply to the daily check. Ignored when <code>check-mode=counts</code>.",
     accepts: "A whole number from 0 to 3.", flag: "<code>--tolerance-days N</code>", tryk: "tolerance-days",
     ex: "With 1, the weekly point for Sat 14 Nov counts if a point exists anywhere from Fri 13 Nov 00:00 to Sun 15 Nov 23:59 UTC. With 0 only Saturday itself counts. Try the 'Weekly 1 day late' preset and set it to 0." },
   { k: "daily-retention-days", def: "(empty)", kind: "warn", what: "The RDS backup retention you intend to have. A server whose RDS backup retention is higher than this (beyond the tolerance) is highlighted yellow (for example <code>daily retention 14d, expected 7d</code>). Lower than <code>daily</code> is already a real failure of the daily check. Empty = same as <code>daily</code>.",
@@ -1037,10 +1133,11 @@ var REF_GROUPS = [
 ];
 
 var REF_NOTES = [
+ { h: "Check mode: schedule or counts (v1.8.0)", b: "<p><code>check-mode=schedule</code> (the default) is the v1.7.2 policy: a point for every scheduled day. <code>check-mode=counts</code> drops the calendar and counts points in a window, whatever weekday they were taken on.</p><p><b>Counts rules:</b> daily = at least N of the last N days have an automated backup; weekly = at least <code>weekly</code> points (auto = floor(<code>weekly-window-days</code> / 7), 4 for 30 days) with a weekly keep-time created in the last <code>weekly-window-days</code> days; monthly = at least N points with a monthly keep-time created in the last N months (the same day of the month N months ago, minus 7 days of slack). A young server is only expected to have the whole weeks (closed days) or whole months (not counting the current one) since creation, and stays NOT YET DUE until then.</p><p><b>Ignored in counts mode:</b> <code>weekly-weekday</code>, <code>monthly-rule</code> and <code>tolerance-days</code>. <b>Unchanged:</b> keep-time ranges, retention highlights, <code>daily-max-age</code>, exceptions, replica rules. Gaps name the window instead of dates, for example <code>weekly 3/4 in last 30d</code>.</p>", presets: ["Counts: Saturday missed, re-run Monday", "Counts: a real miss (3 of 4)", "Counts: monthly catch-up", "Counts: young cluster (10 days)"] },
  { h: "The creation day is never expected", b: "<p>A backup on or before the day the cluster was created is never required. That is true for daily, weekly and monthly alike. The first backup the script expects is the next scheduled day <b>after</b> the creation day.</p><p><b>Created on the first Sunday (Sun 1 Nov 2026):</b> 1 Nov itself is not expected, so monthly has nothing due yet (NOT YET DUE). The first monthly expected is Sun 6 Dec 2026.</p><p><b>Created on the Saturday before (Sat 31 Oct 2026):</b> the very next day, Sun 1 Nov, is a first-Sunday after creation, so that monthly backup is expected straight away. If it is missing the cluster is NON-COMPLIANT as soon as the tolerance window ends. In practice: a cluster created on the Saturday before a first Sunday must already be covered by the AWS Backup plan on day one.</p>", presets: ["Created on first Sunday (1 Nov 2026)", "Created on last Saturday (31 Oct 2026)"] },
  { h: "How the overall status is chosen", b: "<p>Each schedule gets OK, DUE (too young), FAIL, UNKNOWN, N/A or OFF. The overall status is the first that applies in this order: <b>NON-COMPLIANT</b> (any FAIL) &gt; <b>UNKNOWN</b> (an AWS call failed) &gt; <b>NOT YET DUE</b> (any DUE) &gt; <b>COMPLIANT</b>. So one missing backup beats a young cluster. NOT YET DUE servers are left out of the compliance percentage and show the date each schedule becomes due.</p>" },
  { h: "Exceptions: a missed first monthly needs about a year", b: "<p>A missing monthly backup stays a failure for as long as that month is inside the 12-month window; it only drops out when the 13th first-Sunday point is due. Example from the simulator: a cluster created Sat 31 Oct 2026 whose Sun 1 Nov 2026 monthly point is missing shows <b>NON-COMPLIANT</b> every day (monthly 0/1, then 1/2 ... 11/12 missing Nov 2026) until <b>Sun 7 Nov 2027</b>.</p><p>So an exception that covers it needs an expiry date of at least <b>8 Nov 2027</b> (7 Nov is the first day it clears), roughly one year ahead. With a shorter expiry the server flips back to NON-COMPLIANT (flagged 'exception expired') the day after. The expiry is mandatory, is the last valid day (UTC), and an exception that is within 14 days of expiring, or no longer needed because the server is compliant anyway, is flagged in the report.</p>" },
- { h: "Known behaviour: false NON-COMPLIANT at the start of some months (monthly=12, retention 365)", b: "<p>With the shipped values a perfectly healthy cluster can show NON-COMPLIANT for about six days at the start of some months, with a gap such as <code>monthly 11/12 missing Feb 2026</code>.</p><p><b>Why:</b> the monthly point is kept exactly 365 days. The check expects 12 points: the first Sunday of each of the last 12 months, and this month's first Sunday does not count until it has happened. So until then the oldest of the 12 is last year's point of the same month. If last year's first Sunday fell on the 1st (this year's falls on the 7th), that old point has already expired (day 1 + 365 days) before this year's replacement exists.</p><p><b>When (default conf, simulator sweep over 2026-2028 on a healthy cluster):</b> 1-6 Jun 2026, 1-6 Feb 2027, 1-6 Mar 2027, 1-6 Nov 2027, 1-6 May 2028 and 31 Jul - 5 Aug 2028. It is not only February.</p><p><b>Ways around it</b> (not changed in the script): keep monthly points a week longer, for example 372 days in the AWS Backup plan and <code>monthly-retention-days=372</code> (monthly-days 300-400 still counts them); in the simulator this removed every false failure across the 3 years. Or check 11 months (<code>monthly=11</code>), which also removed them. A one-off exception for those days also works.</p>" },
+ { h: "Known behaviour: false NON-COMPLIANT at the start of some months (monthly=12, retention 365)", b: "<p>With the shipped values a perfectly healthy cluster can show NON-COMPLIANT for about six days at the start of some months, with a gap such as <code>monthly 11/12 missing Feb 2026</code>.</p><p><b>Why:</b> the monthly point is kept exactly 365 days. The check expects 12 points: the first Sunday of each of the last 12 months, and this month's first Sunday does not count until it has happened. So until then the oldest of the 12 is last year's point of the same month. If last year's first Sunday fell on the 1st (this year's falls on the 7th), that old point has already expired (day 1 + 365 days) before this year's replacement exists.</p><p><b>When (default conf, simulator sweep over 2026-2028 on a healthy cluster):</b> 1-6 Jun 2026, 1-6 Feb 2027, 1-6 Mar 2027, 1-6 Nov 2027, 1-6 May 2028 and 31 Jul - 5 Aug 2028. It is not only February.</p><p><b>Ways around it</b> (not changed in the script): keep monthly points a week longer, for example 372 days in the AWS Backup plan and <code>monthly-retention-days=372</code> (monthly-days 300-400 still counts them); in the simulator this removed every false failure across the 3 years. Or check 11 months (<code>monthly=11</code>), which also removed them. A one-off exception for those days also works. <code>check-mode=counts</code> does <b>not</b> remove it: the monthly window has 7 days of slack, but a point kept exactly 365 days has still expired. On the same days the gap reads <code>monthly 11/12 in last 12 months</code> (simulator sweep 2026-2028, healthy cluster: 36 days in both modes). The same ways around it work in both modes: 372-day monthly points with <code>monthly-retention-days=372</code>, or <code>monthly=11</code> (both gave 0 false failures in the sweep).</p>" },
  { h: "Retention settings count points, they do not judge them", b: "<p>Whether an AWS Backup point is weekly or monthly depends only on its keep-time and the <code>weekly-days</code> / <code>monthly-days</code> ranges. <code>weekly-retention-days</code> and <code>monthly-retention-days</code> are only the keep-time you expect: a different value inside the range is a yellow highlight, not a failure. A keep-time outside both ranges (say 90 days) is not counted at all, so the weekly or monthly check then fails for lack of points. <i>Try the 'Monthly retention too short' preset.</i></p>" },
  { h: "Days are UTC dates", b: "<p>Every schedule works on UTC calendar days. A Saturday backup that runs late on Friday or early on Sunday UTC still counts with the default tolerance of 1, but not with 0. <code>tz</code> only changes how times are displayed.</p>" },
  { h: "The conf file rules", b: "<p>The conf file is required and must contain every key exactly once (a value may be empty where the shipped file says so). A missing key, a repeated key, an unknown key or a bad value stops the run with exit code 1 and names the file and line. <code>--config FILE</code> uses another complete copy instead (nothing is mixed between the two files). Command-line options override the file for one run. <code>--no-config</code> was removed in v1.7.1. Check everything without calling AWS with <code>--check-config</code>.</p>" }
@@ -1064,6 +1161,8 @@ var RUN_EXAMPLES = [
    cmd: ["./rds_backup_compliance_report.sh -P nonprod -r ap-south-1 -i 'hr-*' -F text -o ''"], e: "Exit 0. Only the matching servers; the summary counts only those." },
  { g: 2, t: "A different backup schedule for this run", w: "Weekly runs on Sunday and the last 5 are checked, monthly on the first Saturday. Use it to test a plan you are about to roll out.",
    cmd: ["./rds_backup_compliance_report.sh -P prod --weekly-weekday sun --weekly 5 --monthly-rule first-sat -F text -o ''"], e: "Exit 0. Same report, judged against the new schedule. Servers on the old schedule will usually turn NON-COMPLIANT." },
+ { g: 2, t: "Count backups instead of checking dates", w: "check-mode counts: a server is compliant when it has enough backups in a window, on any weekday (7 of the last 7 days, 4 weekly points in the last 30 days, 12 monthly points in the last 12 months). A Saturday job that failed and was re-run on Monday is counted. weekly-weekday, monthly-rule and tolerance-days are ignored.",
+   cmd: ["./rds_backup_compliance_report.sh -P prod -r us-east-1 -F text --check-mode counts -o ''"], e: "Exit 0. The <code>Rule:</code> line starts <code>check-mode counts: daily at least 7 of the last 7 days ...</code>. Gaps name the window: <code>weekly 3/4 in last 30d</code>. A young server stays NOT YET DUE." },
  { g: 2, t: "No slack on weekly and monthly dates", w: "Tolerance 0 means a point only counts if it was taken on the scheduled UTC day itself.",
    cmd: ["./rds_backup_compliance_report.sh -P prod --tolerance-days 0 -F text -o ''"], e: "Exit 0. Same report, but a point taken one day early or late no longer counts for its scheduled day, so it shows as missing." },
  { g: 2, t: "Check fewer months, turn the yearly check on", w: "Looks at the last 6 monthly points only and also expects one yearly point (retention above the monthly range).",
@@ -1163,7 +1262,7 @@ var RUN_EXAMPLES = [
   var SETS = [];
   function renderRef(){
     var h = '<div class="card"><h2>Settings reference: every key in <code class="k">rds_backup_compliance_report.conf</code></h2>'
-      + '<p class="runintro">All ' + REF_GROUPS.reduce(function(a, g){ return a + g.items.length; }, 0) + ' entries of the conf file in the order of its sections (43 <code>key=value</code> settings plus the account-name lines). Defaults are the shipped values. Accepted values come from the script\'s own checks, so a value outside them stops the run with exit code 1 and the line number. Days are UTC dates.</p>'
+      + '<p class="runintro">All ' + REF_GROUPS.reduce(function(a, g){ return a + g.items.length; }, 0) + ' entries of the conf file in the order of its sections (44 <code>key=value</code> settings plus the account-name lines). Defaults are the shipped values. Accepted values come from the script\'s own checks, so a value outside them stops the run with exit code 1 and the line number. Days are UTC dates.</p>'
       + '<div class="legendk">Each setting is tagged: ' + Object.keys(KINDS).map(function(k){ return '<span class="tag ' + KINDS[k].c + '">' + KINDS[k].t + '</span>'; }).join(" ") + '</div>'
       + '<div class="reftools"><input id="ref_q" type="search" placeholder="Search settings (name, words, flag)..." aria-label="Search settings">'
       + '<select id="ref_k" aria-label="Filter by effect"><option value="">All settings</option>' + Object.keys(KINDS).map(function(k){ return '<option value="' + k + '">' + KINDS[k].t + '</option>'; }).join("") + '</select>'
