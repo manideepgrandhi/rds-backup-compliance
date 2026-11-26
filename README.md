@@ -54,9 +54,11 @@ Every setting is in [rds_backup_compliance_report.conf](rds_backup_compliance_re
 | `tolerance-days` | `1` | Days a backup may be early or late and still count (0-3) |
 | `format` / `output-dir` | `html,csv` / `./reports` | Report formats and where they go |
 | `alert-email` | empty | Who gets an e-mail summary. Empty = no e-mail |
+| `attach-html` / `attach-csv` | `yes` / `yes` | Attach the HTML report and the compliance CSV (sendmail) |
+| `attach-prefix` | `backup_compliance` | Short attachment names: `NAME_YYYY-MM-DD.html` / `.csv` |
 | `keep-reports` | `30` | Delete this tool's reports older than N days. 0 = keep all |
 
-All 40 settings, with allowed values: [the settings file](REFERENCE.md#the-settings-file-v171) in the reference, or the **Settings reference** tab of the [simulator](https://github.com/manideepgrandhi/rds-backup-compliance/blob/main/docs/rds_compliance_simulator.html).
+All 43 settings, with allowed values: [the settings file](REFERENCE.md#the-settings-file-v171) in the reference, or the **Settings reference** tab of the [simulator](https://github.com/manideepgrandhi/rds-backup-compliance/blob/main/docs/rds_compliance_simulator.html).
 
 ## Exit codes
 

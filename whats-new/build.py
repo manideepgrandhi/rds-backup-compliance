@@ -35,6 +35,10 @@ def parse_changelog(path: Path) -> dict[str, list[str]]:
             current = m.group(1)
             versions.setdefault(current, [])
             continue
+        if re.match(r"^##\s+Unreleased\s*$", line.strip(), re.I):
+            current = "Unreleased"
+            versions.setdefault(current, [])
+            continue
         if current is None:
             continue
         bm = re.match(r"^[-*]\s+(.+)$", line.strip())
@@ -129,6 +133,23 @@ def build(repo_root: Path) -> None:
         )
 
     # newest first already from gh release list
+    if features.get("Unreleased"):
+        bullets = features["Unreleased"]
+        cards.insert(
+            0,
+            {
+                "tag": "Unreleased",
+                "ver": "Unreleased",
+                "latest": False,
+                "date_ist": "Coming in the next release",
+                "published_at": "",
+                "bullets": bullets,
+                "zip_url": None,
+                "sha_url": None,
+                "notes_url": f"https://github.com/{owner}/{repo}/blob/main/CHANGELOG.md",
+            },
+        )
+
     title = f"What's new · {repo}"
     desc = (
         f"Features added in each published release of {repo}. "
@@ -140,7 +161,10 @@ def build(repo_root: Path) -> None:
         search = " ".join(
             [c["ver"], c["tag"], c["date_ist"]] + c["bullets"]
         ).lower()
-        badge = '<span class="badge">Latest</span>' if c["latest"] else ""
+        if c["tag"] == "Unreleased":
+            badge = '<span class="badge">Coming next</span>'
+        else:
+            badge = '<span class="badge">Latest</span>' if c["latest"] else ""
         feats = "\n".join(
             f'          <li>{html.escape(b)}</li>' for b in c["bullets"]
         )
@@ -153,8 +177,9 @@ def build(repo_root: Path) -> None:
             actions.append(
                 f'<a class="btn" href="{html.escape(c["sha_url"])}">sha256</a>'
             )
+        notes_label = "Changelog" if c["tag"] == "Unreleased" else "Release notes"
         actions.append(
-            f'<a class="btn" href="{html.escape(c["notes_url"])}">Release notes</a>'
+            f'<a class="btn" href="{html.escape(c["notes_url"])}">{notes_label}</a>'
         )
         card_html.append(
             f'''    <article class="card" data-search="{html.escape(search)}">

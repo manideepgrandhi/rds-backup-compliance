@@ -24,7 +24,8 @@
 # Exceptions (v1.6.0): compliance_exceptions.conf (or --exceptions FILE) lists servers that show COMPLIANT (EXCEPTION)
 #   and count as compliant until their expiry date; the evaluated status stays in actual_status.
 # Report retention (v1.7.1): keep-reports=N deletes this tool's report files older than N days from output-dir.
-# E-mail (v1.7.1): alert-email / alert-from / alert-on send the summary with mail, mailx or sendmail (HTML attached with sendmail).
+# E-mail (v1.7.1, HTML body unreleased): alert-email / alert-from / alert-on send a short HTML summary (text fallback) with sendmail;
+#   attach-html / attach-csv attach the interactive HTML report and the compliance CSV (short names from attach-prefix). mail / mailx send the text only.
 # Output: text | csv | json | html. Exit: 0 ok, 5 NON-COMPLIANT with --fail-on-noncompliant, 1 usage / config, 2 pre-check,
 #         3 bad --merge input, 4 output error, 130 interrupted. Logic and rendering live in lib/*.jq.
 
@@ -50,7 +51,7 @@ readonly REPORT_EXTS="html csv json txt"  # extensions keep-reports may delete (
 readonly -a REQUIRED_KEYS=(profile region all-regions engine identifier
     daily daily-max-age weekly-weekday weekly-retention-days monthly-rule monthly monthly-retention-days replica-exempt-engines
     format output-dir tz non-compliant-only log-file manual-older-than snapshot-price-per-gb keep-reports
-    alert-email alert-from alert-on exceptions
+    alert-email alert-from alert-on attach-html attach-csv attach-prefix exceptions
     weekly weekly-window-days weekly-days monthly-days tolerance-days daily-retention-days retention-tolerance-days yearly
     parallel prefix aws-timeout max-attempts mail-timeout fail-on-noncompliant save-data)
 readonly DATA_SCHEMA="rds_backup_compliance_data" DATA_SCHEMA_VERSION=1
@@ -68,7 +69,7 @@ WEEKLY_MIN_DAYS=""; WEEKLY_MAX_DAYS=""; MONTHLY_MIN_DAYS=""; MONTHLY_MAX_DAYS=""
 WEEKLY_WEEKDAY=""; MONTHLY_RULE=""; TOLERANCE_DAYS=""; WEEKLY_WINDOW_DAYS=""; PARALLEL=""
 DAILY_RETENTION_DAYS=""; WEEKLY_RETENTION_DAYS=""; MONTHLY_RETENTION_DAYS=""; RET_TOLERANCE_DAYS=""
 NC_ONLY=""; FAIL_ON_NC=""; SAVE_DATA=""; LOG_FILE=""; AWS_TIMEOUT=""; MAX_ATTEMPTS=""; KEEP_REPORTS=""
-ALERT_FROM=""; ALERT_ON=""; MAIL_TIMEOUT=""
+ALERT_FROM=""; ALERT_ON=""; MAIL_TIMEOUT=""; ATTACH_HTML=""; ATTACH_CSV=""; ATTACH_PREFIX=""
 CONFIG_FILE=""; CONFIG_AUTO=0; CHECK_CONFIG=0; ALERT_TEST=0
 BG_PIDS=(); SCAN_PAR=0; HAVE_WAIT_N=0
 KEEP_WORKDIR=0; DRY_RUN=0; VERBOSE=0; SAVE_DATA_FILE=""; MERGE=0
@@ -159,10 +160,13 @@ Report:
       --save-data [FILE]    Also write the raw data for --merge: rds_backup_<ACCOUNT>_<YYYYMMDD>.json per account
       --prefix NAME         File name prefix                                                            [$PREFIX]
 
-E-mail (mail / mailx, else sendmail; HTML report attached when html is a format and sendmail exists):
+E-mail (sendmail preferred: HTML body, text fallback, optional attachments; mail / mailx send the text only):
       --alert-email ADDR    E-mail the summary to ADDR; repeatable or comma-separated; empty = off      [$(IFS=$j; echo "${ALERT_EMAILS[*]}")]
       --alert-from ADDR     From address                                                                [$ALERT_FROM]
       --alert-on WHEN       noncompliant (NON-COMPLIANT found or AWS errors) | always                   [$ALERT_ON]
+      --attach-html YES|NO  Attach the interactive HTML report (sendmail)                               [$(yn "$ATTACH_HTML")]
+      --attach-csv YES|NO   Attach the compliance CSV (sendmail)                                        [$(yn "$ATTACH_CSV")]
+      --attach-prefix NAME  Short attachment names: NAME_YYYY-MM-DD.html / .csv (sendmail). Files on disk keep their full names  [$ATTACH_PREFIX]
       --alert-test          Send a test e-mail and exit (no AWS calls)
       --mail-timeout SEC    Seconds the mail command may take                                           [$MAIL_TIMEOUT]
 
@@ -287,6 +291,9 @@ set_opt_apply() {
             for e in "${ALERT_EMAILS[@]}"; do email_ok "$e" || die 1 "Invalid --alert-email address: $e"; done ;;
         alert-from) [[ -z "$v" ]] || email_ok "$v" || die 1 "Invalid --alert-from address: $v"; ALERT_FROM="$v" ;;
         alert-on) case "${v,,}" in noncompliant|always) ALERT_ON="${v,,}" ;; *) die 1 "--alert-on must be noncompliant or always (got '$v')" ;; esac ;;
+        attach-html) bool_set ATTACH_HTML --attach-html "$v" ;;
+        attach-csv) bool_set ATTACH_CSV --attach-csv "$v" ;;
+        attach-prefix) [[ -n "$v" && "$v" =~ ^[A-Za-z0-9._-]+$ ]] || die 1 "--attach-prefix must be a non-empty name of letters, digits, dot, underscore or hyphen (got '$v')"; ATTACH_PREFIX="$v" ;;
         mail-timeout) int_ok --mail-timeout "$v"; (( v >= 1 )) || die 1 "--mail-timeout must be at least 1 second"; MAIL_TIMEOUT="$v" ;;
         *) return 1 ;;
     esac
@@ -372,7 +379,7 @@ parse_args() {
             --keep-workdir) KEEP_WORKDIR=1 ;; --dry-run) DRY_RUN=1 ;; -v|--verbose) VERBOSE=1 ;;
             --save-data) set_opt save-data yes; if [[ $# -ge 2 && "$2" != -* ]]; then SAVE_DATA_FILE="$2"; shift; fi ;;
             --merge) MERGE=1; while [[ $# -ge 2 && "$2" != -* ]]; do MERGE_ARGS+=("$2"); shift; done ;;
-            --daily|--daily-max-age|--weekly|--monthly|--yearly|--weekly-days|--monthly-max-days|--monthly-days|--daily-retention-days|--weekly-retention-days|--monthly-retention-days|--retention-tolerance-days|--weekly-weekday|--monthly-rule|--tolerance-days|--parallel|--weekly-window-days|--prefix|--tz|--aws-timeout|--max-attempts|--manual-older-than|--snapshot-price-per-gb|--replica-exempt-engines|--exceptions|--keep-reports|--alert-email|--alert-from|--alert-on|--mail-timeout)
+            --daily|--daily-max-age|--weekly|--monthly|--yearly|--weekly-days|--monthly-max-days|--monthly-days|--daily-retention-days|--weekly-retention-days|--monthly-retention-days|--retention-tolerance-days|--weekly-weekday|--monthly-rule|--tolerance-days|--parallel|--weekly-window-days|--prefix|--tz|--aws-timeout|--max-attempts|--manual-older-than|--snapshot-price-per-gb|--replica-exempt-engines|--exceptions|--keep-reports|--alert-email|--alert-from|--alert-on|--attach-html|--attach-csv|--attach-prefix|--mail-timeout)
                 need_arg "$1" $#; set_opt "${1#--}" "$2"; shift ;;
             --*=*) set_opt "${1%%=*}" "${1#*=}" 2>/dev/null || die 1 "Unknown option: $1"; ;;
             *) die 1 "Unknown option: $1 (see --help)" ;;
@@ -504,6 +511,7 @@ setting_value() {
         non-compliant-only) yn "$NC_ONLY" ;; log-file) echo "$LOG_FILE" ;; manual-older-than) echo "${MANUAL_OLDER:-(empty = off)}" ;;
         snapshot-price-per-gb) echo "$SNAP_PRICE" ;; keep-reports) if (( KEEP_REPORTS )); then echo "$KEEP_REPORTS days"; else echo "0 = keep all"; fi ;;
         alert-email) (IFS=,; echo "${ALERT_EMAILS[*]:-(empty = off)}") ;; alert-from) echo "$ALERT_FROM" ;; alert-on) echo "$ALERT_ON" ;;
+        attach-html) yn "$ATTACH_HTML" ;; attach-csv) yn "$ATTACH_CSV" ;; attach-prefix) echo "$ATTACH_PREFIX" ;;
         exceptions) echo "$EXC_FILE" ;; weekly) echo "$WEEKLY" ;;
         weekly-window-days) echo "${WEEKLY_WINDOW_DAYS:-= weekly-retention-days ($WEEKLY_RETENTION_DAYS)}" ;;
         weekly-days) echo "$WEEKLY_MIN_DAYS-$WEEKLY_MAX_DAYS" ;; monthly-days) echo "$MONTHLY_MIN_DAYS-$MONTHLY_MAX_DAYS" ;;
@@ -545,8 +553,17 @@ check_config() {
         echo "E-mail: to ${ALERT_EMAILS[*]} when $( [[ "$ALERT_ON" == always ]] && echo "every run" || echo "NON-COMPLIANT or AWS errors")"
         case "$mailer" in
             "") echo "  mail command: none found (mail, mailx, sendmail): the run would only log a warning" ;;
-            *sendmail) echo "  mail command: $mailer (HTML report attached when html is a format)" ;;
-            *) echo "  mail command: $mailer (text summary only; install sendmail to attach the HTML report)" ;;
+            *sendmail)
+                local att=()
+                (( ATTACH_HTML )) && att+=("the HTML report")
+                (( ATTACH_CSV )) && att+=("the compliance CSV")
+                if (( ${#att[@]} )); then
+                    local joined; joined="$(printf '%s and ' "${att[@]}")"; joined="${joined% and }"
+                    echo "  mail command: $mailer (HTML body with a text fallback; attaches $joined)"
+                else
+                    echo "  mail command: $mailer (HTML body with a text fallback; no attachments)"
+                fi ;;
+            *) echo "  mail command: $mailer (text summary only; install sendmail for the HTML body and attachments)" ;;
         esac
     else echo "E-mail: off (alert-email is empty)"; fi
     echo; echo "OK: configuration is valid (no AWS calls made)"
@@ -570,56 +587,112 @@ prune_reports() {
 }
 
 # ---------------------------------------------------------------------------- e-mail (alert-email)
-# find_mailer [html]: the mail command to use. With "html" (an HTML attachment is wanted) sendmail comes first,
-# because mail / mailx cannot attach portably; otherwise mail, mailx, then sendmail. Prints nothing when none exists.
+# find_mailer: prefer sendmail (needed for MIME: HTML body + attachments). Else mail, then mailx.
+# Prints nothing when none exists.
 find_mailer() {
     local c
-    if [[ "${1:-}" == html ]]; then
-        command -v sendmail 2>/dev/null && return 0; [[ -x /usr/sbin/sendmail ]] && { echo /usr/sbin/sendmail; return 0; }
-    fi
-    for c in mail mailx sendmail; do command -v "$c" 2>/dev/null && return 0; done
-    [[ -x /usr/sbin/sendmail ]] && echo /usr/sbin/sendmail
+    command -v sendmail 2>/dev/null && return 0
+    [[ -x /usr/sbin/sendmail ]] && { echo /usr/sbin/sendmail; return 0; }
+    for c in mail mailx; do command -v "$c" 2>/dev/null && return 0; done
     return 0
 }
-# send_email SUBJECT BODY_FILE [HTML_FILE]: send with mail / mailx (text only) or sendmail (text, or MIME multipart with
-# the HTML file attached). The mail command may take at most mail-timeout seconds. Returns 1 when no command exists.
+# attach_mime_name FILE: short name used only in the MIME headers (the file on disk keeps its name).
+# Shape is <attach-prefix>_YYYY-MM-DD.<ext>, with the UTC date of this run.
+attach_mime_name() {
+    local ext="${1##*.}" day
+    if [[ "$NOW" =~ ^[1-9][0-9]*$ ]]; then day="$(date -u -d "@$NOW" +%Y-%m-%d)"
+    else day="$(date -u +%Y-%m-%d)"; fi
+    printf '%s_%s.%s' "$ATTACH_PREFIX" "$day" "$ext"
+}
+# mime_attach BOUNDARY FILE [NAME]: one MIME attachment part (base64). NAME defaults to the short attach-prefix name.
+mime_attach() {
+    local bnd="$1" f="$2" name="${3:-}" ctype
+    [[ -n "$name" ]] || name="$(attach_mime_name "$f")"
+    case "${f##*.}" in
+        html|htm) ctype="text/html; charset=UTF-8" ;;
+        csv) ctype="text/csv; charset=UTF-8" ;;
+        *) ctype="application/octet-stream" ;;
+    esac
+    printf -- '\n--%s\nContent-Type: %s; name="%s"\nContent-Disposition: attachment; filename="%s"\nContent-Transfer-Encoding: base64\n\n' \
+        "$bnd" "$ctype" "$name" "$name"
+    base64 <"$f"
+}
+# send_email SUBJECT TEXT_FILE HTML_FILE [ATTACH ...]: send with sendmail (multipart/alternative text+HTML,
+# plus any attachments in multipart/mixed) or mail / mailx (text only). The mail command may take at most
+# mail-timeout seconds. Returns 1 when no command exists.
 send_email() {
-    local subject="$1" body="$2" html="${3:-}" mailer to bnd
-    local -a tmo=()
+    local subject="$1" text="$2" html="$3" mailer to mixed alt
+    shift 3
+    local -a atts=("$@") tmo=()
     command -v timeout >/dev/null 2>&1 && tmo=(timeout "$MAIL_TIMEOUT")
-    mailer="$(find_mailer "${html:+html}")"
+    mailer="$(find_mailer)"
     [[ -n "$mailer" ]] || { log_warn "E-mail: no mail, mailx or sendmail found; e-mail not sent (the report is still written)"; return 1; }
     if [[ "${mailer##*/}" != sendmail ]]; then
         local -a from=(); [[ -n "$ALERT_FROM" ]] && from=(-r "$ALERT_FROM")
-        [[ -n "$html" ]] && log_info "E-mail: ${mailer##*/} cannot attach the HTML report; sending the text summary only"
-        "${tmo[@]}" "$mailer" "${from[@]}" -s "$subject" -- "${ALERT_EMAILS[@]}" <"$body"; return
+        log_info "E-mail: ${mailer##*/} cannot send the HTML body or attachments; sending the text summary only. Install sendmail for the HTML body and attachments"
+        "${tmo[@]}" "$mailer" "${from[@]}" -s "$subject" -- "${ALERT_EMAILS[@]}" <"$text"; return
     fi
     to="$(IFS=,; printf '%s' "${ALERT_EMAILS[*]}")"
+    mixed="rds_bcr_$(date +%s)_$$"
+    alt="rds_bcr_alt_$(date +%s)_$$"
     {
         [[ -n "$ALERT_FROM" ]] && printf 'From: %s\n' "$ALERT_FROM"
         printf 'To: %s\nSubject: %s\nMIME-Version: 1.0\n' "$to" "$subject"
-        if [[ -z "$html" ]]; then printf 'Content-Type: text/plain; charset=UTF-8\n\n'; cat -- "$body"
+        if (( ${#atts[@]} )); then
+            printf 'Content-Type: multipart/mixed; boundary="%s"\n\nThis is a MIME message.\n\n' "$mixed"
+            printf -- '--%s\nContent-Type: multipart/alternative; boundary="%s"\n\n' "$mixed" "$alt"
         else
-            bnd="rds_bcr_$(date +%s)_$$"
-            printf 'Content-Type: multipart/mixed; boundary="%s"\n\nThis is a MIME message.\n\n' "$bnd"
-            printf -- '--%s\nContent-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 8bit\n\n' "$bnd"; cat -- "$body"
-            printf -- '\n--%s\nContent-Type: text/html; charset=UTF-8; name="%s"\nContent-Disposition: attachment; filename="%s"\nContent-Transfer-Encoding: base64\n\n' \
-                "$bnd" "${html##*/}" "${html##*/}"
-            base64 <"$html"
-            printf -- '\n--%s--\n' "$bnd"
+            printf 'Content-Type: multipart/alternative; boundary="%s"\n\n' "$alt"
+        fi
+        printf -- '--%s\nContent-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 8bit\n\n' "$alt"
+        cat -- "$text"
+        printf -- '\n--%s\nContent-Type: text/html; charset=UTF-8\nContent-Transfer-Encoding: 8bit\n\n' "$alt"
+        cat -- "$html"
+        printf -- '\n--%s--\n' "$alt"
+        if (( ${#atts[@]} )); then
+            local a; for a in "${atts[@]}"; do mime_attach "$mixed" "$a"; done
+            printf -- '\n--%s--\n' "$mixed"
         fi
     } | "${tmo[@]}" "$mailer" -t -oi
 }
-# send_alerts [test]: build the summary (counts + failing servers with reasons) and e-mail it to alert-email. With
+# is_compliance_csv FILE: the per-server compliance CSV, not the backups / orphans / manual-older sidecars.
+is_compliance_csv() {
+    local b="${1##*/}"
+    [[ "$b" == *.csv ]] || return 1
+    [[ "$b" != *_backups.csv && "$b" != *_orphaned_snapshots.csv && "$b" != *_manual_older_than_*csv ]]
+}
+# alert_bodies DATA HOST WHEN TEXT_OUT HTML_OUT: write the text and HTML e-mail bodies
+# with lib/alert_email.jq. DATA is the render-json document. Returns 1 if either file cannot be built.
+alert_bodies() {
+    local data="$1" host="$2" when="$3" text_out="$4" html_out="$5" tool
+    tool="$SCRIPT_NAME v$SCRIPT_VERSION"
+    render json "$data" | jqv -r -f "$LIBDIR/alert_email.jq" --arg mode text --arg host "$host" \
+        --arg tool "$tool" --arg when "$when" >"$text_out" || return 1
+    render json "$data" | jqv -r -f "$LIBDIR/alert_email.jq" --arg mode html --arg host "$host" \
+        --arg tool "$tool" --arg when "$when" >"$html_out" || return 1
+    return 0
+}
+# send_alerts [test]: build the HTML+text summary and e-mail it to alert-email. With
 # alert-on=noncompliant it only sends when a NON-COMPLIANT server or an AWS error (failed region, UNKNOWN row) was
 # found; servers with an applied exception count as compliant. Never changes the exit code.
 send_alerts() {
-    local mode="${1:-}" subject body="$WORK/alert_body.txt" html="" sum host
+    local mode="${1:-}" subject text="$WORK/alert_body.txt" html="$WORK/alert_body.html" sum host when
+    local -a atts=()
     (( ${#ALERT_EMAILS[@]} )) || return 0
     host="$(hostname 2>/dev/null || echo unknown)"
+    when="$(date '+%Y-%m-%d %H:%M:%S %Z')"
     if [[ "$mode" == test ]]; then
         subject="[$PREFIX] TEST e-mail from $host"
-        printf 'Test e-mail from %s v%s on %s at %s. No AWS calls were made.\n' "$SCRIPT_NAME" "$SCRIPT_VERSION" "$host" "$(date '+%Y-%m-%d %H:%M:%S %Z')" >"$body"
+        printf 'Test e-mail from %s on %s at %s. No AWS calls were made.\n' "$SCRIPT_NAME v$SCRIPT_VERSION" "$host" "$when" >"$text"
+        printf '%s\n' \
+            '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>TEST e-mail</title></head>' \
+            '<body style="margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;color:#1d2939;">' \
+            '<table role="presentation" width="680" cellspacing="0" cellpadding="0" style="max-width:680px;border:1px solid #d0d5dd;">' \
+            '<tr><td style="padding:16px 20px;background:#1f5fa8;color:#ffffff;"><div style="font-size:11px;letter-spacing:.04em;text-transform:uppercase;opacity:.9;">RDS backup compliance</div>' \
+            '<div style="font-size:20px;font-weight:700;margin-top:4px;">TEST</div></td></tr>' \
+            "<tr><td style=\"padding:16px 20px;font-size:14px;line-height:1.5;\">Test e-mail from $(printf '%s' "$SCRIPT_NAME v$SCRIPT_VERSION" | jqv -Rr @html) on $(printf '%s' "$host" | jqv -Rr @html) at $(printf '%s' "$when" | jqv -Rr @html). No AWS calls were made.</td></tr>" \
+            "<tr><td style=\"padding:12px 20px;border-top:1px solid #e4e7ec;font-size:11px;color:#667085;\">$(printf '%s' "$SCRIPT_NAME v$SCRIPT_VERSION · $host · $when" | jqv -Rr @html)</td></tr>" \
+            '</table></body></html>' >"$html"
     else
         sum="$(render json "$WORK/data.json" | jqv -c --argjson aws_fails "$AWS_FAILS" '
             ([.regions[]? | select(.status == "error")] | length) as $re | ([.rows[] | select(.status == "UNKNOWN")] | length) as $un
@@ -629,30 +702,29 @@ send_alerts() {
         fi
         subject="[$PREFIX] $(jqv -r 'if .nc > 0 then "NON-COMPLIANT" elif .err > 0 then "ERRORS" else "COMPLIANT" end
             + ": \(.nc) non-compliant of \(.t.resources), \(.t.compliance.pct // 0)% compliant"' <<<"$sum")"
-        render json "$WORK/data.json" | jqv -r --arg host "$host" --arg tool "$SCRIPT_NAME v$SCRIPT_VERSION" '
-            def lab: if (.account_name // "") != "" then "\(.account_name) (\(.account_id))" else .account_id end;
-            "RDS backup compliance report from \($host) (\($tool))",
-            "Accounts: " + ([.accounts[] | if (.name // "") != "" then "\(.name) (\(.account))" else .account end] | join(", ")),
-            "",
-            "Resources: \(.totals.resources)   Compliant: \(.totals.compliant)   Non-compliant: \(.totals.non_compliant)   Not yet due: \(.totals.not_yet_due)   Unknown: \(.totals.unknown)",
-            "Compliance: \(.totals.compliance.pct // 0)% (\(.totals.compliance.compliant) of \(.totals.compliance.of); not yet due not counted)"
-              + (if (.totals.exceptions.applied // 0) > 0 then ", incl. \(.totals.exceptions.applied) exception(s)" else "" end),
-            "",
-            ([.rows[] | select(.status == "NON-COMPLIANT")] | if length == 0 then "No NON-COMPLIANT servers."
-              else "NON-COMPLIANT servers (\(length)):", (.[] | "  - \(lab) \(.region) \(.identifier) (\(.engine)): \(.gaps)") end),
-            ([.rows[] | select(.status == "UNKNOWN")] | if length == 0 then empty
-              else "", "UNKNOWN (an AWS call failed) (\(length)):", (.[] | "  - \(lab) \(.region) \(.identifier): \(.gaps)") end),
-            ([.regions[]? | select(.status == "error")] | if length == 0 then empty
-              else "", "Region errors (\(length)):", (.[] | "  - \(.account) \(.region): \(.errors | join("; "))") end)' >"$body" \
+        alert_bodies "$WORK/data.json" "$host" "$when" "$text" "$html" \
             || { log_warn "E-mail: building the summary failed"; return 0; }
-        if (( ${#WRITTEN[@]} )); then printf '\nReport files:\n' >>"$body"; printf '  %s\n' "${WRITTEN[@]}" >>"$body"; fi
-        # the HTML report: the written file, or one rendered for the e-mail when html is printed to the screen
-        if [[ " ${FORMATS[*]} " == *" html "* ]]; then
-            local w; for w in "${WRITTEN[@]}"; do [[ "$w" == *.html ]] && html="$w"; done
-            if [[ -z "$html" ]]; then html="$WORK/${PREFIX}_report.html"; render html "$WORK/data.json" >"$html" || html=""; fi
+        # attachments: use a report already written, else render one into the work dir (not listed as a report file)
+        if (( ATTACH_HTML )); then
+            local hf="" w
+            for w in "${WRITTEN[@]}"; do [[ "$w" == *.html ]] && hf="$w"; done
+            if [[ -z "$hf" ]]; then
+                hf="$WORK/${PREFIX}_report.html"
+                render html "$WORK/data.json" >"$hf" || hf=""
+            fi
+            [[ -n "$hf" && -s "$hf" ]] && atts+=("$hf")
+        fi
+        if (( ATTACH_CSV )); then
+            local cf="" w
+            for w in "${WRITTEN[@]}"; do is_compliance_csv "$w" && cf="$w"; done
+            if [[ -z "$cf" ]]; then
+                cf="$WORK/${PREFIX}_report.csv"
+                render csv "$WORK/data.json" >"$cf" || cf=""
+            fi
+            [[ -n "$cf" && -s "$cf" ]] && atts+=("$cf")
         fi
     fi
-    if send_email "$subject" "$body" "$html"; then log_info "E-mail sent to ${ALERT_EMAILS[*]}: $subject"
+    if send_email "$subject" "$text" "$html" "${atts[@]}"; then log_info "E-mail sent to ${ALERT_EMAILS[*]}: $subject"
     else log_warn "E-mail to ${ALERT_EMAILS[*]} failed or was not sent"; fi
     return 0
 }
@@ -944,7 +1016,7 @@ main() {
     if [[ -n "$LOG_FILE" ]] && (( ! DRY_RUN && ! CHECK_CONFIG )); then mkdir -p -- "$(dirname -- "$LOG_FILE")" 2>/dev/null || true; fi
     # pre-checks: jq, the lib/ files and the aws CLI (not needed for --merge / --dry-run / --check-config)
     command -v jq >/dev/null 2>&1 || die 2 "jq not found"
-    for f in backup.jq backup_page.js collect.jq merge.jq; do [[ -r "$LIBDIR/$f" ]] || die 2 "Missing $LIBDIR/$f - keep the lib/ folder next to the script"; done
+    for f in backup.jq backup_page.js collect.jq merge.jq alert_email.jq; do [[ -r "$LIBDIR/$f" ]] || die 2 "Missing $LIBDIR/$f - keep the lib/ folder next to the script"; done
     (( MERGE )) || (( DRY_RUN )) || (( CHECK_CONFIG )) || (( ALERT_TEST )) || command -v aws >/dev/null 2>&1 || die 2 "aws CLI not found"
     load_exceptions   # before any AWS call: a bad line stops the run now, not after the scan
     if (( CHECK_CONFIG )); then check_config; exit 0; fi   # --check-config: files validated above, nothing else runs
