@@ -624,7 +624,7 @@ chk "shipped conf: every setting key listed once" bash -c "! grep -E '^[a-z-]+='
 REQ="$(sed -n '/^readonly -a REQUIRED_KEYS=(/,/)$/p' "$SCRIPT" | sed 's/.*(//; s/)//' | tr -s ' \n' '\n' | grep -v '^$' | sort)"
 chk "shipped conf: keys are exactly the script's REQUIRED_KEYS ($(wc -l <<<"$REQ") keys)" test "$(grep -E '^[a-z-]+=' "$SHIPPED" | cut -d= -f1 | sort)" == "$REQ"
 chk "shipped conf: headings in the agreed order" test "$(grep -oE '^## =+ [A-Z][^=]+' "$SHIPPED" | sed -E 's/^## =+ //; s/ +$//' | paste -sd'|')" == "Accounts and regions|Schedule|Output|Snapshot audit|Report retention|Email|Account names (display only)|Advanced (rarely changed)"
-chk "shipped conf: main values as agreed" bash -c "for kv in profile= all-regions=yes daily=7 daily-max-age=26 weekly-weekday=sat weekly-retention-days=30 monthly-rule=first-sun monthly=12 monthly-retention-days=365 'replica-exempt-engines=oracle-*,aurora-*' format=html,csv output-dir=./reports tz=Asia/Kolkata non-compliant-only=no log-file=./reports/run.log manual-older-than=90 snapshot-price-per-gb=0.021 keep-reports=30 alert-email= alert-on=noncompliant weekly-window-days= daily-retention-days=; do grep -qxF \"\$kv\" '$SHIPPED' || { echo \"missing \$kv\"; exit 1; }; done"
+chk "shipped conf: main values as agreed" bash -c "for kv in profile= all-regions=yes daily=7 daily-max-age=26 weekly-weekday=sat weekly-retention-days=30 monthly-rule=first-sun monthly=12 monthly-retention-days=365 'replica-exempt-engines=oracle-*,aurora-*' format=html,csv output-dir=./reports tz=Asia/Kolkata non-compliant-only=no log-file=./reports/run.log manual-older-than=90 snapshot-price-per-gb=0.021 keep-reports=30 alert-email= alert-on=noncompliant attach-html=yes attach-csv=yes attach-prefix=backup_compliance weekly-window-days= daily-retention-days=; do grep -qxF \"\$kv\" '$SHIPPED' || { echo \"missing \$kv\"; exit 1; }; done"
 chk "shipped conf: only fake account numbers" bash -c "! grep -E '^[0-9]{12} ' '$SHIPPED' | grep -vqE '^(111111111111|222222222222|333333333333) '"
 chk "repo: the .example file is gone and the conf is not git-ignored" bash -c "[[ ! -e '$HERE/../rds_backup_compliance_report.conf.example' ]] && ! git -C '$HERE/..' check-ignore -q rds_backup_compliance_report.conf 2>/dev/null"
 # --check-config with the shipped file next to the script: every setting from "conf", no AWS call
@@ -691,7 +691,7 @@ act plist2 0 --config "$AC/plist.conf" -P nonprod -P prod; jqt plist2 '[.account
 n0="$(ncalls)"; act shipmerge 0 --merge "$M/prod.json" -F json -o '' -l ''; chk "merge with the shipped conf: zero AWS calls" test "$(ncalls)" == "$n0"
 jqt shipmerge '.totals.resources == 8' "$OUT/shipmerge.out"
 act shipmergeA 1 --merge "$M/prod.json" -A; has shipmergeA err 'do not combine it with -P / -r / -A'
-t cc_help 0 fleet --help; has cc_help out '--check-config'; has cc_help out '--keep-reports'; has cc_help out '--alert-email'; hasnt cc_help out '--no-config'
+t cc_help 0 fleet --help; has cc_help out '--check-config'; has cc_help out '--keep-reports'; has cc_help out '--alert-email'; has cc_help out '--attach-html'; has cc_help out '--attach-csv'; has cc_help out '--attach-prefix'; hasnt cc_help out '--no-config'
 has cc_help out '--daily N .*\[7\]$'; has cc_help out '--weekly-retention-days N .*\[30\]$'
 
 echo "== v1.7.1: no setting values in the code (all from the conf)"
@@ -780,41 +780,65 @@ FAKE='#!/usr/bin/env bash
 printf '%s\n' "$FAKE" >"$FM/mailx/mailx"; printf '%s\n' "$FAKE" >"$FM/sendmail/sendmail"
 printf '%s\n' "$FAKE" >"$FM/both/mail"; printf '%s\n' "$FAKE" >"$FM/both/sendmail"
 printf '#!/usr/bin/env bash\nsleep 5\n' >"$FM/slow/sendmail"; chmod +x "$FM"/*/*
-SYSMAIL=0; { command -v mail || command -v mailx || command -v sendmail || [[ -x /usr/sbin/sendmail ]]; } >/dev/null 2>&1 && SYSMAIL=1
+SYSMAIL=0; if ( PATH="/usr/bin:/bin:/usr/sbin"; command -v mail || command -v mailx || command -v sendmail || [[ -x /usr/sbin/sendmail ]]; ) >/dev/null 2>&1; then SYSMAIL=1; fi
 EMO="$OUT/em"; mkdir -p "$EMO"
-em() { local name="$1" fake="$2"; shift 2; rm -f "$OUT/$name.cap".*   # t with a fake mailer dir first on PATH
-       PATH="$FM/$fake:$PATH" MAIL_CAPTURE="$OUT/$name.cap" t "$name" "$@"; }
+em() { local name="$1" fake="$2"; shift 2; rm -f "$OUT/$name.cap".*   # isolated PATH so a leftover sendmail cannot win
+       local saved="$PATH"
+       PATH="$FM/$fake:$HERE/mock:/usr/bin:/bin" MAIL_CAPTURE="$OUT/$name.cap" t "$name" "$@"
+       PATH="$saved"; }
 A2=(--alert-email "dba@example.com,oncall@example.com" --alert-from rds-reports@example.com)
 # alert-on=noncompliant: everything compliant -> nothing sent; always -> sent
 em em_ok_nc mailx 0 fleet -P nonprod -r ap-south-1 -i 'hr-*' -F json "${A2[@]}"
 chk "noncompliant + all compliant: no e-mail" test ! -e "$OUT/em_ok_nc.cap.args"; has em_ok_nc err 'E-mail: not sent \(alert-on=noncompliant'
 em em_ok_always mailx 0 fleet -P nonprod -r ap-south-1 -i 'hr-*' -F json "${A2[@]}" --alert-on always
 has em_ok_always.cap args '^\[rds_backup_compliance\] COMPLIANT: 0 non-compliant of 1, 100% compliant$'
+has em_ok_always.cap body '^RDS backup compliance: COMPLIANT$'; has em_ok_always.cap body '^No NON-COMPLIANT servers\.$'
+hasnt em_ok_always.cap body 'NON-COMPLIANT servers \('
 # mailx: text only, -r from, -s subject, -- recipients
 em em_mailx mailx 0 fleet -P prod -r us-east-1 -F html,csv -o "$EMO/x" "${A2[@]}"
 chk "mailx: argv = mailx -r FROM -s SUBJECT -- TO..." bash -c "diff <(sed -n '1,4p;6,8p' '$OUT/em_mailx.cap.args') <(printf 'mailx\n-r\nrds-reports@example.com\n-s\n--\ndba@example.com\noncall@example.com\n')"
 has em_mailx.cap args '^\[rds_backup_compliance\] NON-COMPLIANT: 3 non-compliant of 6, [0-9]+% compliant$'
-has em_mailx.cap body '^Resources: 6   Compliant: [0-9]+   Non-compliant: 3   Not yet due: [0-9]+   Unknown: 0$'
-has em_mailx.cap body '^NON-COMPLIANT servers \(3\):$'; has em_mailx.cap body '^  - prod-core \(111111111111\) us-east-1 billing-aurora-mysql \(aurora-mysql\): weekly [0-9]/[0-9] missing Sat '
-has em_mailx.cap body '^  - prod-core \(111111111111\) us-east-1 reports-pg \(postgres\): .*retention 3d < 7d'
-has em_mailx.cap body '^Report files:$'; has em_mailx.cap body '\.html$'; hasnt em_mailx.cap body 'Content-Type|^--rds_bcr'
-has em_mailx err 'mailx cannot attach the HTML report'; has em_mailx err 'E-mail sent to dba@example.com oncall@example.com: \[rds_backup_compliance\] NON-COMPLIANT'
-# sendmail: MIME multipart with the written HTML report attached (base64 decodes to the same file)
+has em_mailx.cap body '^RDS backup compliance: NON-COMPLIANT$'
+has em_mailx.cap body '^Resources: 6$'; has em_mailx.cap body '^Non-compliant: 3$'
+has em_mailx.cap body '^NON-COMPLIANT servers \(3\):$'
+has em_mailx.cap body 'prod-core \(111111111111\).*billing-aurora-mysql'
+has em_mailx.cap body 'weekly [0-9]/[0-9] missing Sat '
+has em_mailx.cap body 'retention 3d < 7d'
+hasnt em_mailx.cap body 'Report files'
+hasnt em_mailx.cap body 'Content-Type|^--rds_bcr'
+hasnt em_mailx.cap body '^RDS backup compliance report from '
+has em_mailx err 'mailx cannot send the HTML body or attachments'
+has em_mailx err 'E-mail sent to dba@example.com oncall@example.com: \[rds_backup_compliance\] NON-COMPLIANT'
+# sendmail: multipart/mixed { alternative{text,html}, report.html, compliance.csv }
 em em_sm sendmail 0 fleet -P prod -r us-east-1 -F html,csv -o "$EMO/s" "${A2[@]}"
 chk "sendmail: argv = sendmail -t -oi" test "$(paste -sd' ' "$OUT/em_sm.cap.args")" == "sendmail -t -oi"
 has em_sm.cap body '^From: rds-reports@example.com$'; has em_sm.cap body '^To: dba@example.com,oncall@example.com$'
 has em_sm.cap body '^Subject: \[rds_backup_compliance\] NON-COMPLIANT: 3 non-compliant of 6'
 has em_sm.cap body '^MIME-Version: 1\.0$'; has em_sm.cap body '^Content-Type: multipart/mixed; boundary="rds_bcr_[0-9]+_[0-9]+"$'
-has em_sm.cap body '^Content-Disposition: attachment; filename="rds_backup_compliance_111111111111_[0-9_]+\.html"$'
+has em_sm.cap body 'Content-Type: multipart/alternative; boundary="rds_bcr_alt_[0-9]+_[0-9]+"'
+has em_sm.cap body '^Content-Disposition: attachment; filename="backup_compliance_[0-9]{4}-[0-9]{2}-[0-9]{2}\.html"$'
+has em_sm.cap body '^Content-Disposition: attachment; filename="backup_compliance_[0-9]{4}-[0-9]{2}-[0-9]{2}\.csv"$'
+hasnt em_sm.cap body 'filename="rds_backup_compliance_111111111111_'
 has em_sm.cap body '^NON-COMPLIANT servers \(3\):$'
-chk "sendmail: the attachment decodes to the written HTML report" bash -c "b=\$(sed -n 's/^Content-Type: multipart.*boundary=\"\\(.*\\)\"/\\1/p' '$OUT/em_sm.cap.body'); awk -v b=\"--\$b\" 'f==2 && \$0==b\"--\"{exit} f==2{print} f==1 && \$0==\"\"{f=2} /^Content-Disposition: attachment/{f=1}' '$OUT/em_sm.cap.body' | base64 -d | cmp -s - \"\$(ls '$EMO'/s/*.html)\""
+has em_sm.cap body 'background:#b3261e'
+hasnt em_sm.cap body 'Report files'
+hasnt em_sm.cap body 'is attached|Attachment \(sendmail'
+chk "disk HTML and CSV keep their full names" bash -c 'compgen -G "$0/rds_backup_compliance_111111111111_*.html" && compgen -G "$0/rds_backup_compliance_111111111111_*[0-9].csv"' "$EMO/s" >/dev/null
+chk "sendmail: MIME structure, both attachments, HTML body table" \
+    python3 "$HERE/check_alert_mime.py" mixed "$OUT/em_sm.cap.body" "$EMO/s" --status NON-COMPLIANT --nc 3
+# json-only run still attaches a rendered HTML report and compliance CSV (not written as report files)
 em em_smtxt sendmail 0 fleet -P prod -r us-east-1 -F json -o "$EMO/t" "${A2[@]}"
-has em_smtxt.cap body '^Content-Type: text/plain; charset=UTF-8$'; hasnt em_smtxt.cap body 'multipart|attachment'
-# mail + sendmail: sendmail when the HTML is attached, mail for text only
+has em_smtxt.cap body 'multipart/mixed'; has em_smtxt.cap body 'filename="backup_compliance_[0-9]{4}-[0-9]{2}-[0-9]{2}\.html"'
+has em_smtxt.cap body 'filename="backup_compliance_[0-9]{4}-[0-9]{2}-[0-9]{2}\.csv"'
+hasnt em_smtxt.cap body 'filename="rds_backup_compliance_report\.'
+# attach-html=no attach-csv=no: alternative only, no attachments
+em em_noatt sendmail 0 fleet -P prod -r us-east-1 -F html,csv -o "$EMO/na" "${A2[@]}" --attach-html no --attach-csv no
+has em_noatt.cap body 'multipart/alternative'; hasnt em_noatt.cap body 'multipart/mixed|Content-Disposition: attachment'
+# mail + sendmail on PATH: sendmail is always preferred (MIME)
 em em_both both 0 fleet -P prod -r us-east-1 -F html -o "$EMO/b" "${A2[@]}"; has em_both.cap args '^sendmail$'
-em em_both2 both 0 fleet -P prod -r us-east-1 -F json "${A2[@]}"; has em_both2.cap args '^mail$'
+em em_both2 both 0 fleet -P prod -r us-east-1 -F json "${A2[@]}"; has em_both2.cap args '^sendmail$'
 # html printed to the screen: the report is rendered for the e-mail
-em em_stdout sendmail 0 fleet -P prod -r us-east-1 -F html "${A2[@]}"; has em_stdout.cap body 'filename="rds_backup_compliance_report\.html"'
+em em_stdout sendmail 0 fleet -P prod -r us-east-1 -F html "${A2[@]}"; has em_stdout.cap body 'filename="backup_compliance_[0-9]{4}-[0-9]{2}-[0-9]{2}\.html"'
 # exceptions that cover every NON-COMPLIANT server count as compliant: no e-mail with alert-on=noncompliant
 em em_exc mailx 0 fleet -P prod -A -F json --exceptions "$EX/all.conf" "${A2[@]}"; chk "exceptions applied: no e-mail" test ! -e "$OUT/em_exc.cap.args"
 # AWS errors (UNKNOWN rows / failed regions) send even with 0 NON-COMPLIANT
@@ -839,6 +863,50 @@ chk "mail-timeout 1: stopped quickly ($SECONDS s)" test "$SECONDS" -lt 5; has em
 t em_bad 1 fleet --alert-email 'not-an-address'; has em_bad err 'Invalid --alert-email address: not-an-address'
 t em_bad2 1 fleet --alert-email 'a@b.c;rm'; t em_badon 1 fleet --alert-on sometimes; has em_badon err '--alert-on must be noncompliant or always'
 t em_badfrom 1 fleet --alert-from 'x y@z'; t em_badtmo 1 fleet --mail-timeout 0
+t em_badatt 1 fleet --attach-html maybe; has em_badatt err '--attach-html must be yes or no'
+t em_badpref 1 fleet --attach-prefix 'bad name'; has em_badpref err '--attach-prefix must be a non-empty name'
+t em_badpref2 1 fleet --attach-prefix ''; has em_badpref2 err '--attach-prefix must be a non-empty name'
+t em_badpref3 1 fleet --attach-prefix 'a/b'; has em_badpref3 err '--attach-prefix must be a non-empty name'
+# --attach-prefix overrides the short MIME name; files on disk keep their full names
+em em_pref sendmail 0 fleet -P prod -r us-east-1 -F html,csv -o "$EMO/p" "${A2[@]}" --attach-prefix fleet_report
+has em_pref.cap body '^Content-Disposition: attachment; filename="fleet_report_[0-9]{4}-[0-9]{2}-[0-9]{2}\.html"$'
+has em_pref.cap body '^Content-Disposition: attachment; filename="fleet_report_[0-9]{4}-[0-9]{2}-[0-9]{2}\.csv"$'
+chk "custom attach-prefix: disk names unchanged" bash -c 'compgen -G "$0/rds_backup_compliance_111111111111_*.html"' "$EMO/p" >/dev/null
+
+# compliant + alert-on=always + sendmail: green banner, no failures table
+em em_ok_html sendmail 0 fleet -P nonprod -r ap-south-1 -i 'hr-*' -F json "${A2[@]}" --alert-on always
+has em_ok_html.cap body 'background:#137333'; has em_ok_html.cap body 'No NON-COMPLIANT servers\.'
+hasnt em_ok_html.cap body 'NON-COMPLIANT servers \('
+# two accounts (111111111111 / 222222222222): one mixed message, both attachments
+em em_two sendmail 0 fleet -P prod,nonprod -A -F html,csv -o "$EMO/two" "${A2[@]}" --replica-exempt-engines 'oracle-*,aurora-*'
+has em_two.cap body '^Subject: \[rds_backup_compliance\] NON-COMPLIANT: 4 non-compliant of 10'
+has em_two.cap body 'billing-aurora-mysql'
+has em_two.cap body '222222222222'; has em_two.cap body 'payroll-sqlserver'
+has em_two.cap body 'multipart/mixed'; has em_two.cap body 'filename="backup_compliance_[0-9]{4}-[0-9]{2}-[0-9]{2}\.html"'
+has em_two.cap body 'filename="backup_compliance_[0-9]{4}-[0-9]{2}-[0-9]{2}\.csv"'
+hasnt em_two.cap body 'filename="rds_backup_compliance_111111111111_222222222222_'
+hasnt em_two.cap body 'is attached|Attachment \(sendmail'
+hasnt em_two.cap body 'Report files'
+chk "two-account e-mail MIME and attachments" \
+    python3 "$HERE/check_alert_mime.py" mixed "$OUT/em_two.cap.body" "$EMO/two" --status NON-COMPLIANT --nc 4
+# HTML escaping of identifier / gaps (jq unit, no AWS)
+chk "HTML e-mail body escapes < and > in identifier and gaps" \
+    python3 "$HERE/check_alert_mime.py" escape "$HERE/../lib/alert_email.jq"
+# same frozen clock: HTML and CSV bytes with e-mail equal those without
+FD="$OUT/datebin"; mkdir -p "$FD"
+FN="$(date -u +%s)"
+printf '#!/usr/bin/env bash\nfor a in "$@"; do case "$a" in -d|-d*|--date*) exec /bin/date "$@" ;; esac; done\nexec /bin/date -d "@$FAKE_NOW" "$@"\n' >"$FD/date"; chmod +x "$FD/date"
+IDN="$OUT/ident_no"; IDY="$OUT/ident_yes"; mkdir -p "$IDN" "$IDY"
+PATH="$FD:$HERE/mock:/usr/bin:/bin" FAKE_NOW="$FN" MOCK_NOW="$FN" t ident_no 0 fleet -P prod -r us-east-1 -F html,csv -o "$IDN"
+PATH="$FD:$FM/sendmail:$HERE/mock:/usr/bin:/bin" FAKE_NOW="$FN" MOCK_NOW="$FN" MAIL_CAPTURE="$OUT/ident_yes.cap" t ident_yes 0 fleet -P prod -r us-east-1 -F html,csv -o "$IDY" "${A2[@]}"
+chk "HTML report bytes identical with or without e-mail" bash -c 'cmp -s "$0"/*.html "$1"/*.html' "$IDN" "$IDY"
+chk "compliance CSV bytes identical with or without e-mail" bash -c 'cmp -s "$(ls "$0"/*.csv | grep -v "_backups\|_orphaned\|_manual_older")" "$(ls "$1"/*.csv | grep -v "_backups\|_orphaned\|_manual_older")"' "$IDN" "$IDY"
+
+IDAY="$(date -u -d "@$FN" +%Y-%m-%d)"
+has ident_yes.cap body "filename=\"backup_compliance_${IDAY}\.html\""
+has ident_yes.cap body "filename=\"backup_compliance_${IDAY}\.csv\""
+chk "frozen-clock run: disk HTML keeps the full name" bash -c 'compgen -G "$0/rds_backup_compliance_111111111111_*.html"' "$IDY" >/dev/null
+
 
 echo "== v1.7.2: --dry-run previews keep-reports"
 D2="$OUT/dry2"; mkdir -p "$D2/o"

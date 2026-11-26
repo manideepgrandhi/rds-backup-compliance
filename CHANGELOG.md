@@ -8,6 +8,13 @@ Plain-English features for each published release. The What's new page is built 
 - A backup you re-run late counts, so a missed Saturday that you re-run on Monday brings the weekly check back to 4/4. `weekly-weekday`, `monthly-rule` and `tolerance-days` are ignored in `counts` mode (they stay in the conf)
 - Counts-mode gaps read `weekly 3/4 in last 30d`, `daily 6/7 in last 7d`, `monthly 11/12 in last 12 months`; retention checks, young servers (NOT YET DUE) and replica rules are unchanged
 - With `check-mode=schedule` the reports are identical to 1.7.2 byte for byte
+- The alert e-mail now has a short HTML body (status banner, counts, a table of NON-COMPLIANT / UNKNOWN / region-error servers only) and a plain-text fallback
+- The interactive HTML report is still attached, and the compliance CSV is attached too (`attach-html` and `attach-csv`, both shipped yes)
+- Attachment file names are short (`attach-prefix`, shipped `backup_compliance`, e.g. `backup_compliance_2026-11-26.html`); files on disk keep their full names
+- The e-mail body does not list report file paths or attachments; full paths are still printed on the screen at the end of the run
+- The jump-box hostname and script name moved to a small footer, so the body starts with the result
+- `mail` / `mailx` still send the text only, with a log note to install sendmail for the HTML body and attachments
+- Report files (HTML, CSV and the rest) are unchanged
 
 ## 1.7.2
 - `--dry-run` now previews `keep-reports`: it lists each old report it would delete and a count, and deletes nothing

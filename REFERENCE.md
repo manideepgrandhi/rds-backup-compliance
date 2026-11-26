@@ -267,6 +267,9 @@ keep-reports=30
 alert-email=
 alert-from=
 alert-on=noncompliant
+attach-html=yes
+attach-csv=yes
+attach-prefix=backup_compliance
 ## ============================== Account names (display only) ==============================
 111111111111 = prod-payments
 222222222222 = nonprod-shared
@@ -348,7 +351,7 @@ The script folder is the real folder of the script (symlinks resolved), not the 
 * `keep-reports=0` keeps everything (as before v1.7.1). No `output-dir` (`-o ''`): nothing is deleted.
 * `--dry-run` previews it (v1.7.2): one `keep-reports: would delete <file>` line per file and a count, and nothing is deleted.
 
-## E-mail: `alert-email` (v1.7.1)
+## E-mail: `alert-email` (v1.7.1; HTML body unreleased)
 
 The same e-mail settings as rds-patch-compliance, sent with the machine's own mail command (no AWS service):
 
@@ -356,14 +359,17 @@ The same e-mail settings as rds-patch-compliance, sent with the machine's own ma
 alert-email=dba-team@example.com,oncall@example.com
 alert-from=rds-reports@example.com
 alert-on=noncompliant
+attach-html=yes
+attach-csv=yes
+attach-prefix=backup_compliance
 ```
 
 * **When:** `alert-on=noncompliant` sends only when a server is NON-COMPLIANT or an AWS call failed (UNKNOWN rows or failed regions). Servers with an applied exception count as compliant. `alert-on=always` sends after every run, including `--merge`.
-* **What:** the subject is `[rds_backup_compliance] NON-COMPLIANT: 3 non-compliant of 6, 25% compliant`. The body has the counts, every NON-COMPLIANT server with its reasons, UNKNOWN servers, region errors and the report file paths.
-* **How:** with `sendmail` and `html` in `format`, the HTML report is attached (MIME). With only `mail` / `mailx`, the text summary is sent without the attachment. The mail command may take `mail-timeout` seconds (60).
+* **What:** the subject is `[rds_backup_compliance] NON-COMPLIANT: 3 non-compliant of 6, 25% compliant`. The body is a short HTML summary (status banner, accounts, counts, and a table of NON-COMPLIANT servers, UNKNOWN servers and region errors only: account, server, region, engine, what's missing) plus a plain-text fallback with the same facts. The jump-box hostname and script name sit in a small footer. Report file paths are printed on the screen, not in the e-mail. A COMPLIANT e-mail (`alert-on=always`) uses a green banner and has no failures table.
+* **How:** `sendmail` is preferred. The message is `multipart/mixed` with a `multipart/alternative` text+HTML body, then the interactive HTML report (`attach-html=yes`) and the compliance CSV (`attach-csv=yes`). Attachment names use `attach-prefix` and the UTC date only, e.g. `backup_compliance_2026-11-26.html`; the files in `output-dir` keep their full names. The attachments are rendered into the work dir when those formats were not written to `output-dir`. With only `mail` / `mailx`, the text summary is sent and the log notes that sendmail is needed for the HTML body and attachments. The mail command may take `mail-timeout` seconds (60).
 * **No mail command:** the run logs a warning and still finishes with its normal exit code. E-mail never changes the exit code.
 * **Test it:** `./rds_backup_compliance_report.sh --alert-test` sends one test e-mail and exits, with no AWS calls. `--check-config` shows which mail command would be used.
-* Addresses are validated (one plain address each, no spaces or shell characters). The CLI options are `--alert-email`, `--alert-from`, `--alert-on`, `--alert-test`, `--mail-timeout`.
+* Addresses are validated (one plain address each, no spaces or shell characters). The CLI options are `--alert-email`, `--alert-from`, `--alert-on`, `--attach-html`, `--attach-csv`, `--attach-prefix`, `--alert-test`, `--mail-timeout`.
 
 ## Compliance exceptions (v1.6.0)
 

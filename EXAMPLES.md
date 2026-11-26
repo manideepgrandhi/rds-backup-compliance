@@ -236,10 +236,10 @@ exit 1
 
 ### 6. E-mail: `--alert-test`, `alert-on noncompliant` and `always`
 
-The script needs `mail`, `mailx` or `sendmail` on the machine. With `sendmail` the HTML report is attached.
+The script needs `mail`, `mailx` or `sendmail` on the machine. `sendmail` is preferred: it sends an HTML body with a text fallback and attaches the HTML report and the compliance CSV (`attach-html=yes`, `attach-csv=yes`) under short names from `attach-prefix` (e.g. `backup_compliance_2026-11-26.html`). Files on disk keep their full names. `mail` / `mailx` send the text only.
 ```bash
 sed -i 's/^alert-email=.*/alert-email=dba-team@example.com,oncall@example.com/; s/^alert-from=.*/alert-from=rds-reports@example.com/' rds_backup_compliance_report.conf
-./rds_backup_compliance_report.sh --check-config | grep -E '^  alert-|^E-mail|mail command'
+./rds_backup_compliance_report.sh --check-config | grep -E '^  alert-|^  attach-|^E-mail|mail command'
 ./rds_backup_compliance_report.sh --alert-test                       # test e-mail only, no AWS calls
 ./rds_backup_compliance_report.sh                                    # alert-on=noncompliant: sent, 3 NON-COMPLIANT
 ./rds_backup_compliance_report.sh -P nonprod -r ap-south-1 -i 'hr-*'                     # all compliant: not sent
@@ -250,34 +250,41 @@ sed -i 's/^alert-email=.*/alert-email=dba-team@example.com,oncall@example.com/; 
   alert-from                 rds-reports@example.com        conf
   alert-on                   noncompliant                   conf
 E-mail: to dba-team@example.com oncall@example.com when NON-COMPLIANT or AWS errors
-  mail command: /home/dba/bin/sendmail (HTML report attached when html is a format)
+  attach-html                yes                           conf
+  attach-csv                 yes                           conf
+  mail command: /home/dba/bin/sendmail (HTML body with a text fallback; attaches the HTML report and the compliance CSV)
 
 2026-11-18 08:12:44 [INFO] E-mail sent to dba-team@example.com oncall@example.com: [rds_backup_compliance] TEST e-mail from jumpbox-01
 2026-11-18 08:12:45 [INFO] E-mail sent to dba-team@example.com oncall@example.com: [rds_backup_compliance] NON-COMPLIANT: 3 non-compliant of 6, 25% compliant
 2026-11-18 08:12:46 [INFO] E-mail: not sent (alert-on=noncompliant and everything is compliant)
 2026-11-18 08:12:47 [INFO] E-mail sent to dba-team@example.com oncall@example.com: [rds_backup_compliance] COMPLIANT: 0 non-compliant of 1, 100% compliant
 ```
-The NON-COMPLIANT e-mail (text part; the HTML report follows as an attachment):
+The NON-COMPLIANT e-mail (plain-text fallback; the HTML body has the same facts in a table). With sendmail the HTML report and the compliance CSV are attached under short names from `attach-prefix`:
 ```text
 From: rds-reports@example.com
 To: dba-team@example.com,oncall@example.com
 Subject: [rds_backup_compliance] NON-COMPLIANT: 3 non-compliant of 6, 25% compliant
 
-RDS backup compliance report from jumpbox-01 (rds_backup_compliance_report.sh v1.7.2)
-Accounts: prod-payments (111111111111)
+RDS backup compliance: NON-COMPLIANT
+3 non-compliant of 6 servers, 25% compliant
 
-Resources: 6   Compliant: 1   Non-compliant: 3   Not yet due: 2   Unknown: 0
+Accounts: prod-payments (111111111111)
+Resources: 6
+Compliant: 1
+Non-compliant: 3
+Not yet due: 2
+Unknown: 0
 Compliance: 25% (1 of 4; not yet due not counted)
 
 NON-COMPLIANT servers (3):
-  - prod-payments (111111111111) us-east-1 billing-aurora-mysql (aurora-mysql): weekly 3/4 missing Sat 07 Nov
-  - prod-payments (111111111111) us-east-1 legacy-mysql (mysql): daily: last automated 74h ago; daily 5/7 missing Mon 16 Nov, Tue 17 Nov
-  - prod-payments (111111111111) us-east-1 reports-pg (postgres): daily: retention 3d < 7d; daily 3/7 missing Wed 11 Nov, Thu 12 Nov, Fri 13 Nov, Sat 14 Nov
 
-Report files:
-  ./reports/rds_backup_compliance_111111111111_20261118_024244.html
-  ...
-Content-Disposition: attachment; filename="rds_backup_compliance_111111111111_20261118_024244.html"
+Account                       Server                Region     Engine        What's missing
+----------------------------  --------------------  ---------  ------------  ----------------------------------------------------------
+prod-payments (111111111111)  billing-aurora-mysql  us-east-1  aurora-mysql  weekly 3/4 missing Sat 07 Nov
+prod-payments (111111111111)  legacy-mysql          us-east-1  mysql         daily: last automated 74h ago; daily 5/7 missing Mon 16 Nov, Tue 17 Nov
+prod-payments (111111111111)  reports-pg            us-east-1  postgres      daily: retention 3d < 7d; daily 3/7 missing Wed 11 Nov, Thu 12 Nov, Fri 13 Nov, Sat 14 Nov
+
+rds_backup_compliance_report.sh v1.7.2 · jumpbox-01 · 2026-11-18 08:12:44 IST
 ```
 The test e-mail body: `Test e-mail from rds_backup_compliance_report.sh v1.7.2 on jumpbox-01 at 2026-11-18 08:12:44 IST. No AWS calls were made.`
 
@@ -640,7 +647,7 @@ Exceptions (1); today is 2026-11-18 UTC:
   line 1: 111111111111 legacy-mysql scope=backup expires 2027-03-31 - Decommission in Q1
 
 E-mail: to dba-team@example.com when NON-COMPLIANT or AWS errors
-  mail command: /usr/sbin/sendmail (HTML report attached when html is a format)
+  mail command: /usr/sbin/sendmail (HTML body with a text fallback; attaches the HTML report and the compliance CSV)
 
 OK: configuration is valid (no AWS calls made)
 ```
@@ -686,26 +693,31 @@ Files with another name, sub-folders, `run.log` and `--save-data` files are neve
 ./rds_backup_compliance_report.sh --alert-on always                  # e-mail even when all compliant
 ```
 
-Sample e-mail (fake accounts):
+Sample e-mail (fake accounts; plain-text fallback). The HTML body shows the same facts in a table. With sendmail the interactive HTML report and the compliance CSV are attached under short names from `attach-prefix`.
 
 ```text
 Subject: [rds_backup_compliance] NON-COMPLIANT: 3 non-compliant of 6, 25% compliant
 
-RDS backup compliance report from jumpbox-01 (rds_backup_compliance_report.sh v1.7.2)
-Accounts: prod-payments (111111111111)
+RDS backup compliance: NON-COMPLIANT
+3 non-compliant of 6 servers, 25% compliant
 
-Resources: 6   Compliant: 1   Non-compliant: 3   Not yet due: 2   Unknown: 0
+Accounts: prod-payments (111111111111)
+Resources: 6
+Compliant: 1
+Non-compliant: 3
+Not yet due: 2
+Unknown: 0
 Compliance: 25% (1 of 4; not yet due not counted)
 
 NON-COMPLIANT servers (3):
-  - prod-payments (111111111111) us-east-1 billing-aurora-mysql (aurora-mysql): weekly 3/4 missing Sat 07 Nov
-  - prod-payments (111111111111) us-east-1 legacy-mysql (mysql): daily: last automated 74h ago; daily 4/7 missing Sun 15 Nov, Mon 16 Nov, Tue 17 Nov
-  - prod-payments (111111111111) us-east-1 reports-pg (postgres): daily: retention 3d < 7d; daily 3/7 missing Wed 11 Nov, Thu 12 Nov, Fri 13 Nov, Sat 14 Nov
 
-Report files:
-  /home/cloudshell-user/rds-backup-compliance/reports/rds_backup_compliance_111111111111_20261118_011013.html
-  ...
-Attachment (sendmail only): rds_backup_compliance_111111111111_20261118_011013.html
+Account                       Server                Region     Engine        What's missing
+----------------------------  --------------------  ---------  ------------  ----------------------------------------------------------
+prod-payments (111111111111)  billing-aurora-mysql  us-east-1  aurora-mysql  weekly 3/4 missing Sat 07 Nov
+prod-payments (111111111111)  legacy-mysql          us-east-1  mysql         daily: last automated 74h ago; daily 4/7 missing Sun 15 Nov, Mon 16 Nov, Tue 17 Nov
+prod-payments (111111111111)  reports-pg            us-east-1  postgres      daily: retention 3d < 7d; daily 3/7 missing Wed 11 Nov, Thu 12 Nov, Fri 13 Nov, Sat 14 Nov
+
+rds_backup_compliance_report.sh v1.7.2 · jumpbox-01 · 2026-11-18 01:10:13 UTC
 ```
 
 ## Exceptions (v1.6.0)
