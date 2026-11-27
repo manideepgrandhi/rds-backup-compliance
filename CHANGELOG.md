@@ -2,6 +2,11 @@
 
 Plain-English features for each published release. The What's new page is built from this file.
 
+## Unreleased
+- The Issue filter "Not yet due" now shows only servers whose status is NOT YET DUE. A young server that is already missing a backup stays under NON-COMPLIANT (the Building up dates in the row detail are unchanged)
+- The HTML report works on a phone: it has a viewport tag, the table scrolls sideways without stretching the filter bar, and the Status and Issue dropdowns stay on screen under 700px
+- The Status column is wide enough that NOT YET DUE stays on one line
+
 ## 1.8.0
 - New `check-mode` setting (and `--check-mode`): `schedule` (the default, exactly as before) or `counts`
 - In `counts` mode a server is compliant when it has enough backups in a window, whatever weekday they ran on: daily = 7 of the last 7 days have an automated backup, weekly = 4 points (auto: the weeks that fit in `weekly-window-days`) in the last 30 days, monthly = 12 points in the last 12 months

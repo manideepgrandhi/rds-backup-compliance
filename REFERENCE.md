@@ -151,11 +151,11 @@ The HTML report has two tabs:
 
 - **Compliance tab:**
   - Cards: **NN% compliant (x of y)** first (not-yet-due resources are left out of the denominator and shown under it), then the totals. Cards follow the filters.
-  - Filters for account, region, type, engine, role, global cluster and status, a **Search** box (identifier, engine, region, account, AWS Backup vault or plan), and **Show:** Not yet due / Points not counted (retention) / Retention mismatch / Excess backups / Holds more than retention.
+  - Filters for account, region, type, engine, role, global cluster and status, a **Search** box (identifier, engine, region, account, AWS Backup vault or plan), and **Issue:** Not yet due / Points not counted (retention) / Retention mismatch / Excess backups / Holds more than retention. **Not yet due** shows only servers whose status is NOT YET DUE; a young server that is already missing a backup stays under NON-COMPLIANT (the Building up dates in the row detail are unchanged).
   - The **Per region** table (with a % compliant column and an "All regions" total) sits right under the filters and follows them.
   - Yellow tags in the Gaps cell for retention mismatch, excess backups and holds more than retention; the detail row gives the full text and likely causes, and mismatched recovery points are yellow rows.
   - A Created column (date and age in days). Yearly shows only when `yearly` > 0.
-  - Compact count cells (`4/5` with a red `1 missing` tag; hover for the dates) and a one-line Gaps summary. Fixed column widths that wrap; on a phone the table scrolls sideways.
+  - Compact count cells (`4/5` with a red `1 missing` tag; hover for the dates) and a one-line Gaps summary. Fixed column widths that wrap; on a phone the table scrolls sideways and the Status and Issue filters stay on screen.
   - Click a row (or its ▶ caret, or Enter on it) to open its detail row: full gaps, not-yet-due and warnings, a per-check table, and every AWS Backup recovery point with created date, retention, class, status, whether it counted and why.
   - Export CSV, which exports the filtered rows with exactly the same columns and quoting as the script's CSV.
   - Region errors, if any.
