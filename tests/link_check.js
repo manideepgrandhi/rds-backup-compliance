@@ -24,7 +24,8 @@ const sleep = ms => new Promise(x => setTimeout(x, ms));
   // pick a target: prefer an identifier that repeats across accounts / regions
   const cnt = {}; D.rows.forEach(r => { cnt[r.identifier] = (cnt[r.identifier] || 0) + 1; });
   const dup = D.rows.filter(r => cnt[r.identifier] > 1);
-  const tgt = (dup.length ? dup[dup.length - 1] : D.rows[D.rows.length - 1]), tk = K(tgt);
+  const hasBk = r => (D.snaps || []).some(s => s.k === K(r) && s.s && s.s.length);
+  const tgt = (dup.filter(hasBk).pop() || D.rows.filter(hasBk).pop() || D.rows[D.rows.length - 1]), tk = K(tgt);
   // Compliance -> Backups via the small "backups" link
   await g.select('#f-status', D.rows[0].status); await sleep(50);
   await g.select('#f-status', ''); await sleep(50);

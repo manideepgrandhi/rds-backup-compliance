@@ -974,9 +974,21 @@ if git -C "$HERE/.." rev-parse -q --verify 'v1.7.2^{commit}' >/dev/null 2>&1; th
         cd "$CMW" || return
         PATH="$CMD:$PATH" FAKE_NOW="$CM_FN" MOCK_NOW="$CM_FN" MOCK_SCENARIO=fleet "$V172/rds_backup_compliance_report.sh" --config "$OUT/base_172.conf" "$@" -F "$fmt" >"$o.old" 2>/dev/null
         PATH="$CMD:$PATH" FAKE_NOW="$CM_FN" MOCK_NOW="$CM_FN" MOCK_SCENARIO=fleet "$SCRIPT" --config "$BASECONF" "${extra[@]}" "$@" -F "$fmt" >"$o.new" 2>/dev/null
-        # 1.8.0 writes its tool version into json/html; after rewriting it to 1.7.2 the rest must match
+        # 1.8.0 writes its tool version into json/html; after rewriting it to 1.7.2 the rest must match.
+        # HTML layout (viewport, filters, Status width) can change; the embedded row data must still match.
         sed 's/1\.8\.0/1.7.2/g' "$o.new" >"$o.newnorm"
-        chk "schedule mode byte-identical to v1.7.2: $name ($fmt)" cmp -s "$o.old" "$o.newnorm"
+        if [[ "$fmt" == html ]]; then
+            chk "schedule mode HTML data identical to v1.7.2: $name" python3 -c 'import json,re,sys
+def data(p):
+    t=open(p,encoding="utf-8").read()
+    m=re.search("<script id=\"data\" type=\"application/json\">(.*?)</script>", t, re.S)
+    if not m: sys.exit("no data script in "+p)
+    return json.loads(m.group(1))
+if data(sys.argv[1])!=data(sys.argv[2]): sys.exit("embedded HTML data differs")
+' "$o.old" "$o.newnorm"
+        else
+            chk "schedule mode byte-identical to v1.7.2: $name ($fmt)" cmp -s "$o.old" "$o.newnorm"
+        fi
         [[ -s "$o.new" ]] || bad "schedule mode identity: $name produced no output"; cd "$HERE" || return; }
     same172 fleet json -P prod,nonprod,dev -A; same172 fleet_csv csv -P prod,nonprod,dev -A; same172 fleet_text text -P prod,nonprod,dev -A
     same172 fleet_html html -P prod,nonprod,dev -A; same172 weekly6 json -P prod -r us-east-1,us-west-2 --weekly 6 --yearly 1 --tolerance-days 0
@@ -1020,7 +1032,8 @@ has cm_html out 'id=\\?"h-daily\\?">Daily: at least 7 of the last 7 days'; hasnt
 ct cm_csv 0 -P prod -r us-east-1 -F csv --check-mode counts
 chk "counts csv: weekly found / expected / target numbers, empty missing column" csvq "$OUT/cm_csv.out" 'any(r["identifier"]=="billing-aurora-mysql" and r["weekly_status"]=="FAIL" and r["weekly_found"]=="3" and r["weekly_expected"]=="4" and r["weekly_target"]=="4" and r["weekly_missing"]=="" for r in rows)'
 chk "counts csv: the rerun server is COMPLIANT with weekly 4/4" csvq "$OUT/cm_csv.out" 'any(r["identifier"]=="shop-aurora-mysql" and r["status"]=="COMPLIANT" and r["weekly_found"]=="4" for r in rows)'
-PATH="$CMD:$PATH" FAKE_NOW="$CM_FN" MOCK_NOW="$CM_FN" MOCK_EXTRA=shop_rerun em cm_mail mailx 0 fleet -P prod -r us-east-1 -F json --check-mode counts "${A2[@]}"
+# em() replaces PATH, so the frozen date shim must be listed inside it
+PATH="$CMD:$FM/mailx:$HERE/mock:/usr/bin:/bin" FAKE_NOW="$CM_FN" MOCK_NOW="$CM_FN" MOCK_EXTRA=shop_rerun MAIL_CAPTURE="$OUT/cm_mail.cap" t cm_mail 0 fleet -P prod -r us-east-1 -F json --check-mode counts "${A2[@]}"
 has cm_mail.cap body 'prod-core \(111111111111\).*billing-aurora-mysql.*weekly 3/4 in last 30d'
 hasnt cm_mail.cap body 'shop-aurora-mysql'; hasnt cm_mail.cap body 'missing (Sat|Sun|Mon)'
 # --merge applies the mode at merge time (saved data is mode independent)
