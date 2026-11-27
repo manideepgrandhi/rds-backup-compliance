@@ -1030,6 +1030,16 @@ chk "merge in counts mode gives the same rows as a direct counts run" cmp -s <(j
 ct cm_merge_s 0 --merge "$CMM/prod.json" -F json -o ''; chk "merge in schedule mode gives the same rows as a direct schedule run" cmp -s <(jq -S '.rows' "$OUT/cm_sch.out") <(jq -S '.rows' "$OUT/cm_merge_s.out")
 chk "jq: the counts window constants are named (no loose slack number)" bash -c "grep -q '^def MONTHLY_SLACK_DAYS: 7;' '$LIBD/backup.jq'"
 
+echo "== simulator (docs/rds_compliance_simulator.html): same results as this script, both check modes"
+if command -v node >/dev/null 2>&1; then
+    res="$(node "$HERE/simulator_parity.js" 2>&1)"; rc=$?
+    chk "simulator vs script: statuses, counts, gaps and per-point reasons match in schedule and counts mode ${res:0:300}" test "$rc" -eq 0
+    if [[ -x "${CHROME:-/usr/bin/google-chrome}" ]] && NODE_PATH="${NODE_PATH:-}" node -e 'require("puppeteer-core")' 2>/dev/null; then
+        res="$(node "$HERE/browser_simulator.js" ${SHOTS:+"$SHOTS/simulator"} 2>&1)"; rc=$?
+        chk "simulator in headless Chrome: presets, check-mode switch, settings reference, light / dark ${res:0:300}" test "$rc" -eq 0
+    else echo "  skip simulator browser check (node + puppeteer-core on NODE_PATH + Chrome not found)"; fi
+else echo "  skip simulator checks (node not found)"; fi
+
 AFTER="$(cd "$HERE/.." && find . -path ./.git -prune -o -print | sort)"
 chk "nothing written into the repo" test "$BEFORE" == "$AFTER"
 echo; echo "passed $PASS, failed $FAIL"; (( FAIL == 0 ))
