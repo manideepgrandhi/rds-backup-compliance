@@ -1,6 +1,6 @@
 // Headless check of the backup compliance HTML (run_tests.sh runs it when puppeteer-core + Chrome are available).
 // Usage: node browser_check.js <report.html> [screenshot-dir] -> JSON {checks, fails}; exit 1 on any failure.
-const p = require('puppeteer-core'); const path = require('path'), fs = require('fs');
+const p = require('puppeteer-core'); const path = require('path'), fs = require('fs'), os = require('os');
 const fails = []; let n = 0; const ok = (c, m) => { n++; if (!c) fails.push(m); };
 const sleep = ms => new Promise(x => setTimeout(x, ms));
 (async () => {
@@ -37,11 +37,60 @@ const sleep = ms => new Promise(x => setTimeout(x, ms));
   ok(DD.cfg.yearly > 0 ? ths.includes('Yearly') : !ths.includes('Yearly'), 'Yearly column only when yearly > 0 (' + DD.cfg.yearly + ')');
   ok(await g.evaluate(() => [...document.querySelectorAll('#main td.cr')].some(t => / days$/.test(t.textContent))), 'Created cell shows age in days');
   await sel('f-show', 'nyd'); s = await st();
-  const nydN = DD.rows.filter(r => r.status === 'NOT YET DUE' || r.not_yet_due).length;
+  const nydN = DD.rows.filter(r => r.status === 'NOT YET DUE').length;
   ok(s.rows === nydN && s.rows > 0, 'Show: Not yet due (' + s.rows + ' = ' + nydN + ')');
   ok(await g.evaluate(() => [...document.querySelectorAll('#main tbody tr.det')].every(tr => /full on/.test(tr.textContent))), 'not yet due rows show "full on <date>"');
   ok(await g.evaluate(() => [...document.querySelectorAll('#main tbody td')].some(t => /so far \(target \d+\)/.test(t.textContent))), 'building-up cells show "x/y so far (target z)"');
   await shot('not_yet_due_filter');
+  await g.click('#f-reset'); await sleep(50);
+  await sel('f-status', 'NOT YET DUE'); s = await st();
+  ok(s.rows === nydN && s.rows > 0 && s.due === nydN, 'status filter NOT YET DUE (' + s.rows + ')');
+  ok(await g.evaluate(() => [...document.querySelectorAll('#main tbody tr.res')].every(tr => /NOT YET DUE/.test((tr.querySelector('td[class*="s-"]') || {}).textContent || ''))), 'status filter NOT YET DUE: every visible row has that status');
+  await g.click('#f-reset'); await sleep(50);
+  // A NON-COMPLIANT young server still has not_yet_due / Building-up text; Issue and Status must not list it
+  const srcNyd = DD.rows.find(r => r.status === 'NOT YET DUE' && r.not_yet_due);
+  ok(!!srcNyd, 'fixture source: a NOT YET DUE row with Building-up text');
+  if (srcNyd) {
+    const tmp = path.join(os.tmpdir(), 'rbc_nyd_fixture.html');
+    let html = fs.readFileSync(file, 'utf8');
+    const m = html.match(/<script id="data" type="application\/json">([\s\S]*?)<\/script>/);
+    const data = JSON.parse(m[1]);
+    const fx = JSON.parse(JSON.stringify(data.rows.find(r => r.identifier === srcNyd.identifier && r.account_id === srcNyd.account_id)));
+    fx.identifier = 'young-missing-pg'; fx.status = 'NON-COMPLIANT'; fx.gaps = 'daily 5/7 missing Mon 23 Nov';
+    data.rows.push(fx);
+    const json = JSON.stringify(data).replace(/</g, '\\u003c');
+    html = html.slice(0, m.index) + '<script id="data" type="application/json">' + json + '</script>' + html.slice(m.index + m[0].length);
+    fs.writeFileSync(tmp, html);
+    const g2 = await b.newPage();
+    g2.on('pageerror', e => errs.push('fixture: ' + e.message));
+    await g2.setViewport({width: 1500, height: 1000});
+    await g2.goto('file://' + tmp, {waitUntil: 'load'});
+    await g2.select('#f-show', 'nyd');
+    const idsOf = page => page.evaluate(() => [...document.querySelectorAll('#main tbody tr.res')].map(tr => String((tr.children[3] || {}).innerText || '')));
+    let ids = await idsOf(g2);
+    ok(ids.some(t => t.includes(srcNyd.identifier)) && !ids.some(t => t.includes('young-missing-pg')),
+      'Issue nyd excludes NON-COMPLIANT young server (' + ids.join(' | ') + ')');
+    await g2.select('#f-show', ''); await g2.select('#f-status', 'NOT YET DUE');
+    ids = await idsOf(g2);
+    ok(ids.some(t => t.includes(srcNyd.identifier)) && !ids.some(t => t.includes('young-missing-pg')),
+      'Status NOT YET DUE excludes NON-COMPLIANT young server');
+    await g2.close();
+  }
+  // Phone width: Status and Issue stay fully on screen (no sideways scroll of the filter bar)
+  await g.setViewport({width: 390, height: 844}); await sleep(100);
+  const fit = await g.evaluate(() => {
+    const box = id => {
+      const el = document.getElementById(id), lab = el && el.closest('label');
+      if (!el || !lab) return {ok: false};
+      const r = lab.getBoundingClientRect(), vw = window.innerWidth, vh = window.innerHeight;
+      return {ok: r.left >= -1 && r.right <= vw + 1 && r.top >= -1 && r.bottom <= vh + 1 && r.width > 40 && el.getBoundingClientRect().width > 40,
+        left: Math.round(r.left), right: Math.round(r.right), vw, w: Math.round(r.width)};
+    };
+    return {status: box('f-status'), show: box('f-show')};
+  });
+  ok(fit.status.ok && fit.show.ok, 'Status and Issue fully visible at 390px (' + JSON.stringify(fit) + ')');
+  await shot('nyd_filters_390');
+  await g.setViewport({width: 1500, height: 1000}); await sleep(50);
   await sel('f-show', 'warn'); s = await st();
   ok(s.rows === DD.rows.filter(r => r.warnings).length, 'Show: Retention warnings');
   ok(await g.evaluate(() => [...document.querySelectorAll('#main .warn:not([class*="yl-"])')].every(w => /retention doesn't match/.test(w.textContent))), 'yellow retention warning text');
@@ -132,7 +181,7 @@ const sleep = ms => new Promise(x => setTimeout(x, ms));
   ok(/All regions/.test(s.foot), 'per-region footer');
   // v1.4.0: compliance % card (not yet due left out), per-region table right under the filters, search, new Show options, yellow tags
   const pc = () => g.evaluate(() => { const c = document.querySelector('.card[data-k="compliance"]'); return c ? c.textContent : ''; });
-  const pcx = rs => { const due = rs.filter(r => !(r.status === 'NOT YET DUE' || r.not_yet_due)), c = rs.filter(r => r.status === 'COMPLIANT').length;
+  const pcx = rs => { const due = rs.filter(r => r.status !== 'NOT YET DUE'), c = rs.filter(r => r.status === 'COMPLIANT').length;
     return (due.length ? Math.round(100 * c / due.length) + '%' : '-') + 'compliant (' + c + ' of ' + due.length + ')'; };
   let pct = await pc(); ok(pct.startsWith(pcx(DD.rows)) && /not yet due, not counted/.test(pct), 'compliance card (' + pct + ')');
   ok(await g.evaluate(() => { const f = document.querySelector('#comp .filters'), r = document.getElementById('regions'), m = document.getElementById('main');
@@ -287,7 +336,8 @@ const sleep = ms => new Promise(x => setTimeout(x, ms));
     ok(/^account_id,region,identifier,type,kind,snapshot_or_recovery_point,created_utc,created_ist,age_days,/.test(ac[0]) && ac.length === ar.rows.length + 1 && ac.slice(1).every(l => l.includes(',manual,')), 'all mode csv = filtered table (' + ac.length + ')');
     ok(ac.every(l => l.split(',').length === 18), 'csv keeps all 18 columns in manual-only view');
     await sel('b-region', ''); const accts = [...new Set(o90.rows.map(r => r.acct))];
-    await sel('b-acct', accts[0]); let aa = await av();
+    const acctId = (accts[0].match(/\((\d{12})\)/) || accts[0].match(/^(\d{12})\b/) || [null, accts[0]])[1];
+    await sel('b-acct', acctId); let aa = await av();
     ok(aa.rows.every(r => r.acct === accts[0] || r.acct.includes('(' + accts[0] + ')')), 'all mode account filter');
     ok(await g.evaluate(id => { const a = JSON.parse(document.getElementById('data').textContent).accounts.find(x => x.account === id);
       if (!a || !a.name) return true;
