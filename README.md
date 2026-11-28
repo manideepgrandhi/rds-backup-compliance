@@ -84,6 +84,5 @@ All 44 settings, with allowed values: [the settings file](REFERENCE.md#the-setti
 - In [docs/](https://github.com/manideepgrandhi/rds-backup-compliance/tree/main/docs/):
   - [rds_compliance_simulator.html](https://github.com/manideepgrandhi/rds-backup-compliance/blob/main/docs/rds_compliance_simulator.html): enter a creation date and backups and see how a server is marked, in `schedule` or `counts` check mode. It also has a **Settings reference** tab and a **Run examples** tab.
   - [rds_code_walkthrough.html](https://github.com/manideepgrandhi/rds-backup-compliance/blob/main/docs/rds_code_walkthrough.html): step-by-step walk through the code that runs and the files it uses.
-  - [RDS_Backup_Compliance_Walkthrough.pptx](https://github.com/manideepgrandhi/rds-backup-compliance/blob/main/docs/RDS_Backup_Compliance_Walkthrough.pptx): team deck.
 
 The two HTML pages are not hosted. GitHub shows their source, so download them and open them in a browser. They work offline.
