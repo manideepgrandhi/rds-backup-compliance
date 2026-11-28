@@ -1,6 +1,6 @@
 # rds-backup-compliance
 
-`rds_backup_compliance_report.sh` (v1.8.0) checks whether your Aurora clusters and standalone RDS instances keep the backups your policy asks for, and writes a report (HTML, CSV, text or JSON). It only makes **read-only** AWS calls. It is built for AWS CloudShell, one account at a time, and the saved results can be merged offline.
+`rds_backup_compliance_report.sh` (v1.8.1) checks whether your Aurora clusters and standalone RDS instances keep the backups your policy asks for, and writes a report (HTML, CSV, text or JSON). It only makes **read-only** AWS calls. It is built for AWS CloudShell, one account at a time, and the saved results can be merged offline.
 
 **What it checks**
 - **Daily:** RDS automated backups (7 days kept, one on each of the last 7 days, newest one not older than 26 hours).

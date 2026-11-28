@@ -2,10 +2,15 @@
 
 Plain-English features for each published release. The What's new page is built from this file.
 
-## Unreleased
+## 1.8.1
+
+Released 28 Nov 2026 (IST).
+
 - The Issue filter "Not yet due" now shows only servers whose status is NOT YET DUE. A young server that is already missing a backup stays under NON-COMPLIANT (the Building up dates in the row detail are unchanged)
 - The HTML report works on a phone: it has a viewport tag, the table scrolls sideways without stretching the filter bar, and the Status and Issue dropdowns stay on screen under 700px
 - The Status column is wide enough that NOT YET DUE stays on one line
+- The compliance simulator now covers both check modes (`schedule` and `counts`) and the v1.8.0 settings
+- The code walkthrough covers the v1.8.0 features (counts mode and the HTML alert e-mail), including the Not yet due filter fix. The team PowerPoint deck has been removed from the repo
 
 ## 1.8.0
 - New `check-mode` setting (and `--check-mode`): `schedule` (the default, exactly as before) or `counts`

@@ -49,7 +49,7 @@ rowt() { jq -e --arg i "$2" ".rows[] | select(.identifier == \$i) | $3" "$OUT/$1
 ncalls() { wc -l <"$MOCK_LOG" 2>/dev/null | tr -d ' ' || echo 0; }
 
 echo "== CLI"
-t version 0 fleet --version; has version out '1\.8\.0'
+t version 0 fleet --version; has version out '1\.8\.1'
 t help 0 fleet --help; has help out 'list-recovery-points-by-backup-vault'; has help out 'weekly-days'
 t badopt 1 fleet --nope
 t multifmt 1 fleet -P prod -r us-east-1 -F csv,html
@@ -487,7 +487,7 @@ jqt fleet '[.rows[] | select(.account_id == "111111111111") | {id: .identifier, 
 t gsort 0 fleet -P prod -r us-east-1,us-west-2 -F csv,html -o "$OUT/gsort"
 chk "csv: orders primary then secondary consecutive" python3 -c 'import csv,glob,sys; fs=[f for f in glob.glob(sys.argv[1]+"/*.csv") if "_backups" not in f and "_orphaned" not in f and "_manual" not in f]; r=list(csv.DictReader(open(fs[0],encoding="utf-8-sig"))); ids=[x["identifier"] for x in r]; i=ids.index("orders-aurora-pg15"); assert ids[i+1]=="orders-dr-pg15", ids; assert r[i]["global_role"]=="primary" and r[i+1]["global_role"]=="secondary"' "$OUT/gsort"
 chk "html: orders primary row before secondary" python3 -c 'import glob,sys; h=open(glob.glob(sys.argv[1]+"/*.html")[0],encoding="utf-8").read(); assert h.find("orders-aurora-pg15") < h.find("orders-dr-pg15") and "orders-aurora-pg15" in h and "orders-dr-pg15" in h' "$OUT/gsort"
-chk "version is 1.8.0" grep -qF 'SCRIPT_VERSION="1.8.0"' "$SCRIPT"
+chk "version is 1.8.1" grep -qF 'SCRIPT_VERSION="1.8.1"' "$SCRIPT"
 
 echo "== v1.6.0: compliance exceptions (--exceptions FILE / compliance_exceptions.conf)"
 EX="$OUT/exc"; mkdir -p "$EX"; export RDS_BCR_EXC_NOW=1791000000   # "today" for the expiry dates only = 2026-10-03 UTC
@@ -646,7 +646,7 @@ chk "check-config: works without the aws CLI" bash -c "PATH='$(dirname "$(comman
 rm -f "$ACF"
 act noconf 1 -P prod; has noconf err 'Settings file not readable: .*autoconf/rds_backup_compliance_report\.conf'; has noconf err 'Put the shipped file next to the script'
 act noconf_cc 1 --check-config; has noconf_cc err 'Settings file not readable'
-act noconf_help 0 --help; has noconf_help out 'settings file not loaded'; act noconf_ver 0 --version; has noconf_ver out '1\.8\.0'
+act noconf_help 0 --help; has noconf_help out 'settings file not loaded'; act noconf_ver 0 --version; has noconf_ver out '1\.8\.1'
 chk "missing conf: no AWS calls" test "$(ncalls)" -eq 0
 # missing keys (e.g. a v1.7.0 partial conf): exit 1 listing every missing key
 grep -vE '^(daily|weekly-weekday|alert-on)=' "$SHIPPED" >"$ACF"
@@ -719,7 +719,7 @@ if git -C "$HERE/.." rev-parse -q --verify 'v1.7.0^{commit}' >/dev/null 2>&1; th
         PATH="$FD:$PATH" FAKE_NOW="$FN" MOCK_NOW="$FN" MOCK_SCENARIO="$scen" "$SCRIPT" --config "$BASECONF" "$@" -F "$fmt" >"$o.new" 2>/dev/null
         if [[ "$fmt" == json ]]; then
             chk "same as v1.7.0: $name" cmp -s <(jq -S 'walk(if type == "object" then del(.version, .tool_version) else . end)' "$o.old") <(jq -S 'walk(if type == "object" then del(.version, .tool_version) else . end)' "$o.new")
-        else chk "same as v1.7.0: $name" cmp -s <(sed 's/1\.7\.0/1.7.x/g' "$o.old") <(sed 's/1\.8\.0/1.7.x/g' "$o.new"); fi
+        else chk "same as v1.7.0: $name" cmp -s <(sed 's/1\.7\.0/1.7.x/g' "$o.old") <(sed 's/1\.8\.1/1.7.x/g' "$o.new"); fi
         [[ -s "$o.new" ]] || bad "same as v1.7.0: $name produced no output"; cd "$HERE" || return; }
     same fleet_2r fleet json -P prod -r us-east-1,us-west-2
     same fleet_all fleet json -P prod,nonprod,dev -A
@@ -849,7 +849,7 @@ em em_merge mailx 0 fleet --merge "$M" -F json "${A2[@]}"; has em_merge.cap body
 # --alert-test: one test e-mail, no AWS calls
 n0="$(ncalls)"; em em_test sendmail 0 fleet "${A2[@]}" --alert-test
 chk "--alert-test: zero AWS calls" test "$(ncalls)" == "$n0"
-has em_test.cap body '^Subject: \[rds_backup_compliance\] TEST e-mail from '; has em_test.cap body '^Test e-mail from rds_backup_compliance_report\.sh v1\.8\.0 '
+has em_test.cap body '^Subject: \[rds_backup_compliance\] TEST e-mail from '; has em_test.cap body '^Test e-mail from rds_backup_compliance_report\.sh v1\.8\.1 '
 t em_test_noaddr 1 fleet --alert-test; has em_test_noaddr err '--alert-test needs alert-email'
 # no mail command: warning, the run still succeeds and the report is written
 if (( ! SYSMAIL )); then
@@ -974,9 +974,9 @@ if git -C "$HERE/.." rev-parse -q --verify 'v1.7.2^{commit}' >/dev/null 2>&1; th
         cd "$CMW" || return
         PATH="$CMD:$PATH" FAKE_NOW="$CM_FN" MOCK_NOW="$CM_FN" MOCK_SCENARIO=fleet "$V172/rds_backup_compliance_report.sh" --config "$OUT/base_172.conf" "$@" -F "$fmt" >"$o.old" 2>/dev/null
         PATH="$CMD:$PATH" FAKE_NOW="$CM_FN" MOCK_NOW="$CM_FN" MOCK_SCENARIO=fleet "$SCRIPT" --config "$BASECONF" "${extra[@]}" "$@" -F "$fmt" >"$o.new" 2>/dev/null
-        # 1.8.0 writes its tool version into json/html; after rewriting it to 1.7.2 the rest must match.
+        # 1.8.1 writes its tool version into json/html; after rewriting it to 1.7.2 the rest must match.
         # HTML layout (viewport, filters, Status width) can change; the embedded row data must still match.
-        sed 's/1\.8\.0/1.7.2/g' "$o.new" >"$o.newnorm"
+        sed 's/1\.8\.1/1.7.2/g' "$o.new" >"$o.newnorm"
         if [[ "$fmt" == html ]]; then
             chk "schedule mode HTML data identical to v1.7.2: $name" python3 -c 'import json,re,sys
 def data(p):

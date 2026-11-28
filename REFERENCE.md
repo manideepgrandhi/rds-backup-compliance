@@ -2,7 +2,7 @@
 
 This is the long version of the [README](README.md): every rule, setting, output and note in one place. Plain-English release notes are in [CHANGELOG.md](CHANGELOG.md) and on the [What's new](https://manideepgrandhi.github.io/rds-backup-compliance/) page. The technical version notes are at the end of this file.
 
-`rds_backup_compliance_report.sh` v1.8.0 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
+`rds_backup_compliance_report.sh` v1.8.1 checks whether Aurora clusters and standalone RDS instances keep the backups the policy asks for. It makes only read-only calls and needs Bash, jq and AWS CLI v2. It is built to run in AWS CloudShell, one account at a time. You can then merge the results offline, including in Git Bash on Windows with `jq.exe`.
 
 ## Contents
 
@@ -93,7 +93,7 @@ AWS Backup recovery points are classified by their retention, which is CreationD
 - **Gaps** name the window instead of dates: `weekly 3/4 in last 30d`, `daily 6/7 in last 7d`, `monthly 11/12 in last 12 months`. The CSV and JSON `missing` fields are empty in `counts` mode.
 - **Weekly window.** Days are UTC dates, today included; 30 days always holds at least four Saturdays, so a healthy Saturday job reads 4/4 on any day.
 - **Monthly caveat.** The retention of the monthly point limits what can be counted: with `monthly=12` and a 365-day retention, the point of 12 months ago expires a few days before a first-Sunday that moved later in the calendar is due, so a healthy server can read `11/12` for a few days a year (for example 3 Feb 2027). Schedule mode shows the same thing on those days. Keep monthly points a little longer than a year, or use `monthly=11`.
-- **Output.** The text rule line, the HTML header and the JSON `thresholds` say `counts` (JSON gets `check_mode`; in `schedule` mode the key is absent so the output stays identical to 1.7.2, except the tool version is now 1.8.0).
+- **Output.** The text rule line, the HTML header and the JSON `thresholds` say `counts` (JSON gets `check_mode`; in `schedule` mode the key is absent so the output stays identical to 1.7.2, except the tool version is now 1.8.1).
 
 ### Strict retention (v1.4.0)
 
@@ -441,6 +441,10 @@ tests/validate_cli.py            # checks that every field read exists in the bu
 
 Technical notes for each version, kept as they were in the README. The plain-English version of the same releases is in [CHANGELOG.md](CHANGELOG.md).
 
+- **1.8.1**
+  - The Issue filter "Not yet due" matches only `status = NOT YET DUE`. A young server that is already missing a backup stays NON-COMPLIANT.
+  - The HTML report is usable on a phone (viewport tag; the table can scroll sideways without stretching the filters; the Status and Issue dropdowns wrap under 700px). The Status column is wide enough for NOT YET DUE on one line.
+  - The compliance simulator covers both `schedule` and `counts` check modes. The code walkthrough covers the v1.8.0 features including this filter fix. The team PowerPoint deck was removed from the repo.
 - **1.8.0**
   - New setting `check-mode` (`schedule` default | `counts`) and `--check-mode`. `counts` replaces the date-by-date checks with window counts (daily N of the last N days, weekly N points in `weekly-window-days`, monthly N points in the last N months + 7 days); `weekly-weekday`, `monthly-rule` and `tolerance-days` are then ignored. Counts-mode gaps: `weekly 3/4 in last 30d`. JSON `thresholds` gets `check_mode` only in `counts` mode, so `schedule` output is byte-identical to 1.7.2, except the tool version is now 1.8.0.
   - Alert e-mail: short HTML body (status banner, counts, a table of failures only) with a plain-text fallback; sendmail attaches the HTML report and the compliance CSV under short names from `attach-html` / `attach-csv` / `attach-prefix`. The body does not list report paths or attachments.

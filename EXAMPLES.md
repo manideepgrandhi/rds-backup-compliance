@@ -44,9 +44,9 @@
 
 Sample outputs from the mock fleet are in `samples/`, and screenshots are in `docs/`.
 
-## Usage examples (v1.8.0)
+## Usage examples (v1.8.1)
 
-Ready-to-copy commands for everyday jobs, each with a short sample of real output. Every sample was produced by running v1.8.0 against the test mock in `tests/mock/aws`, so the numbers come from the mock fleet. Accounts are fake: `111111111111` (profile `prod`), `222222222222` (`nonprod`) and `333333333333` (`dev`). The script folder is `/home/dba/rds-backup-compliance` on a jump box named `jumpbox-01`. Timestamps are IST; report file names use UTC. Long outputs are cut where you see `...`.
+Ready-to-copy commands for everyday jobs, each with a short sample of real output. Every sample was produced by running v1.8.1 against the test mock in `tests/mock/aws`, so the numbers come from the mock fleet. Accounts are fake: `111111111111` (profile `prod`), `222222222222` (`nonprod`) and `333333333333` (`dev`). The script folder is `/home/dba/rds-backup-compliance` on a jump box named `jumpbox-01`. Timestamps are IST; report file names use UTC. Long outputs are cut where you see `...`.
 
 ### 1. First run after unzip: edit the conf, check it, run
 
@@ -410,7 +410,7 @@ Exceptions (1); today is 2026-11-18 UTC:
   line 22: 111111111111 legacy-mysql scope=backup expires 2027-03-31 - Decommission in Q1, CHG-2001 (owner: dba-team)
 ```
 
-### 11. `check-mode=counts`: count backups instead of checking dates (v1.8.0, unreleased)
+### 11. `check-mode=counts`: count backups instead of checking dates (v1.8.0)
 
 `check-mode=schedule` (the default) wants a point for each scheduled day. With `check-mode=counts` a server is compliant when it has enough backups in a window, on any weekday: 7 of the last 7 days, 4 weekly points in the last 30 days, 12 monthly points in the last 12 months. `weekly-weekday`, `monthly-rule` and `tolerance-days` are ignored. The case it is made for: the Saturday 21 Nov weekly job of `shop-aurora-mysql` failed and an on-demand backup (30-day retention) was started on Monday 23 Nov. Both samples are real output of the same data on Thursday 26 Nov 2026; only the check mode differs (rows cut to a few servers and columns, tab separated):
 ```bash
