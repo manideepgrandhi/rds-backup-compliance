@@ -147,7 +147,7 @@ footer{color:var(--mute);font-size:13.5px;text-align:center;padding:6px 20px 28p
 </style></head><body>
 <header>
  <h1>How the backup compliance script decides: COMPLIANT or NON-COMPLIANT</h1>
- <div class="sub">Pick a cluster creation date, change the conf settings, and watch the verdict change. Simulates <code class="k">rds_backup_compliance_report.sh</code> v1.8.0 exactly as <code class="k">lib/backup.jq</code> evaluates it, in both check modes: <code class="k">schedule</code> (a point on each scheduled day) and <code class="k">counts</code> (at least N points in a window, any weekday). No AWS calls, works offline.</div>
+ <div class="sub">Pick a cluster creation date, change the conf settings, and watch the verdict change. Simulates <code class="k">rds_backup_compliance_report.sh</code> v1.8.1 exactly as <code class="k">lib/backup.jq</code> evaluates it, in both check modes: <code class="k">schedule</code> (a point on each scheduled day) and <code class="k">counts</code> (at least N points in a window, any weekday). No AWS calls, works offline.</div>
 </header>
 <nav class="tabs" id="tabbar" role="tablist" aria-label="Pages"><button role="tab" id="tb-sim" data-tab="sim" aria-selected="true">Simulator</button><button role="tab" id="tb-settings" data-tab="settings" aria-selected="false" tabindex="-1">Settings reference</button><button role="tab" id="tb-examples" data-tab="examples" aria-selected="false" tabindex="-1">Run examples</button></nav>
 <div class="wrap tabpane" id="tab-sim" role="tabpanel" aria-labelledby="tb-sim">
@@ -220,10 +220,10 @@ footer{color:var(--mute);font-size:13.5px;text-align:center;padding:6px 20px 28p
 </div>
 <div class="wrap tabpane" id="tab-ref" role="tabpanel" aria-labelledby="tb-settings" hidden></div>
 <div class="wrap tabpane" id="tab-run" role="tabpanel" aria-labelledby="tb-examples" hidden></div>
-<footer>This page is a simulator of the rules in <b>rds_backup_compliance_report.sh v1.8.0</b> (<code class="k">lib/backup.jq</code>, repo <code class="k">manideepgrandhi/rds-backup-compliance</code> @ 1d2235e); it is not the script and it never calls AWS. Dates are UTC, like the script. The real report is the source of truth.</footer>
+<footer>This page is a simulator of the rules in <b>rds_backup_compliance_report.sh v1.8.1</b> (<code class="k">lib/backup.jq</code>, repo <code class="k">manideepgrandhi/rds-backup-compliance</code> @ 1d2235e); it is not the script and it never calls AWS. Dates are UTC, like the script. The real report is the source of truth.</footer>
 
 <script>
-/* ===== CORE: a JavaScript port of evaluate / sched / rp_class / exceptions from lib/backup.jq (script v1.8.0; check-mode schedule = the v1.7.2 logic, check-mode counts = v1.8.0) ===== */
+/* ===== CORE: a JavaScript port of evaluate / sched / rp_class / exceptions from lib/backup.jq (script v1.8.1; check-mode schedule = the v1.7.2 logic, check-mode counts = v1.8.0) ===== */
 var SPD = 86400, SPH = 3600, SPARE_SLOTS = 2, MONTHS_AHEAD = 14, EPOCH_WEEKDAY = 4, MONTHLY_SLACK_DAYS = 7;   /* MONTHLY_SLACK_DAYS: counts mode, the monthly window is N months plus this many days */
 var DOW = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 var WDNAME = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
@@ -1225,7 +1225,7 @@ var RUN_EXAMPLES = [
  { g: 10, t: "Faster scan of many regions, patient with AWS", w: "Scans up to 8 regions at once, waits 60 seconds per call and tries each call up to 8 times; <code>-v</code> prints every region line, including empty regions.",
    cmd: ["./rds_backup_compliance_report.sh -A --parallel 8 --aws-timeout 60 --max-attempts 8 -v"], e: "Exit 0. The same reports; the log has a line per region." },
  { g: 11, t: "Help and version", w: "Lists every option with its current conf value in brackets.",
-   cmd: ["./rds_backup_compliance_report.sh --help", "./rds_backup_compliance_report.sh --version"], e: "Exit 0. <code>--help</code> prints the option list; <code>--version</code> prints the script name and version (1.8.0)." }
+   cmd: ["./rds_backup_compliance_report.sh --help", "./rds_backup_compliance_report.sh --version"], e: "Exit 0. <code>--help</code> prints the option list; <code>--version</code> prints the script name and version (1.8.1)." }
 ];
 
 </script>
@@ -1310,7 +1310,7 @@ var RUN_EXAMPLES = [
   var EX = [];
   function renderRun(){
     var h = '<div class="card"><h2>Run examples: ready-to-copy commands</h2>'
-      + '<p class="runintro">Every command below was run against the repo\'s test copy of the AWS CLI (no real AWS calls) and its flags were accepted by <code>rds_backup_compliance_report.sh</code> v1.8.0. Run them from the script folder. <code>prod</code>, <code>nonprod</code> and <code>dev</code> are example AWS CLI profile names and the account numbers are fake: use your own. Options on the command line override the conf for that one run.</p>'
+      + '<p class="runintro">Every command below was run against the repo\'s test copy of the AWS CLI (no real AWS calls) and its flags were accepted by <code>rds_backup_compliance_report.sh</code> v1.8.1. Run them from the script folder. <code>prod</code>, <code>nonprod</code> and <code>dev</code> are example AWS CLI profile names and the account numbers are fake: use your own. Options on the command line override the conf for that one run.</p>'
       + '<div class="reftools"><input id="run_q" type="search" placeholder="Search examples (flag, word)..." aria-label="Search examples"><span class="refcount" id="run_n"></span></div>'
       + '<div class="toc">' + RUN_GROUPS.map(function(g, i){ return '<a href="#run-g' + i + '" data-rg="' + i + '">' + esc(g) + '</a>'; }).join("") + '</div></div>';
     RUN_GROUPS.forEach(function(g, gi){

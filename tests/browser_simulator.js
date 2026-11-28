@@ -70,7 +70,7 @@ const OLD = ['COMPLIANT', 'NOT YET DUE', 'NOT YET DUE', 'NOT YET DUE', 'NON-COMP
   await g.evaluate(() => window.__tabs.showTab('examples')); await sleep(200);
   ok(/--check-mode counts/.test(await g.evaluate(() => document.getElementById('tab-run').textContent)), 'Run examples has a --check-mode counts command');
   // version labels
-  const page = await g.evaluate(() => document.body.innerText); ok(/v1\.8\.0/.test(page) && !/v1\.7\.2 exactly|rds_backup_compliance_report\.sh v1\.7\.2/.test(page), 'header / footer say v1.8.0');
+  const page = await g.evaluate(() => document.body.innerText); ok(/v1\.8\.1/.test(page) && !/v1\.7\.2 exactly|rds_backup_compliance_report\.sh v1\.7\.2/.test(page), 'header / footer say v1.8.1');
   // light and dark colour scheme: the page has one fixed theme; both schemes must render identically and without errors
   const look = async () => g.evaluate(() => { const c = getComputedStyle(document.body); return [c.backgroundColor, c.color, document.getElementById('tab-sim').hidden]; });
   await g.evaluate(() => window.__tabs.showTab('sim')); await preset(15);
